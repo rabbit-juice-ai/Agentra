@@ -60,7 +60,7 @@ Agent Team Workspace 是一款运行在 macOS 本地的 AI Agent 员工团队管
 
 ### 5.1 工作台
 - 展示所有 Work 的状态、活跃任务、异常和最近活动。
-- 展示待处理审批和需要人工决策的事项。
+- 展示待处理审批和需要人工决策的事项（含等待时长，按等待时长排序；MVP 应用内通知，macOS 系统通知延后 V1.1）。
 - 展示 Agent 当前状态与负载。
 - 支持从通知直接跳转到对应 Work、NodeRun 或 Artifact。
 
@@ -84,7 +84,7 @@ Agent Team Workspace 是一款运行在 macOS 本地的 AI Agent 员工团队管
 - 将 Agent 分配到 Work，生成 Assignment。
 - 每个 Work 有独立上下文、任务、会话、交付物和日志。
 - 支持 Git Worktree 隔离并发代码任务。
-- 支持暂停、恢复和终止整个 Work。
+- 支持暂停、恢复和终止整个 Work（暂停 Work 后所有分支不再启动新 NodeRun；终止为终态且不可逆；并发冲突行为见验收 A-19：同目录争用返回 WORKDIR_LOCKED 提示，Worktree 隔离时不阻塞）。
 
 ### 5.5 工作流设计器
 MVP 画布节点（7 种，决策 D-010）：
@@ -245,3 +245,4 @@ MVP 人工参与 = 单一 Human Approval 原语（决策 D-012/D-015）：
 - A-16 完全退出应用（Desktop/Core/Daemon）并重新启动后：workflow_runs/branch_runs/node_runs 状态与重启前一致；pending 审批仍为 pending 且可继续决策；已决策审批记录字段不变；无任何 Execution 被重复执行。
 - A-17 数据备份与恢复按决策 D-013 验收 8 项（DEVELOPMENT_PLAN 阶段 5.5 B1-B8）全部通过。
 - A-18 修改已发布模板时强制生成新版本，原版本不可变。
+- A-19 并发冲突可感知：两个 Work 指向同一非 Worktree 目录时第二次启动返回 WORKDIR_LOCKED 并提示；同一 Agent 达到并发上限时第二个任务排队不启动（上限释放后自动调度）。
