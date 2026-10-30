@@ -1,0 +1,35 @@
+name: CI
+
+# 质量闸门：类型检查（含 renderer）、lint、测试。
+# 阶段 0 的 DoD 要求"类型检查、lint、基础测试通过"，此前三项从未被自动化执行，
+# 导致 18 个 TS 错误与 59 条 lint 能与"150 项测试通过"并存。
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  verify:
+    # 产品目标平台是 macOS；这里用 Linux runner 跑与平台无关的三道闸门以控制成本，
+    # 打包态与 macOS 专有行为仍由本地/阶段 6 复验覆盖。
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.16.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: pnpm
+
+      # 需要下载 Electron 二进制：sqlite-electron.test.ts 在缺失时会 skipIf，
+      # 不下载就会变成"假绿"，所以这里不禁用下载。
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test

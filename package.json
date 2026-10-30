@@ -11,7 +11,7 @@
     "dev:core": "pnpm --filter @agentra/core dev",
     "dev:desktop": "pnpm --filter @agentra/desktop dev",
     "build": "pnpm -r build",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p apps/desktop/src/renderer/tsconfig.json --noEmit",
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest run"

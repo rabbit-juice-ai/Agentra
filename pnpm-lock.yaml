@@ -193,13 +193,22 @@ importers:
       '@agentra/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@agentra/runtime-sdk':
+        specifier: workspace:*
+        version: link:../../packages/runtime-sdk
       '@agentra/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       ws:
         specifier: 8.22.0
         version: 8.22.0
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
     devDependencies:
+      '@agentra/runtime-cli':
+        specifier: workspace:*
+        version: link:../../packages/runtime-cli
       '@types/ws':
         specifier: 8.18.2
         version: 8.18.2
@@ -209,6 +218,12 @@ importers:
       '@agentra/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@agentra/runtime-cli':
+        specifier: workspace:*
+        version: link:../../packages/runtime-cli
+      '@agentra/runtime-sdk':
+        specifier: workspace:*
+        version: link:../../packages/runtime-sdk
       '@agentra/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -254,6 +269,21 @@ importers:
         version: 8.3.5(@types/node@26.6.2)(esbuild@0.28.2)(tsx@4.23.15)
 
   packages/protocol:
+    dependencies:
+      '@agentra/runtime-sdk':
+        specifier: workspace:*
+        version: link:../runtime-sdk
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+
+  packages/runtime-cli:
+    dependencies:
+      '@agentra/runtime-sdk':
+        specifier: workspace:*
+        version: link:../runtime-sdk
+
+  packages/runtime-sdk:
     dependencies:
       zod:
         specifier: 4.6.7

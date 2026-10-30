@@ -3,6 +3,8 @@
   "references": [
     { "path": "packages/protocol" },
     { "path": "packages/shared" },
+    { "path": "packages/runtime-sdk" },
+    { "path": "packages/runtime-cli" },
     { "path": "apps/daemon" },
     { "path": "apps/core" },
     { "path": "apps/desktop" }
