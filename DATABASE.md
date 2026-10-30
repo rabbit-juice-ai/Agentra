@@ -35,6 +35,7 @@
 - description
 - system_prompt
 - skills_json
+- tool_permissions_json：`{"version":1,"allow":[],"deny":[]}`；空 allow = 未配置 = 拒绝执行（U3，迁移 v2）
 - default_provider_id nullable
 - max_concurrency integer default 1
 - status: active | disabled | archived
@@ -50,6 +51,8 @@
 - version nullable
 - capabilities_json
 - health_status
+- auth_method nullable：认证方式描述（oauth_token / api_key / none），不含凭据本身（迁移 v2）
+- health_detail nullable：面向用户的安装/登录提示，不含凭据（迁移 v2）
 - last_discovered_at
 - created_at
 - updated_at

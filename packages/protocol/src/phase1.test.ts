@@ -32,6 +32,7 @@ const agent = {
   description: '',
   systemPrompt: '',
   skills: ['react'],
+  toolPermissions: { version: 1, allow: ['Read'], deny: [] },
   defaultProviderId: null,
   maxConcurrency: 1,
   status: 'active',
@@ -150,6 +151,34 @@ describe('method params', () => {
   it('rejects unknown fields (strict)', () => {
     expect(
       ExecutionStartParams.safeParse({ agentId: 'agt-1', prompt: 'hi', shell: 'rm -rf /' }).success,
+    ).toBe(false)
+  })
+
+  it('validates tool permissions (U3)', () => {
+    const base = { name: 'A', role: 'engineer' }
+    const ok = { version: 1, allow: ['Read', 'Edit'], deny: ['Bash'] }
+    expect(AgentCreateParams.safeParse({ ...base, toolPermissions: ok }).success).toBe(true)
+
+    // allow 与 deny 冲突：写入时拒绝
+    const conflict = { version: 1, allow: ['Bash'], deny: ['Bash'] }
+    expect(AgentCreateParams.safeParse({ ...base, toolPermissions: conflict }).success).toBe(false)
+
+    // 单项超过 200 字符
+    const longName = { version: 1, allow: ['x'.repeat(201)], deny: [] }
+    expect(AgentCreateParams.safeParse({ ...base, toolPermissions: longName }).success).toBe(false)
+
+    // 单清单超过 100 项
+    const tooMany = {
+      version: 1,
+      allow: Array.from({ length: 101 }, (_, i) => `tool-${i}`),
+      deny: [],
+    }
+    expect(AgentCreateParams.safeParse({ ...base, toolPermissions: tooMany }).success).toBe(false)
+
+    // 未知版本
+    expect(
+      AgentCreateParams.safeParse({ ...base, toolPermissions: { version: 2, allow: [], deny: [] } })
+        .success,
     ).toBe(false)
   })
 

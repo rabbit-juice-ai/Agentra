@@ -60,7 +60,11 @@ describe('core ↔ daemon runtime integration', () => {
     await registry.refresh()
 
     const agentService = new AgentService(db, agentRepository, providerRepository)
-    agentId = agentService.create({ name: 'Integration Worker', role: 'engineer' }).id
+    agentId = agentService.create({
+      name: 'Integration Worker',
+      role: 'engineer',
+      toolPermissions: { version: 1, allow: ['Read'], deny: [] },
+    }).id
 
     service = new ExecutionService({
       db,

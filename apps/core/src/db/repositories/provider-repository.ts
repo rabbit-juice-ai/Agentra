@@ -16,6 +16,8 @@ type ProviderRow = {
   version: string | null
   capabilities_json: string
   health_status: string
+  auth_method: string | null
+  health_detail: string | null
   last_discovered_at: string | null
   created_at: string
   updated_at: string
@@ -34,6 +36,8 @@ function toProvider(row: ProviderRow): RuntimeProviderRecord {
       `runtime_providers.capabilities_json(${row.id})`,
     ),
     healthStatus: row.health_status,
+    authMethod: row.auth_method,
+    healthDetail: row.health_detail,
     lastDiscoveredAt: row.last_discovered_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -54,8 +58,8 @@ export class ProviderRepository {
       .prepare(
         `INSERT INTO runtime_providers (
           id, provider_type, provider_name, executable_path, version, capabilities_json,
-          health_status, last_discovered_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          health_status, auth_method, health_detail, last_discovered_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           provider_type = excluded.provider_type,
           provider_name = excluded.provider_name,
@@ -63,6 +67,8 @@ export class ProviderRepository {
           version = excluded.version,
           capabilities_json = excluded.capabilities_json,
           health_status = excluded.health_status,
+          auth_method = excluded.auth_method,
+          health_detail = excluded.health_detail,
           last_discovered_at = excluded.last_discovered_at,
           updated_at = excluded.updated_at`,
       )
@@ -74,6 +80,8 @@ export class ProviderRepository {
         info.version,
         capabilities,
         info.healthStatus,
+        info.authMethod,
+        info.healthDetail,
         info.discoveredAt,
         now,
         now,

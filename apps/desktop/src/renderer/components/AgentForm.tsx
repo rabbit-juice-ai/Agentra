@@ -23,6 +23,18 @@ type Props = {
   onCancel: () => void
 }
 
+/** 逗号或换行分隔的工具清单：去空白、去重、保持顺序。 */
+function parseToolList(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(/[,\n]/)
+        .map((tool) => tool.trim())
+        .filter((tool) => tool.length > 0),
+    ),
+  ]
+}
+
 /** 纯表单：只收集输入并回调，校验与持久化在 Core（Zod）完成。 */
 export function AgentForm({ providers, initial, busy, onSubmit, onCancel }: Props) {
   const [name, setName] = useState('')
@@ -30,6 +42,8 @@ export function AgentForm({ providers, initial, busy, onSubmit, onCancel }: Prop
   const [description, setDescription] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
   const [skills, setSkills] = useState('')
+  const [allowTools, setAllowTools] = useState('')
+  const [denyTools, setDenyTools] = useState('')
   const [defaultProviderId, setDefaultProviderId] = useState('')
   const [maxConcurrency, setMaxConcurrency] = useState('1')
 
@@ -39,6 +53,8 @@ export function AgentForm({ providers, initial, busy, onSubmit, onCancel }: Prop
     setDescription(initial?.description ?? '')
     setSystemPrompt(initial?.systemPrompt ?? '')
     setSkills((initial?.skills ?? []).join(', '))
+    setAllowTools((initial?.toolPermissions.allow ?? []).join(', '))
+    setDenyTools((initial?.toolPermissions.deny ?? []).join(', '))
     setDefaultProviderId(initial?.defaultProviderId ?? '')
     setMaxConcurrency(String(initial?.maxConcurrency ?? 1))
   }, [initial])
@@ -56,6 +72,12 @@ export function AgentForm({ providers, initial, busy, onSubmit, onCancel }: Prop
       description,
       systemPrompt,
       skills: parsedSkills,
+      // 留空即空 allow：按 U3 该 Agent 未配置工具权限，启动执行会被 Core 拒绝。
+      toolPermissions: {
+        version: 1 as const,
+        allow: parseToolList(allowTools),
+        deny: parseToolList(denyTools),
+      },
       defaultProviderId: defaultProviderId === '' ? null : defaultProviderId,
       maxConcurrency: Number.isFinite(parsedConcurrency) ? parsedConcurrency : 1,
     }
@@ -109,6 +131,24 @@ export function AgentForm({ providers, initial, busy, onSubmit, onCancel }: Prop
             value={skills}
             onChange={(event) => setSkills(event.target.value)}
             placeholder="react, typescript"
+          />
+        </label>
+        <label>
+          <span style={labelStyle}>允许工具（逗号分隔；留空 = 未配置 = 拒绝执行）</span>
+          <textarea
+            style={{ ...inputStyle, minHeight: 56, resize: 'vertical' }}
+            value={allowTools}
+            onChange={(event) => setAllowTools(event.target.value)}
+            placeholder="Read, Edit, Write"
+          />
+        </label>
+        <label>
+          <span style={labelStyle}>禁止工具（逗号分隔；优先于允许）</span>
+          <textarea
+            style={{ ...inputStyle, minHeight: 56, resize: 'vertical' }}
+            value={denyTools}
+            onChange={(event) => setDenyTools(event.target.value)}
+            placeholder="Bash, WebFetch"
           />
         </label>
         <label>

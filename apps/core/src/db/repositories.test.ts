@@ -60,6 +60,7 @@ function agentProfile(overrides: Partial<AgentProfile> = {}): AgentProfile {
     description: 'builds UI',
     systemPrompt: 'be precise',
     skills: ['react', 'css'],
+    toolPermissions: { version: 1, allow: ['Read', 'Edit'], deny: ['Bash'] },
     defaultProviderId: null,
     maxConcurrency: 1,
     status: 'active',

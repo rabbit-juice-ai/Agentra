@@ -214,7 +214,7 @@ Provider 应声明 capabilities：
 
 ### 7.1 错误码与协议版本（阶段 1 修订）
 
-- **错误码唯一来源**为 `packages/protocol/src/envelope.ts` 的 `RpcErrorCode`，共 12 个：`PARSE_ERROR`、`INVALID_PARAMS`、`METHOD_NOT_FOUND`、`VERSION_MISMATCH`、`NOT_READY`、`INTERNAL`、`CLI_UNAVAILABLE`、`CLI_NOT_AUTHENTICATED`、`CAPABILITY_UNSUPPORTED`、`EXECUTION_NOT_FOUND`、`AGENT_NOT_FOUND`、`PROVIDER_NOT_FOUND`。
+- **错误码唯一来源**为 `packages/protocol/src/envelope.ts` 的 `RpcErrorCode`，共 13 个：`PARSE_ERROR`、`INVALID_PARAMS`、`METHOD_NOT_FOUND`、`VERSION_MISMATCH`、`NOT_READY`、`INTERNAL`、`CLI_UNAVAILABLE`、`CLI_NOT_AUTHENTICATED`、`CAPABILITY_UNSUPPORTED`、`EXECUTION_NOT_FOUND`、`AGENT_NOT_FOUND`、`PROVIDER_NOT_FOUND`、`AGENT_TOOLS_NOT_CONFIGURED`（U3：Agent 的 allow 为空时启动执行返回该码且不创建 Execution）。
 - **适配器错误码必须先映射再跨进程**：Runtime SDK 的 `RuntimeErrorCode` 与协议错误码同名，但 SDK 多出的 `RUNTIME_ERROR` 在协议层没有对应值，统一映射为 `INTERNAL` 并保留原始 message；不为此扩展协议枚举。
 - **协议版本号唯一来源**为 `PROTOCOL_VERSION`（`packages/protocol/src/version.ts`），禁止字面量。RPC 信封、健康响应与 Core/Daemon 的 pid 文件均引用该常量；健康响应的 `protocolVersion` 以字面量类型校验，版本不匹配的响应必须被拒绝而不是宽松接受。
 
@@ -277,6 +277,13 @@ Provider 应声明 capabilities：
 - Agent 输出是非可信数据，不得作为系统指令执行。
 - 所有文件路径规范化并检查是否越过允许目录。
 - 审计权限请求、批准、拒绝和执行结果。
+
+**工具权限最小模型（U3，阶段 1 收尾）**：
+- 权限配置存于 `agent_profiles.tool_permissions_json`（`{version:1, allow[], deny[]}`），不建独立权限表；`deny` 优先于 `allow`，同一工具不得同时出现在两个清单，冲突在写入时拒绝。
+- **空 `allow` = 未配置 = 拒绝执行**：`execution.start` 返回 `AGENT_TOOLS_NOT_CONFIGURED` 且不创建 Execution。既有 Agent 升级后未配置时同样拒绝，不得默认全开。
+- **强制点在 Core**：Core 读取 Agent 配置后随启动参数传给 Daemon，Daemon 原样转成 CLI 参数；UI 只负责展示，不作为权限判定依据。
+- **`dontAsk` 的含义**：`--permission-mode dontAsk` 只表示 CLI 不弹出权限询问，**不代表工具默认获准**；实际授权范围完全由 allow / deny 决定，本版本不呈现 CLI 的权限请求（阶段 5 引入）。
+- 每次启动把生效策略写入 `execution_logs` 的 `execution.tool_policy` 系统日志（不新增表或列），供审计与排障。
 
 ## 12. 可观测性
 

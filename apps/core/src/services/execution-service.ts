@@ -102,6 +102,15 @@ export class ExecutionService {
       throw new RpcMethodError('INVALID_PARAMS', `agent ${agent.id} is ${agent.status}, not active`)
     }
 
+    // U3：allow 为空 = 未配置 = 拒绝执行。强制点在 Core，且必须在创建 Execution 之前拦截。
+    const toolPermissions = agent.toolPermissions
+    if (toolPermissions.allow.length === 0) {
+      throw new RpcMethodError(
+        'AGENT_TOOLS_NOT_CONFIGURED',
+        `Agent「${agent.name}」未配置任何允许工具（allow 为空）。请先在 Agent 配置中填写允许使用的工具再启动执行。`,
+      )
+    }
+
     const provider = this.resolveProvider(agent)
     // 验收 6：CLI 不可用/未认证必须在创建 Execution 之前拦截。
     this.assertProviderUsable(provider)
@@ -149,6 +158,13 @@ export class ExecutionService {
         { agentId: agent.id, providerId: provider.id },
         now,
       )
+      // 审计：本次实际生效的工具策略（不新增表或列，落在 execution_logs 的 system 流）。
+      this.appendSystemLog(
+        executionId,
+        'execution.tool_policy',
+        { allow: toolPermissions.allow, deny: toolPermissions.deny },
+        now,
+      )
     })
     this.logger?.info('execution created', {
       executionId,
@@ -168,6 +184,8 @@ export class ExecutionService {
         sessionId: externalSessionId,
         systemPrompt: agent.systemPrompt.length > 0 ? agent.systemPrompt : undefined,
         permissionMode: DEFAULT_PERMISSION_MODE,
+        allowedTools: toolPermissions.allow,
+        disallowedTools: toolPermissions.deny,
       })
       this.executions.markRunning(executionId, {
         processId: handle.processId,

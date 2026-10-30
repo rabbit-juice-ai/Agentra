@@ -16,6 +16,28 @@ export const IsoTimestamp = z.string().min(1)
 export const AgentStatus = z.enum(['active', 'disabled', 'archived'])
 export type AgentStatus = z.infer<typeof AgentStatus>
 
+/**
+ * 工具权限最小模型（U3）。
+ * - allow 为空 = 未配置 = 拒绝执行（不默认全开）；
+ * - deny 优先于 allow；同一工具不得同时出现在两个清单里，冲突在写入时拒绝；
+ * - 单项 1–200 字符、各清单 ≤100 项；重复项由 Core 在归一化时去重。
+ */
+export const ToolPermissions = z
+  .object({
+    version: z.literal(1),
+    allow: z.array(z.string().min(1).max(200)).max(100),
+    deny: z.array(z.string().min(1).max(200)).max(100),
+  })
+  .strict()
+  .refine((value) => value.allow.every((tool) => !value.deny.includes(tool)), {
+    message: 'allow 与 deny 不能包含同一工具（deny 优先，冲突必须在写入时拒绝）',
+    path: ['allow'],
+  })
+export type ToolPermissions = z.infer<typeof ToolPermissions>
+
+/** 未配置时的默认值：空 allow，按 U3 即「拒绝执行」。 */
+export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = { version: 1, allow: [], deny: [] }
+
 export const AgentProfile = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -23,6 +45,7 @@ export const AgentProfile = z.object({
   description: z.string(),
   systemPrompt: z.string(),
   skills: z.array(z.string()),
+  toolPermissions: ToolPermissions,
   defaultProviderId: z.string().min(1).nullable(),
   maxConcurrency: z.number().int().min(1),
   status: AgentStatus,
@@ -46,6 +69,10 @@ export const RuntimeProviderRecord = z.object({
   version: z.string().min(1).nullable(),
   capabilities: ProviderCapabilities,
   healthStatus: ProviderHealthStatus,
+  /** 认证方式描述（oauth_token / api_key / none），不含凭据本身。 */
+  authMethod: z.string().nullable(),
+  /** 面向用户的可执行提示（安装/登录命令），不含任何凭据。 */
+  healthDetail: z.string().nullable(),
   lastDiscoveredAt: IsoTimestamp.nullable(),
   createdAt: IsoTimestamp,
   updatedAt: IsoTimestamp,

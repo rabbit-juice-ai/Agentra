@@ -10,7 +10,7 @@ import {
   type RuntimeEvent,
   type RuntimeInfo,
 } from '@agentra/protocol'
-import { FAKE_CLAUDE_PATH } from '@agentra/runtime-cli'
+import { buildClaudeArgs, FAKE_CLAUDE_PATH } from '@agentra/runtime-cli'
 import { ProviderCapabilities } from '@agentra/runtime-sdk'
 import { newId } from '@agentra/shared'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -219,7 +219,11 @@ async function harness(
 
   const registry = new ProviderRegistry(providerRepository, runtime)
   const agents = new AgentService(db, agentRepository, providerRepository, () => NOW)
-  const agent = agents.create({ name: 'Worker', role: 'engineer' })
+  const agent = agents.create({
+    name: 'Worker',
+    role: 'engineer',
+    toolPermissions: { version: 1, allow: ['Read'], deny: ['Bash'] },
+  })
   const executions = new ExecutionService({
     db,
     runtime,
@@ -529,5 +533,90 @@ describe('AgentService', () => {
     expect(h.agents.list().map((agent) => agent.id)).not.toContain(created.id)
     expect(h.agents.list(true).map((agent) => agent.id)).toContain(created.id)
     expect(h.agents.archive(created.id).status).toBe('archived')
+  })
+})
+
+describe('工具权限强制（U3）', () => {
+  it('拒绝 allow 为空的 Agent，且不创建 Execution', async () => {
+    const h = await harness()
+    const unconfigured = h.agents.create({ name: 'NoTools', role: 'engineer' })
+    expect(unconfigured.toolPermissions).toEqual({ version: 1, allow: [], deny: [] })
+
+    await expect(
+      h.executions.start({ agentId: unconfigured.id, prompt: 'hello' }),
+    ).rejects.toMatchObject({ name: 'RpcMethodError', code: 'AGENT_TOOLS_NOT_CONFIGURED' })
+
+    // 拦截发生在创建之前：没有 Execution 落库，也没有向 Daemon 发起启动
+    expect(h.repository.list(100).some((item) => item.agentId === unconfigured.id)).toBe(false)
+    expect(h.runtime.starts).toHaveLength(0)
+  })
+
+  it('拒绝迁移前遗留、未配置工具的 Agent（v2 默认值为空 allow，不回填）', async () => {
+    const h = await harness()
+    // 模拟 v2 之前写入的旧行：INSERT 不显式给 tool_permissions_json，由列默认值兜底
+    h.db
+      .prepare(
+        `INSERT INTO agent_profiles (
+          id, name, role, description, system_prompt, skills_json,
+          default_provider_id, max_concurrency, status, created_at, updated_at, archived_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('agt-legacy', 'Legacy', 'engineer', '', '', '[]', null, 1, 'active', NOW, NOW, null)
+
+    expect(h.agents.get('agt-legacy').toolPermissions).toEqual({
+      version: 1,
+      allow: [],
+      deny: [],
+    })
+    await expect(
+      h.executions.start({ agentId: 'agt-legacy', prompt: 'hello' }),
+    ).rejects.toMatchObject({ code: 'AGENT_TOOLS_NOT_CONFIGURED' })
+  })
+
+  it('正常授权放行：保存 → 读取 → Core → Daemon → CLI 参数五段一致', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+
+    // 读取回来的是落库值
+    expect(h.agents.get(h.agentId).toolPermissions).toEqual({
+      version: 1,
+      allow: ['Read'],
+      deny: ['Bash'],
+    })
+    // Core → Daemon
+    const start = h.runtime.starts[0]
+    expect(start).toMatchObject({ allowedTools: ['Read'], disallowedTools: ['Bash'] })
+    // Daemon → CLI 参数
+    const args = buildClaudeArgs({
+      executionId: execution.id,
+      prompt: 'hello',
+      workingDirectory: execution.workingDirectory,
+      sessionId: 'ses-1',
+      allowedTools: start?.allowedTools,
+      disallowedTools: start?.disallowedTools,
+    })
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe('Read')
+    expect(args[args.indexOf('--disallowedTools') + 1]).toBe('Bash')
+
+    // 审计：execution_logs 里有一条 tool_policy 记录
+    const policyLog = h.logs
+      .list(execution.id)
+      .find((log) => log.content.includes('execution.tool_policy'))
+    expect(policyLog).toBeDefined()
+    expect(policyLog?.content).toContain('Read')
+  })
+
+  it('保存时对 allow/deny 去重并保留顺序', async () => {
+    const h = await harness()
+    const created = h.agents.create({
+      name: 'Dup',
+      role: 'engineer',
+      toolPermissions: { version: 1, allow: ['Read', ' Read ', 'Edit'], deny: ['Bash'] },
+    })
+    expect(h.agents.get(created.id).toolPermissions).toEqual({
+      version: 1,
+      allow: ['Read', 'Edit'],
+      deny: ['Bash'],
+    })
   })
 })

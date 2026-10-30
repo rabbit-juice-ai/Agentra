@@ -1,4 +1,8 @@
-import { type AgentProfile, AgentProfile as AgentProfileSchema } from '@agentra/protocol'
+import {
+  type AgentProfile,
+  AgentProfile as AgentProfileSchema,
+  ToolPermissions,
+} from '@agentra/protocol'
 import { newId } from '@agentra/shared'
 import { z } from 'zod'
 import type { Database } from '../database'
@@ -13,6 +17,7 @@ type AgentRow = {
   description: string
   system_prompt: string
   skills_json: string
+  tool_permissions_json: string
   default_provider_id: string | null
   max_concurrency: number
   status: string
@@ -29,6 +34,11 @@ function toProfile(row: AgentRow): AgentProfile {
     description: row.description,
     systemPrompt: row.system_prompt,
     skills: parseJsonColumn(SkillsSchema, row.skills_json, `agent_profiles.skills_json(${row.id})`),
+    toolPermissions: parseJsonColumn(
+      ToolPermissions,
+      row.tool_permissions_json,
+      `agent_profiles.tool_permissions_json(${row.id})`,
+    ),
     defaultProviderId: row.default_provider_id,
     maxConcurrency: row.max_concurrency,
     status: row.status,
@@ -64,12 +74,17 @@ export class AgentRepository {
 
   insert(profile: AgentProfile): void {
     const skills = serializeJsonColumn(SkillsSchema, profile.skills, 'agent.skills')
+    const toolPermissions = serializeJsonColumn(
+      ToolPermissions,
+      profile.toolPermissions,
+      'agent.toolPermissions',
+    )
     this.db
       .prepare(
         `INSERT INTO agent_profiles (
-          id, name, role, description, system_prompt, skills_json, default_provider_id,
-          max_concurrency, status, created_at, updated_at, archived_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, name, role, description, system_prompt, skills_json, tool_permissions_json,
+          default_provider_id, max_concurrency, status, created_at, updated_at, archived_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         profile.id,
@@ -78,6 +93,7 @@ export class AgentRepository {
         profile.description,
         profile.systemPrompt,
         skills,
+        toolPermissions,
         profile.defaultProviderId,
         profile.maxConcurrency,
         profile.status,
@@ -89,11 +105,17 @@ export class AgentRepository {
 
   update(profile: AgentProfile): void {
     const skills = serializeJsonColumn(SkillsSchema, profile.skills, 'agent.skills')
+    const toolPermissions = serializeJsonColumn(
+      ToolPermissions,
+      profile.toolPermissions,
+      'agent.toolPermissions',
+    )
     const result = this.db
       .prepare(
         `UPDATE agent_profiles SET
           name = ?, role = ?, description = ?, system_prompt = ?, skills_json = ?,
-          default_provider_id = ?, max_concurrency = ?, status = ?, updated_at = ?, archived_at = ?
+          tool_permissions_json = ?, default_provider_id = ?, max_concurrency = ?, status = ?,
+          updated_at = ?, archived_at = ?
         WHERE id = ?`,
       )
       .run(
@@ -102,6 +124,7 @@ export class AgentRepository {
         profile.description,
         profile.systemPrompt,
         skills,
+        toolPermissions,
         profile.defaultProviderId,
         profile.maxConcurrency,
         profile.status,

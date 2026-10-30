@@ -103,12 +103,29 @@ CREATE INDEX IF NOT EXISTS idx_executions_status_updated_at ON executions(status
 CREATE INDEX IF NOT EXISTS idx_executions_session ON executions(session_id);
 `
 
+const PHASE_1_TOOL_POLICY_SCHEMA = `
+-- U3 工具权限最小模型：既有行取默认值（空 allow）= 未配置 = 拒绝执行；不做任何回填。
+ALTER TABLE agent_profiles ADD COLUMN tool_permissions_json TEXT NOT NULL
+  DEFAULT '{"version":1,"allow":[],"deny":[]}';
+
+-- A4-auth 认证引导：安装/登录提示此前只存在于发现结果的瞬时内存，需持久化才能展示。
+ALTER TABLE runtime_providers ADD COLUMN auth_method TEXT;
+ALTER TABLE runtime_providers ADD COLUMN health_detail TEXT;
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
     name: 'phase1_agent_runtime',
     up: (db) => {
       db.exec(PHASE_1_SCHEMA)
+    },
+  },
+  {
+    version: 2,
+    name: 'phase1_tool_permissions_and_provider_auth',
+    up: (db) => {
+      db.exec(PHASE_1_TOOL_POLICY_SCHEMA)
     },
   },
 ]

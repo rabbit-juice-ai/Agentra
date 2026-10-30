@@ -8,6 +8,7 @@ export {
 export {
   AgentProfile,
   AgentStatus,
+  DEFAULT_TOOL_PERMISSIONS,
   Execution,
   ExecutionLog,
   ExecutionLogStream,
@@ -17,6 +18,7 @@ export {
   ProviderType,
   RuntimeInfo,
   RuntimeProviderRecord,
+  ToolPermissions,
 } from './dto'
 export {
   RpcError,

@@ -1,4 +1,4 @@
-import type { AgentProfile, Execution } from '@agentra/protocol'
+import type { AgentProfile, Execution, ToolPermissions } from '@agentra/protocol'
 import { useEffect, useState } from 'react'
 import type { ConsoleState } from '../state/console-reducer'
 import { OutputPanel } from './OutputPanel'
@@ -52,7 +52,11 @@ export function ConsolePage({
     if (agentId === '' && activeAgents.length > 0) setAgentId(activeAgents[0]?.id ?? '')
   }, [activeAgents, agentId])
 
+  const startAgent = activeAgents.find((agent) => agent.id === agentId) ?? null
   const selected = state.executions.find((execution) => execution.id === state.selectedId) ?? null
+  const selectedAgent = selected
+    ? (agents.find((agent) => agent.id === selected.agentId) ?? null)
+    : null
   const selectedLogs = selected ? (state.logs[selected.id] ?? []) : []
   const running = selected !== null && ACTIVE_STATUSES.has(selected.status)
   const interruptSupported = selected?.capabilities.interrupt !== 'unsupported'
@@ -114,6 +118,26 @@ export function ConsolePage({
             启动
           </button>
         </div>
+        {/* C2 无人值守明示：启动前必须可见，不增加确认弹窗 */}
+        <div
+          style={{
+            marginTop: 10,
+            padding: '8px 10px',
+            borderRadius: 6,
+            border: `1px solid ${colors.border}`,
+            background: '#fffdf5',
+            fontSize: 12,
+            color: colors.muted,
+            display: 'grid',
+            gap: 4,
+          }}
+        >
+          <span>
+            <strong>无人值守执行</strong>：启动后不再询问，本版本不呈现 CLI 的权限请求。
+          </span>
+          <span>本次实际生效的工具权限：{describeTools(startAgent?.toolPermissions ?? null)}</span>
+          <span>禁止清单优先于允许清单；未列入允许清单的工具不会获得授权。</span>
+        </div>
       </section>
 
       <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16 }}>
@@ -165,7 +189,10 @@ export function ConsolePage({
           </div>
 
           {selected ? (
-            <ExecutionMeta execution={selected} />
+            <ExecutionMeta
+              execution={selected}
+              toolPermissions={selectedAgent?.toolPermissions ?? null}
+            />
           ) : (
             <p style={{ fontSize: 13, color: colors.muted, margin: 0 }}>
               选择左侧执行记录查看实时输出。
@@ -224,7 +251,24 @@ export function ConsolePage({
   )
 }
 
-function ExecutionMeta({ execution }: { execution: Execution }) {
+/** 把工具策略描述成一行可读文本；null 表示查不到对应 Agent。 */
+function describeTools(toolPermissions: ToolPermissions | null): string {
+  if (!toolPermissions) return '—（未找到对应 Agent 配置）'
+  if (toolPermissions.allow.length === 0) {
+    return '未配置（allow 为空，启动会被 Core 拒绝，错误码 AGENT_TOOLS_NOT_CONFIGURED）'
+  }
+  const allow = toolPermissions.allow.join(', ')
+  const deny = toolPermissions.deny.length > 0 ? toolPermissions.deny.join(', ') : '无'
+  return `允许 [${allow}]；禁止 [${deny}]`
+}
+
+function ExecutionMeta({
+  execution,
+  toolPermissions,
+}: {
+  execution: Execution
+  toolPermissions: ToolPermissions | null
+}) {
   return (
     <dl
       style={{
@@ -250,6 +294,8 @@ function ExecutionMeta({ execution }: { execution: Execution }) {
       <dd style={{ margin: 0 }}>
         {execution.startedAt ?? '—'} / {execution.endedAt ?? '—'}
       </dd>
+      <dt>工具权限</dt>
+      <dd style={{ margin: 0 }}>{describeTools(toolPermissions)}</dd>
       <dt>能力快照</dt>
       <dd style={{ margin: 0 }}>
         streaming={execution.capabilities.streaming} · interrupt={execution.capabilities.interrupt}{' '}

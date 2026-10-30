@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentProfile, AgentStatus } from '../dto'
+import { AgentProfile, AgentStatus, ToolPermissions } from '../dto'
 
 export const AGENT_LIST_METHOD = 'agent.list'
 export const AGENT_GET_METHOD = 'agent.get'
@@ -31,6 +31,7 @@ export const AgentCreateParams = z
     description: z.string().max(4000).optional(),
     systemPrompt: z.string().max(100_000).optional(),
     skills: Skills.optional(),
+    toolPermissions: ToolPermissions.optional(),
     defaultProviderId: z.string().min(1).nullable().optional(),
     maxConcurrency: z.number().int().min(1).max(64).optional(),
   })
@@ -45,6 +46,7 @@ export const AgentUpdateParams = z
     description: z.string().max(4000).optional(),
     systemPrompt: z.string().max(100_000).optional(),
     skills: Skills.optional(),
+    toolPermissions: ToolPermissions.optional(),
     defaultProviderId: z.string().min(1).nullable().optional(),
     maxConcurrency: z.number().int().min(1).max(64).optional(),
     status: AgentStatus.optional(),

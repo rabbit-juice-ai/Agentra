@@ -17,6 +17,8 @@ export const RpcErrorCode = z.enum([
   'EXECUTION_NOT_FOUND',
   'AGENT_NOT_FOUND',
   'PROVIDER_NOT_FOUND',
+  // 阶段 1 收尾（U3）：Agent 未配置任何允许工具（allow 为空）时启动执行返回该码，且不创建 Execution。
+  'AGENT_TOOLS_NOT_CONFIGURED',
 ])
 export type RpcErrorCode = z.infer<typeof RpcErrorCode>
 

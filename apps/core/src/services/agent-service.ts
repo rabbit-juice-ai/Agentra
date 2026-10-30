@@ -2,7 +2,9 @@ import {
   type AgentCreateParams,
   type AgentProfile,
   type AgentUpdateParams,
+  DEFAULT_TOOL_PERMISSIONS,
   RpcMethodError,
+  type ToolPermissions,
 } from '@agentra/protocol'
 import { newId } from '@agentra/shared'
 import type { Database } from '../db/database'
@@ -16,6 +18,17 @@ function requireText(value: string, field: string): string {
     throw new RpcMethodError('INVALID_PARAMS', `${field} must not be blank`)
   }
   return trimmed
+}
+
+/**
+ * 工具权限归一化：去空白、去重、保持输入顺序。
+ * allow ∩ deny 的冲突由 protocol 的 ToolPermissions schema 在写入前拒绝（INVALID_PARAMS）。
+ */
+function normalizeToolPermissions(input: ToolPermissions): ToolPermissions {
+  const dedupe = (tools: string[]): string[] => [
+    ...new Set(tools.map((tool) => tool.trim()).filter((tool) => tool.length > 0)),
+  ]
+  return { version: 1, allow: dedupe(input.allow), deny: dedupe(input.deny) }
 }
 
 /** AgentProfile 领域服务：CRUD + 默认 Provider 绑定（归档而非物理删除）。 */
@@ -49,6 +62,10 @@ export class AgentService {
       description: params.description ?? '',
       systemPrompt: params.systemPrompt ?? '',
       skills: params.skills ?? [],
+      toolPermissions:
+        params.toolPermissions === undefined
+          ? DEFAULT_TOOL_PERMISSIONS
+          : normalizeToolPermissions(params.toolPermissions),
       defaultProviderId,
       maxConcurrency: params.maxConcurrency ?? 1,
       status: 'active',
@@ -79,6 +96,10 @@ export class AgentService {
       description: params.description ?? existing.description,
       systemPrompt: params.systemPrompt ?? existing.systemPrompt,
       skills: params.skills ?? existing.skills,
+      toolPermissions:
+        params.toolPermissions === undefined
+          ? existing.toolPermissions
+          : normalizeToolPermissions(params.toolPermissions),
       defaultProviderId,
       maxConcurrency: params.maxConcurrency ?? existing.maxConcurrency,
       status,

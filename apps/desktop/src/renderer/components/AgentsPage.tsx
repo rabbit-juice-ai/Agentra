@@ -93,6 +93,7 @@ export function AgentsPage({
                   <th style={{ padding: '6px 4px' }}>角色</th>
                   <th style={{ padding: '6px 4px' }}>Provider</th>
                   <th style={{ padding: '6px 4px' }}>状态</th>
+                  <th style={{ padding: '6px 4px' }}>工具权限</th>
                   <th style={{ padding: '6px 4px' }}>并发（阶段 2 生效）</th>
                   <th style={{ padding: '6px 4px' }} />
                 </tr>
@@ -107,6 +108,16 @@ export function AgentsPage({
                     </td>
                     <td style={{ padding: '8px 4px' }}>
                       <StatusBadge status={agent.status} />
+                    </td>
+                    <td style={{ padding: '8px 4px' }}>
+                      {agent.toolPermissions.allow.length === 0 ? (
+                        <span style={{ color: colors.red }}>无任何工具权限</span>
+                      ) : (
+                        <span style={{ color: colors.muted }}>
+                          允许 {agent.toolPermissions.allow.length} / 禁止{' '}
+                          {agent.toolPermissions.deny.length}
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: '8px 4px' }}>{agent.maxConcurrency}</td>
                     <td style={{ padding: '8px 4px', textAlign: 'right', whiteSpace: 'nowrap' }}>

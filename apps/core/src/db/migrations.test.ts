@@ -36,8 +36,12 @@ describe('migrate', () => {
     try {
       expect(currentUserVersion(db)).toBe(0)
       const result = migrate(db)
-      expect(result).toEqual({ from: 0, to: 1, applied: ['phase1_agent_runtime'] })
-      expect(currentUserVersion(db)).toBe(1)
+      expect(result).toEqual({
+        from: 0,
+        to: 2,
+        applied: ['phase1_agent_runtime', 'phase1_tool_permissions_and_provider_auth'],
+      })
+      expect(currentUserVersion(db)).toBe(2)
     } finally {
       db.close()
     }
@@ -59,10 +63,10 @@ describe('migrate', () => {
     try {
       migrate(db)
       const second = migrate(db)
-      expect(second).toEqual({ from: 1, to: 1, applied: [] })
+      expect(second).toEqual({ from: 2, to: 2, applied: [] })
       const third = migrate(db, MIGRATIONS)
       expect(third.applied).toEqual([])
-      expect(currentUserVersion(db)).toBe(1)
+      expect(currentUserVersion(db)).toBe(2)
     } finally {
       db.close()
     }
@@ -76,7 +80,7 @@ describe('migrate', () => {
 
     const second = openDatabase(file)
     try {
-      expect(currentUserVersion(second)).toBe(1)
+      expect(currentUserVersion(second)).toBe(2)
       const journal = second.prepare('PRAGMA journal_mode').get() as { journal_mode: string }
       expect(journal.journal_mode).toBe('wal')
       const fk = second.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }
@@ -85,6 +89,35 @@ describe('migrate', () => {
       expect(busy.timeout).toBe(5000)
     } finally {
       second.close()
+    }
+  })
+
+  it('adds tool permissions and provider auth columns with empty-allow defaults (v2)', () => {
+    const file = tempDb()
+    const db = openDatabase(file)
+    try {
+      migrate(db)
+      const agentColumns = db
+        .prepare("SELECT name, dflt_value FROM pragma_table_info('agent_profiles')")
+        .all() as { name: string; dflt_value: string | null }[]
+      const toolColumn = agentColumns.find((column) => column.name === 'tool_permissions_json')
+      expect(toolColumn).toBeDefined()
+      // 既有行不写回填：默认值必须是空 allow，按 U3 即「未配置、拒绝执行」
+      expect(JSON.parse(toolColumn?.dflt_value?.replace(/^'|'$/g, '') ?? 'null')).toEqual({
+        version: 1,
+        allow: [],
+        deny: [],
+      })
+
+      const providerColumns = (
+        db.prepare("SELECT name FROM pragma_table_info('runtime_providers')").all() as {
+          name: string
+        }[]
+      ).map((column) => column.name)
+      expect(providerColumns).toContain('auth_method')
+      expect(providerColumns).toContain('health_detail')
+    } finally {
+      db.close()
     }
   })
 
