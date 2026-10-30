@@ -2,13 +2,14 @@ import fs from 'node:fs'
 import http from 'node:http'
 import { rpcFailure } from '@agentra/protocol'
 import { type WebSocket, WebSocketServer } from 'ws'
-import { createDispatcher, type MethodTable } from './dispatcher'
+import { createDispatcher, type MethodTable, type RpcContext } from './dispatcher'
 
 export type WsServer = { close: () => void; socketPath: string }
 
 /**
  * WS-over-UDS：HTTP server listen 在 Unix socket 上，ws attach 其上。
  * 不占 TCP 端口，天然只限本机进程访问。
+ * 订阅连接（events.subscribe）通过 ctx.push 接收服务端事件帧。
  */
 export function startWsServer(socketPath: string, methods: MethodTable): Promise<WsServer> {
   const dispatch = createDispatcher(methods)
@@ -19,12 +20,28 @@ export function startWsServer(socketPath: string, methods: MethodTable): Promise
   const wss = new WebSocketServer({ server: httpServer, maxPayload: 4 * 1024 * 1024 })
 
   wss.on('connection', (socket: WebSocket) => {
+    const closeListeners: (() => void)[] = []
+    const ctx: RpcContext = {
+      push: (frame) => {
+        if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(frame))
+      },
+      onClose: (listener) => closeListeners.push(listener),
+    }
+    socket.on('close', () => {
+      for (const listener of closeListeners.splice(0)) {
+        try {
+          listener()
+        } catch {
+          // 关闭回调异常不得影响其他订阅者清理。
+        }
+      }
+    })
     socket.on('message', (data) => {
-      void dispatch(String(data))
-        .then((response) => socket.send(JSON.stringify(response)))
+      void dispatch(String(data), ctx)
+        .then((response) => ctx.push(response))
         .catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error)
-          socket.send(JSON.stringify(rpcFailure('internal-error', 'INTERNAL', message)))
+          ctx.push(rpcFailure('internal-error', 'INTERNAL', message))
         })
     })
     socket.on('error', () => socket.terminate())

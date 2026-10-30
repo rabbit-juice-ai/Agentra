@@ -1,0 +1,533 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import {
+  type DaemonExecutionStartParams,
+  type DaemonExecutionStartResult,
+  type DaemonExecutionStatusResult,
+  type ExecutionState,
+  PROTOCOL_VERSION,
+  type RuntimeEvent,
+  type RuntimeInfo,
+} from '@agentra/protocol'
+import { FAKE_CLAUDE_PATH } from '@agentra/runtime-cli'
+import { ProviderCapabilities } from '@agentra/runtime-sdk'
+import { newId } from '@agentra/shared'
+import { afterEach, describe, expect, it } from 'vitest'
+import type { RuntimeClient } from '../daemon/daemon-client'
+import { type Database, openDatabase } from '../db/database'
+import { migrate } from '../db/migrations'
+import { AgentRepository } from '../db/repositories/agent-repository'
+import { ExecutionLogRepository } from '../db/repositories/execution-log-repository'
+import { ExecutionRepository } from '../db/repositories/execution-repository'
+import { ProviderRepository } from '../db/repositories/provider-repository'
+import { SessionRepository } from '../db/repositories/session-repository'
+import { AgentService } from './agent-service'
+import { CoreEventHub } from './event-hub'
+import { ExecutionService } from './execution-service'
+import { ProviderRegistry } from './provider-registry'
+
+const NOW = '2026-10-30T00:00:00.000Z'
+
+const CAPABILITIES = ProviderCapabilities.parse({
+  streaming: 'native',
+  structuredEvents: 'native',
+  interrupt: 'native',
+  resume: 'native',
+  checkpoint: 'unsupported',
+  permissionRequests: 'native',
+  sessionPersistence: 'native',
+  workingDirectory: 'native',
+  toolControl: 'native',
+})
+
+class FakeRuntimeClient implements RuntimeClient {
+  readonly starts: DaemonExecutionStartParams[] = []
+  readonly messages: { executionId: string; message: string }[] = []
+  readonly interrupts: string[] = []
+  readonly cancels: string[] = []
+  active: string[] = []
+  startError: Error | null = null
+  private readonly listeners = new Set<(event: RuntimeEvent) => void>()
+
+  async discover(): Promise<RuntimeInfo[]> {
+    return [
+      {
+        providerId: 'claude-code',
+        providerType: 'cli',
+        providerName: 'Claude Code',
+        executablePath: FAKE_CLAUDE_PATH,
+        version: '9.9.9',
+        capabilities: CAPABILITIES,
+        healthStatus: 'healthy',
+        healthDetail: '',
+        authMethod: 'fake',
+        discoveredAt: NOW,
+      },
+    ]
+  }
+
+  async start(params: DaemonExecutionStartParams): Promise<DaemonExecutionStartResult> {
+    if (this.startError) throw this.startError
+    this.starts.push(params)
+    this.active.push(params.executionId)
+    return { processId: 4242, startedAt: NOW }
+  }
+
+  async sendMessage(executionId: string, message: string): Promise<void> {
+    this.messages.push({ executionId, message })
+  }
+
+  async interrupt(executionId: string): Promise<{ interrupted: boolean }> {
+    this.interrupts.push(executionId)
+    return { interrupted: true }
+  }
+
+  async cancel(executionId: string): Promise<void> {
+    this.cancels.push(executionId)
+    this.active = this.active.filter((id) => id !== executionId)
+  }
+
+  async status(executionId: string): Promise<DaemonExecutionStatusResult> {
+    return {
+      executionId,
+      status: 'running',
+      processId: 4242,
+      exitCode: null,
+      startedAt: NOW,
+      endedAt: null,
+    }
+  }
+
+  async listActive(): Promise<string[]> {
+    return [...this.active]
+  }
+
+  subscribe(listener: (event: RuntimeEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  close(): void {
+    this.listeners.clear()
+  }
+
+  emit(event: RuntimeEvent): void {
+    for (const listener of this.listeners) listener(event)
+  }
+}
+
+function outputEvent(executionId: string, content: string, sequenceNo = 1): RuntimeEvent {
+  return {
+    eventId: newId('evt'),
+    protocolVersion: PROTOCOL_VERSION,
+    eventType: 'execution.output',
+    occurredAt: NOW,
+    aggregateType: 'execution',
+    aggregateId: executionId,
+    payload: { executionId, sequenceNo, stream: 'stdout', content, timestamp: NOW },
+    correlationId: executionId,
+  }
+}
+
+function stateEvent(
+  executionId: string,
+  status: ExecutionState,
+  previousStatus: ExecutionState | null,
+  sequenceNo = 2,
+): RuntimeEvent {
+  return {
+    eventId: newId('evt'),
+    protocolVersion: PROTOCOL_VERSION,
+    eventType: 'execution.state',
+    occurredAt: NOW,
+    aggregateType: 'execution',
+    aggregateId: executionId,
+    payload: { executionId, sequenceNo, status, previousStatus, timestamp: NOW },
+    correlationId: executionId,
+  }
+}
+
+function exitedEvent(
+  executionId: string,
+  patch: {
+    exitCode: number | null
+    signal: string | null
+    reason: 'exited' | 'crashed' | 'cancelled'
+  },
+  sequenceNo = 3,
+): RuntimeEvent {
+  return {
+    eventId: newId('evt'),
+    protocolVersion: PROTOCOL_VERSION,
+    eventType: 'execution.exited',
+    occurredAt: NOW,
+    aggregateType: 'execution',
+    aggregateId: executionId,
+    payload: { executionId, sequenceNo, ...patch, timestamp: NOW },
+    correlationId: executionId,
+  }
+}
+
+type Harness = {
+  db: Database
+  dir: string
+  agents: AgentService
+  providers: ProviderRepository
+  executions: ExecutionService
+  runtime: FakeRuntimeClient
+  hub: CoreEventHub
+  logs: ExecutionLogRepository
+  repository: ExecutionRepository
+  agentId: string
+}
+
+const dirs: string[] = []
+
+async function harness(
+  options: {
+    health?: 'healthy' | 'unavailable' | 'unauthenticated'
+    executablePath?: string | null
+    capabilities?: typeof CAPABILITIES
+  } = {},
+): Promise<Harness> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentra-exec-'))
+  dirs.push(dir)
+  const db = openDatabase(path.join(dir, 'agentra.db'))
+  migrate(db)
+
+  const providerRepository = new ProviderRepository(db)
+  const agentRepository = new AgentRepository(db)
+  const sessionRepository = new SessionRepository(db)
+  const executionRepository = new ExecutionRepository(db)
+  const logRepository = new ExecutionLogRepository(db)
+  const runtime = new FakeRuntimeClient()
+  const hub = new CoreEventHub()
+
+  const [info] = await runtime.discover()
+  if (!info) throw new Error('fake runtime returned no provider')
+  providerRepository.upsertDiscovered(
+    {
+      ...info,
+      healthStatus: options.health ?? 'healthy',
+      executablePath:
+        options.executablePath === undefined ? FAKE_CLAUDE_PATH : options.executablePath,
+      capabilities: options.capabilities ?? CAPABILITIES,
+    },
+    NOW,
+  )
+
+  const registry = new ProviderRegistry(providerRepository, runtime)
+  const agents = new AgentService(db, agentRepository, providerRepository, () => NOW)
+  const agent = agents.create({ name: 'Worker', role: 'engineer' })
+  const executions = new ExecutionService({
+    db,
+    runtime,
+    registry,
+    agents: agentRepository,
+    sessions: sessionRepository,
+    executions: executionRepository,
+    logs: logRepository,
+    hub,
+    scratchRoot: path.join(dir, 'scratch'),
+    now: () => NOW,
+  })
+  return {
+    db,
+    dir,
+    agents,
+    providers: providerRepository,
+    executions,
+    runtime,
+    hub,
+    logs: logRepository,
+    repository: executionRepository,
+    agentId: agent.id,
+  }
+}
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+describe('ExecutionService.start', () => {
+  it('persists session, execution and system log, then marks running', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+
+    expect(execution).toMatchObject({
+      agentId: h.agentId,
+      providerId: 'claude-code',
+      status: 'running',
+      processId: 4242,
+    })
+    expect(execution.workingDirectory).toBe(path.join(h.dir, 'scratch', execution.id))
+    expect(fs.existsSync(execution.workingDirectory)).toBe(true)
+    expect(h.runtime.starts).toHaveLength(1)
+    expect(h.runtime.starts[0]).toMatchObject({ prompt: 'hello', permissionMode: 'dontAsk' })
+
+    const logs = h.logs.list(execution.id)
+    expect(logs.map((log) => log.stream)).toContain('system')
+    expect(logs.some((log) => log.content.includes('execution.created'))).toBe(true)
+  })
+
+  it('rejects an unknown or inactive agent', async () => {
+    const h = await harness()
+    await expect(h.executions.start({ agentId: 'agt-missing', prompt: 'x' })).rejects.toMatchObject(
+      {
+        code: 'AGENT_NOT_FOUND',
+      },
+    )
+    h.agents.archive(h.agentId)
+    await expect(h.executions.start({ agentId: h.agentId, prompt: 'x' })).rejects.toMatchObject({
+      code: 'INVALID_PARAMS',
+    })
+  })
+
+  it('rejects blank prompts', async () => {
+    const h = await harness()
+    await expect(h.executions.start({ agentId: h.agentId, prompt: '   ' })).rejects.toMatchObject({
+      code: 'INVALID_PARAMS',
+    })
+    expect(h.executions.list()).toHaveLength(0)
+  })
+
+  it('returns CLI_UNAVAILABLE without creating an execution when the CLI is unavailable', async () => {
+    const h = await harness({ health: 'unavailable' })
+    await expect(h.executions.start({ agentId: h.agentId, prompt: 'x' })).rejects.toMatchObject({
+      code: 'CLI_UNAVAILABLE',
+    })
+    expect(h.executions.list()).toHaveLength(0)
+    expect(h.runtime.starts).toHaveLength(0)
+  })
+
+  it('returns CLI_NOT_AUTHENTICATED without creating an execution when not authenticated', async () => {
+    const h = await harness({ health: 'unauthenticated' })
+    await expect(h.executions.start({ agentId: h.agentId, prompt: 'x' })).rejects.toMatchObject({
+      code: 'CLI_NOT_AUTHENTICATED',
+    })
+    expect(h.executions.list()).toHaveLength(0)
+    expect(h.runtime.starts).toHaveLength(0)
+  })
+
+  it('returns CLI_UNAVAILABLE and downgrades health when the executable disappeared', async () => {
+    const h = await harness({ executablePath: '/nonexistent/claude' })
+    await expect(h.executions.start({ agentId: h.agentId, prompt: 'x' })).rejects.toMatchObject({
+      code: 'CLI_UNAVAILABLE',
+    })
+    expect(h.executions.list()).toHaveLength(0)
+    expect(h.providers.get('claude-code')?.healthStatus).toBe('unavailable')
+  })
+
+  it('marks the execution failed when the daemon rejects the start', async () => {
+    const h = await harness()
+    h.runtime.startError = new Error('spawn failed')
+    await expect(h.executions.start({ agentId: h.agentId, prompt: 'x' })).rejects.toThrow(
+      'spawn failed',
+    )
+    const [execution] = h.executions.list()
+    expect(execution).toMatchObject({ status: 'failed' })
+  })
+})
+
+describe('ExecutionService event handling', () => {
+  it('persists output and broadcasts it to desktop subscribers', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    const received: RuntimeEvent[] = []
+    h.hub.subscribe((event) => received.push(event))
+
+    h.executions.handleRuntimeEvent(outputEvent(execution.id, 'OK'))
+    const logs = h.logs.list(execution.id).filter((log) => log.stream === 'stdout')
+    expect(logs).toHaveLength(1)
+    expect(logs[0]?.content).toBe('OK')
+    expect(received).toHaveLength(1)
+  })
+
+  it('deduplicates the same eventId (no duplicate logs)', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    const event = outputEvent(execution.id, 'OK')
+    h.executions.handleRuntimeEvent(event)
+    h.executions.handleRuntimeEvent(event)
+    expect(h.logs.list(execution.id).filter((log) => log.stream === 'stdout')).toHaveLength(1)
+  })
+
+  it('records started → succeeded with exit code 0', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    h.executions.handleRuntimeEvent(stateEvent(execution.id, 'running', 'pending'))
+    h.executions.handleRuntimeEvent(outputEvent(execution.id, 'OK'))
+    h.executions.handleRuntimeEvent(
+      exitedEvent(execution.id, { exitCode: 0, signal: null, reason: 'exited' }),
+    )
+
+    const stored = h.executions.get(execution.id)
+    expect(stored).toMatchObject({ status: 'succeeded', exitCode: 0 })
+    expect(stored.endedAt).not.toBeNull()
+    const systemLogs = h.logs
+      .list(execution.id)
+      .filter((log) => log.stream === 'system')
+      .map((log) => log.content)
+    expect(systemLogs.some((content) => content.includes('execution.exited'))).toBe(true)
+  })
+
+  it('records crashed when the process dies from a signal', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    h.executions.handleRuntimeEvent(
+      exitedEvent(execution.id, { exitCode: null, signal: 'SIGKILL', reason: 'crashed' }),
+    )
+    expect(h.executions.get(execution.id)).toMatchObject({ status: 'crashed', exitCode: null })
+  })
+
+  it('ignores duplicate terminal state events after exit', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    h.executions.handleRuntimeEvent(
+      exitedEvent(execution.id, { exitCode: 0, signal: null, reason: 'exited' }),
+    )
+    const logsBefore = h.logs.list(execution.id).length
+    h.executions.handleRuntimeEvent(stateEvent(execution.id, 'succeeded', 'running'))
+    expect(h.logs.list(execution.id)).toHaveLength(logsBefore)
+    expect(h.executions.get(execution.id).status).toBe('succeeded')
+  })
+
+  it('does not let an exited event resurrect a cancelled execution', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    await h.executions.cancel({ executionId: execution.id })
+    h.executions.handleRuntimeEvent(
+      exitedEvent(execution.id, { exitCode: 0, signal: null, reason: 'exited' }),
+    )
+    expect(h.executions.get(execution.id).status).toBe('cancelled')
+  })
+})
+
+describe('ExecutionService lifecycle RPCs', () => {
+  it('cancels a running execution and records the request', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    const cancelled = await h.executions.cancel({ executionId: execution.id })
+    expect(cancelled.status).toBe('cancelled')
+    expect(h.runtime.cancels).toContain(execution.id)
+    expect(
+      h.logs.list(execution.id).some((log) => log.content.includes('execution.cancel_requested')),
+    ).toBe(true)
+  })
+
+  it('is idempotent when cancelling a terminal execution', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    await h.executions.cancel({ executionId: execution.id })
+    const again = await h.executions.cancel({ executionId: execution.id })
+    expect(again.status).toBe('cancelled')
+    expect(h.runtime.cancels).toHaveLength(1)
+  })
+
+  it('forwards interrupt for native capabilities', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    await expect(h.executions.interrupt({ executionId: execution.id })).resolves.toEqual({
+      interrupted: true,
+    })
+    expect(h.runtime.interrupts).toContain(execution.id)
+    expect(h.executions.get(execution.id).status).toBe('running')
+  })
+
+  it('rejects interrupt for unsupported capabilities without changing state', async () => {
+    const h = await harness({
+      capabilities: { ...CAPABILITIES, interrupt: 'unsupported' },
+    })
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    await expect(h.executions.interrupt({ executionId: execution.id })).rejects.toMatchObject({
+      code: 'CAPABILITY_UNSUPPORTED',
+    })
+    expect(h.executions.get(execution.id).status).toBe('running')
+    expect(h.runtime.interrupts).toHaveLength(0)
+  })
+
+  it('rejects sendMessage for unsupported streaming and forwards it otherwise', async () => {
+    const h = await harness({ capabilities: { ...CAPABILITIES, streaming: 'unsupported' } })
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    await expect(
+      h.executions.sendMessage({ executionId: execution.id, message: 'more' }),
+    ).rejects.toMatchObject({ code: 'CAPABILITY_UNSUPPORTED' })
+
+    const h2 = await harness()
+    const execution2 = await h2.executions.start({ agentId: h2.agentId, prompt: 'hello' })
+    await expect(
+      h2.executions.sendMessage({ executionId: execution2.id, message: 'more' }),
+    ).resolves.toEqual({ sent: true })
+    expect(h2.runtime.messages).toEqual([{ executionId: execution2.id, message: 'more' }])
+  })
+
+  it('reports EXECUTION_NOT_FOUND for unknown executions', async () => {
+    const h = await harness()
+    expect(() => h.executions.get('exe-missing')).toThrow(
+      expect.objectContaining({ code: 'EXECUTION_NOT_FOUND' }),
+    )
+    await expect(h.executions.cancel({ executionId: 'exe-missing' })).rejects.toMatchObject({
+      code: 'EXECUTION_NOT_FOUND',
+    })
+  })
+
+  it('lists executions and returns logs after a sequence', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    h.executions.handleRuntimeEvent(outputEvent(execution.id, 'one', 1))
+    h.executions.handleRuntimeEvent(outputEvent(execution.id, 'two', 2))
+    expect(h.executions.list()).toHaveLength(1)
+    const logs = h.executions.logsFor({ executionId: execution.id, afterSequence: 1 })
+    expect(logs.every((log) => log.sequenceNo > 1)).toBe(true)
+    expect(logs.some((log) => log.content === 'two')).toBe(true)
+  })
+})
+
+describe('ExecutionService.reconcile', () => {
+  it('marks executions the daemon no longer knows as crashed', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    h.runtime.active = []
+    await h.executions.reconcile()
+    const stored = h.executions.get(execution.id)
+    expect(stored.status).toBe('crashed')
+    expect(h.logs.list(execution.id).some((log) => log.content.includes('reconciliation'))).toBe(
+      true,
+    )
+  })
+
+  it('keeps executions the daemon still tracks as running', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    await h.executions.reconcile()
+    expect(h.executions.get(execution.id).status).toBe('running')
+  })
+})
+
+describe('AgentService', () => {
+  it('creates, updates and archives agents with provider validation', async () => {
+    const h = await harness()
+    expect(() => h.agents.create({ name: 'X', role: 'r', defaultProviderId: 'nope' })).toThrow(
+      expect.objectContaining({ code: 'PROVIDER_NOT_FOUND' }),
+    )
+
+    const created = h.agents.create({
+      name: '  Backend  ',
+      role: 'engineer',
+      defaultProviderId: 'claude-code',
+    })
+    expect(created.name).toBe('Backend')
+    expect(created.defaultProviderId).toBe('claude-code')
+
+    const updated = h.agents.update({ id: created.id, maxConcurrency: 2, skills: ['go'] })
+    expect(updated).toMatchObject({ maxConcurrency: 2, skills: ['go'], name: 'Backend' })
+
+    const archived = h.agents.archive(created.id)
+    expect(archived.status).toBe('archived')
+    expect(archived.archivedAt).toBe(NOW)
+    expect(h.agents.list().map((agent) => agent.id)).not.toContain(created.id)
+    expect(h.agents.list(true).map((agent) => agent.id)).toContain(created.id)
+    expect(h.agents.archive(created.id).status).toBe('archived')
+  })
+})
