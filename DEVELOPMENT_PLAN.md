@@ -42,6 +42,9 @@
 - [ ] 支持 cancel/interrupt。
 - [ ] 保存 Session 和 Execution。
 - [ ] UI 展示实时输出和执行状态。
+- [ ] **工具权限最小模型**（决策 D-019，C1）：迁移 v2 新增 `agent_profiles.tool_permissions_json`；协议增加 `ToolPermissions`；空 allow 拒绝启动（`AGENT_TOOLS_NOT_CONFIGURED`）且不创建 Execution；Core 读取并强制传入 Daemon；`execution_logs` 写 `execution.tool_policy`；Agent 表单 / 列表 / 执行详情展示；补齐空 allow、`allow ∩ deny` 冲突、旧 Agent 未配置、正常授权四类测试。
+- [ ] **无人值守执行 UI 明示**（决策 D-020，C2）：启动前展示无人值守、本次生效工具权限、本版本不呈现权限请求；不加确认弹窗。
+- [ ] **Provider 认证引导**（决策 D-021，A4）：`runtime_providers` 增加 `auth_method` / `health_detail`（并入迁移 v2）；Provider 面板展示可复制的安装 / 登录命令，不做应用内登录。
 
 ### 验收
 - 创建两个 Agent Profile。
@@ -50,7 +53,7 @@
 - kill -9 执行进程后 10 秒内 executions.status 变为 failed/crashed，并写入 execution exited/crashed 事件。
 - capabilities_json 中不支持能力值=unsupported；对 unsupported 的 interrupt 发起请求必须返回定义的错误码且不改变 Execution 状态。
 - CLI 不可用或未认证时启动执行：返回固定错误码 `CLI_UNAVAILABLE` / `CLI_NOT_AUTHENTICATED`（在 protocol 中定义）与可执行提示，且不创建 Execution（Minor #9）。
-- 当前 Electron 运行环境（`ELECTRON_RUN_AS_NODE`）下 SQLite 基本集成验证通过：建表、参数化写入、WAL、简单快照备份、`PRAGMA integrity_check`（裁定 D-017；验证脚本纳入测试）。
+- 当前 Electron 运行环境（`ELECTRON_RUN_AS_NODE`）下 SQLite 基本集成验证通过：建表、参数化写入、WAL、简单快照备份、`PRAGMA integrity_check`（裁定 D-017；验证脚本纳入测试）。缺失 Electron 运行环境时该验收判失败，不得 skip。
 
 ## 阶段 2：Team、Work、Assignment 和工作区
 
