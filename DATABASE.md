@@ -1,6 +1,6 @@
 # 数据库设计
 
-版本：V1.2（基于 v1.0.0 Development Baseline 的 D-016/D-017 修订）  
+版本：V1.3（基于 v1.0.0 Development Baseline 的 D-016～D-023 修订）  
 数据库：SQLite（WAL 模式）  
 数据访问：Node.js 内置 `node:sqlite` + Core 统一 Repository/Data Access Layer（无 ORM；决策 D-016）
 

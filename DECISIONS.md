@@ -1,6 +1,6 @@
 # 产品决策记录（ADR-lite）
 
-版本：V1.2（含冻结后变更记录 D-016/D-017）
+版本：V1.3（含冻结后变更记录 D-016～D-023）
 
 ## 已确认决策
 
@@ -254,3 +254,4 @@
   - D-016（2026-10-30 经用户批准）：数据库访问方案定为 node:sqlite（无 ORM）——DATABASE.md / ARCHITECTURE.md / DEVELOPMENT_PLAN.md 升级为 V1.2；v1.0.0 基线其余内容不变，未重新冻结（修订内容已于 2026-10-30 经用户逐项追认，见「逐项追认记录」）。
   - D-017（2026-10-30 经用户裁定）：阶段 1 数据库方案与未决问题裁定；Minor 9 项中 7 项已随本次修订处理并经用户逐项追认、2 项（#4 docs 路径引用、#5 节点命名映射说明）经 U1 批准改为本轮处理。
   - Minor Backlog：本轮无遗留项（#4、#5 已按 U1 改为本轮处理）。
+  - **V1.3 统一升版（2026-10-30，D-023）**：全部 8 份设计文档版本头统一为 V1.3（此前 PRD / README / AGENTS 为 V1.1，ARCHITECTURE / DATABASE / DECISIONS / DEVELOPMENT_PLAN / WORKFLOW 为 V1.2）。本轮有实质内容变更的是 **PRD、ARCHITECTURE、DATABASE、AGENTS、DEVELOPMENT_PLAN、DECISIONS、README**（7 份）；**WORKFLOW 本轮无内容变更，仅随基线统一升版**。内容变更对应决策 D-016～D-023 与批次 1–3 的文档修订（D1–D5、B1/B3/B5/B6/B7 条款、C1/C2/A4 收尾）。版本头升版不改变任何正文语义，v1.0.0 基线继续有效，未重新冻结。

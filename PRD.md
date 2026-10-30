@@ -1,6 +1,6 @@
 # 产品需求文档（PRD）
 
-版本：V1.1（修订版，基线冻结前）  
+版本：V1.3（基于 v1.0.0 Development Baseline 的修订）  
 状态：开发基线（待基线冻结验收）  
 产品名称：Agent Team Workspace（暂定名）
 
