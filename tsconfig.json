@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/protocol" },
+    { "path": "packages/shared" },
+    { "path": "apps/daemon" },
+    { "path": "apps/core" },
+    { "path": "apps/desktop" }
+  ]
+}
