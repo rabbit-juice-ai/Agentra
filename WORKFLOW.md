@@ -120,6 +120,10 @@ MVP 实际启用子集以 DEVELOPMENT_PLAN 阶段 4 实现清单为准；schema 
 ### 审批等待与分支暂停（决策 D-012/D-015）
 Human Approval 等待期间只暂停当前分支（分支进入 paused 或等效等待状态），其他并行分支继续执行。approve 后当前分支继续；reject 后当前分支保持暂停，等待用户后续决策（不自动返工）；request_changes 后当前分支等待关联 ReworkRequest 完成。
 
+### Work 级暂停与终止
+- 暂停 Work：Work 下所有 BranchRun 不再启动新 NodeRun；运行中 Execution 按 Provider 能力按分支暂停语义处理；恢复时重新计算依赖。Work 暂停等价于对其全部分支的暂停，但不改变各分支自身的暂停状态记录。
+- 终止 Work：终态且不可逆。所有未终结 WorkflowRun 置 cancelled、运行中 Execution 按取消策略停止、pending 审批置 cancelled；已完成的节点、审批和 Artifact 记录保留。终止需用户确认并写入审计。
+
 ## 5. 人工参与配置
 
 MVP：任意节点可配置的人工门禁经 Human Approval 原语实现，支持：
