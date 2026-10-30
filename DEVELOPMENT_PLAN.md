@@ -57,6 +57,8 @@
 - [ ] Work CRUD。
 - [ ] WorkTeam 关联。
 - [ ] Assignment 创建/暂停/完成。
+- [ ] Work 级暂停/恢复（暂停后所有分支不再启动新 NodeRun，语义见 WORKFLOW §4）。
+- [ ] Work 级终止（终态不可逆：未终结 WorkflowRun 置 cancelled、运行中 Execution 按取消策略停止、pending 审批置 cancelled——系统取消路径；需用户确认并写审计）。
 - [ ] Agent Session 绑定 Assignment。
 - [ ] Work 独立工作目录。
 - [ ] Git Worktree 创建/列举/清理（清理必须确认）。

@@ -239,7 +239,7 @@ Workflow definition 建议包含：
 - approval_type: before_execute | checkpoint | after_execute | artifact_review | manual_route
   - **MVP 子集**：before_execute、after_execute（经 Human Approval 原语实现；checkpoint/manual_route/artifact_review 为后续版本能力，MVP 仍保留枚举定义并标注）
 - status: pending | approved | changes_requested | rejected | taken_over | cancelled
-  - **MVP 子集**：pending、approved、changes_requested、rejected（taken_over/cancelled 为后续版本）
+  - **MVP 子集**：pending、approved、changes_requested、rejected、cancelled（taken_over 为后续版本）。其中 cancelled 仅用于系统取消路径（如 Work 终止时取消 pending 审批，见 WORKFLOW §4 Work 级终止），不是用户审批决策的一种。
 - requested_by
 - decided_by nullable
 - decision_comment nullable

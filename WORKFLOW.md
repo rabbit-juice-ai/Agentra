@@ -122,7 +122,7 @@ Human Approval 等待期间只暂停当前分支（分支进入 paused 或等效
 
 ### Work 级暂停与终止
 - 暂停 Work：Work 下所有 BranchRun 不再启动新 NodeRun；运行中 Execution 按 Provider 能力按分支暂停语义处理；恢复时重新计算依赖。Work 暂停等价于对其全部分支的暂停，但不改变各分支自身的暂停状态记录。
-- 终止 Work：终态且不可逆。所有未终结 WorkflowRun 置 cancelled、运行中 Execution 按取消策略停止、pending 审批置 cancelled；已完成的节点、审批和 Artifact 记录保留。终止需用户确认并写入审计。
+- 终止 Work：终态且不可逆。所有未终结 WorkflowRun 置 cancelled、运行中 Execution 按取消策略停止、pending 审批置 cancelled（系统取消路径，非用户审批决策，见 DATABASE §2.7）；已完成的节点、审批和 Artifact 记录保留。终止需用户确认并写入审计。
 
 ## 5. 人工参与配置
 
@@ -237,7 +237,7 @@ Core 启动后：
 
 ### 10.2 任务返工（ReworkRequest / ReworkPolicy，引擎内建，MVP 核心）
 - 触发源：Human Approval 的 request_changes 决策（必填意见+关联返工任务），或测试节点结构化结果判定失败。
-- ReworkRequest 状态机：requested → in_rework → completed（自动重测）｜cancelled（人工处理取消）。
+- ReworkRequest 状态机：requested → in_rework → completed（自动重测）｜cancelled（人工处理取消）｜exhausted（超限，分支已暂停转人工）。
 - 轮次：按被返工任务统计 round（1 起），unique(被返工任务, round) 作为幂等键；持久化，重启后不得丢失或重复计数。
 - 默认最多 2 轮（不含首次执行）；以每任务每轮一条 ReworkRequest 记账。
 - 超限：暂停相关分支，写入 rework.exhausted 事件，进入人工处理；人工可选继续返工（重置轮次须显式授权并审计）、接管动作或终止。

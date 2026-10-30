@@ -247,3 +247,5 @@ MVP 人工参与 = 单一 Human Approval 原语（决策 D-012/D-015）：
 - A-17 数据备份与恢复按决策 D-013 验收 8 项（DEVELOPMENT_PLAN 阶段 5.5 B1-B8）全部通过。
 - A-18 修改已发布模板时强制生成新版本，原版本不可变。
 - A-19 并发冲突可感知：两个 Work 指向同一非 Worktree 目录时第二次启动返回 WORKDIR_LOCKED 并提示；同一 Agent 达到并发上限时第二个任务排队不启动（上限释放后自动调度）。
+- A-20 Work 级暂停/恢复：暂停 Work 后其所有分支无新 NodeRun 进入 running，恢复后仅依赖满足的节点进入 ready；其他 Work 不受影响。
+- A-21 Work 级终止：确认后所有未终结 WorkflowRun 置 cancelled、pending 审批置 cancelled（系统取消路径）、运行中 Execution 停止；已完成节点/审批/Artifact 记录保留；终止操作写入 audit_logs；再次操作该 Work 提示已终态。
