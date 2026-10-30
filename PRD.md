@@ -68,6 +68,7 @@ Agent Team Workspace 是一款运行在 macOS 本地的 AI Agent 员工团队管
 - 创建、编辑、停用和归档 Agent。
 - 配置名称、角色、描述、系统提示词、技能、工具权限、默认运行时和并发上限。
 - 发现本机已安装的受支持 CLI，显示路径、版本、可执行性、认证/登录状态（只显示可验证信息）。
+- 认证配置入口：创建 Agent 时检测 CLI 认证状态，未认证时引导用户完成 CLI 登录；任务启动因认证失败被拦截时提示重新登录（凭据由 CLI 自身管理，Agentra 不存储）。
 - Agent 身份与运行时 Provider 分离。
 - 同一 Agent 可在多个 Work 中有独立 Assignment、Session 和工作目录。
 
