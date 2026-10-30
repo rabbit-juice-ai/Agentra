@@ -250,7 +250,7 @@ Workflow definition 建议包含：
 - rework_request_id nullable FK（request_changes 决策关联的返工任务；MVP 必填当 status=changes_requested）
 - requested_at
 - decided_at nullable
-- **幂等约束**：unique(node_run_id, round)——同一审批节点每轮至多一条记录；已进入终态（approved/changes_requested/rejected）的记录不可被后续请求修改（历史不可覆盖）。
+- **幂等约束**：unique(node_run_id, round)——同一审批节点每轮至多一条记录；已进入终态（approved/changes_requested/rejected/cancelled）的记录不可被后续请求修改（历史不可覆盖）。
 
 #### human_inputs
 - id PK
