@@ -1,3 +1,4 @@
+import { newId } from '@agentra/shared'
 import type { Database } from './database'
 
 /**
@@ -7,6 +8,12 @@ import type { Database } from './database'
 export type Migration = {
   version: number
   name: string
+  /**
+   * true 表示该迁移需要重建表（SQLite 不支持 ADD CONSTRAINT）。
+   * 运行时会在事务外关闭 foreign_keys、事务内执行 + foreign_key_check + 写 user_version，
+   * 失败回滚并恢复开关——`PRAGMA foreign_keys` 在事务内是 no-op，必须由运行器在事务外切换。
+   */
+  rebuildsTables?: boolean
   up: (db: Database) => void
 }
 
@@ -113,6 +120,168 @@ ALTER TABLE runtime_providers ADD COLUMN auth_method TEXT;
 ALTER TABLE runtime_providers ADD COLUMN health_detail TEXT;
 `
 
+const PHASE_2_SCHEMA = `
+-- 阶段 2 B1：Team / Work / Assignment 数据层（DATABASE §2.2 / §2.3 / §2.9）
+CREATE TABLE IF NOT EXISTS teams (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  settings_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  archived_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
+  team_role TEXT NOT NULL,
+  permissions_json TEXT NOT NULL DEFAULT '{}',
+  joined_at TEXT NOT NULL,
+  UNIQUE (team_id, agent_id)
+);
+
+CREATE TABLE IF NOT EXISTS works (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  objective TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (
+    status IN ('draft', 'active', 'paused', 'completed', 'cancelled', 'archived')
+  ),
+  priority TEXT NOT NULL DEFAULT 'normal',
+  root_path TEXT NOT NULL,
+  repository_path TEXT,
+  settings_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS work_teams (
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (work_id, team_id)
+);
+
+CREATE TABLE IF NOT EXISTS assignments (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
+  team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
+  work_role TEXT NOT NULL,
+  task_scope TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (
+    status IN ('active', 'paused', 'completed', 'removed')
+  ),
+  concurrency_limit INTEGER,
+  context_ref TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (work_id, agent_id)
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id TEXT PRIMARY KEY,
+  actor_type TEXT NOT NULL,
+  actor_id TEXT,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  details_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_members_agent ON team_members(agent_id);
+CREATE INDEX IF NOT EXISTS idx_works_status ON works(status);
+CREATE INDEX IF NOT EXISTS idx_assignments_work ON assignments(work_id);
+CREATE INDEX IF NOT EXISTS idx_assignments_agent ON assignments(agent_id);
+CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_logs(target_type, target_id);
+`
+
+/**
+ * 重建 agent_sessions，为 assignment_id 加外键（U6）。
+ * 必须在 foreign_keys=OFF 的事务里执行：`DROP TABLE` 父表会触发外键计数，
+ * 即使新表随后补回同样数据，COMMIT 仍会被判违约（已实测）。
+ */
+const AGENT_SESSIONS_REBUILD = `
+CREATE TABLE agent_sessions_v3 (
+  id TEXT PRIMARY KEY,
+  assignment_id TEXT REFERENCES assignments(id) ON DELETE SET NULL,
+  provider_id TEXT NOT NULL REFERENCES runtime_providers(id),
+  external_session_id TEXT,
+  context_ref TEXT,
+  status TEXT NOT NULL CHECK (status IN ('active', 'ended')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_active_at TEXT
+);
+
+INSERT INTO agent_sessions_v3 (
+  id, assignment_id, provider_id, external_session_id, context_ref, status,
+  created_at, updated_at, last_active_at
+)
+SELECT id, assignment_id, provider_id, external_session_id, context_ref, status,
+       created_at, updated_at, last_active_at
+FROM agent_sessions;
+
+DROP TABLE agent_sessions;
+ALTER TABLE agent_sessions_v3 RENAME TO agent_sessions;
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_assignment ON agent_sessions(assignment_id);
+`
+
+export type OrphanedSessionBinding = { sessionId: string; previousAssignmentId: string }
+
+/**
+ * U6：外键迁移前把孤儿引用置 NULL 并写审计日志。
+ * 返回被清理的记录，便于迁移与测试断言。
+ */
+export function clearOrphanedSessionBindings(db: Database, now: string): OrphanedSessionBinding[] {
+  const orphans = db
+    .prepare(
+      `SELECT id, assignment_id FROM agent_sessions
+       WHERE assignment_id IS NOT NULL
+         AND assignment_id NOT IN (SELECT id FROM assignments)`,
+    )
+    .all() as { id: string; assignment_id: string }[]
+
+  if (orphans.length === 0) return []
+
+  const insertAudit = db.prepare(
+    `INSERT INTO audit_logs (id, actor_type, actor_id, action, target_type, target_id, details_json, created_at)
+     VALUES (?, 'system', NULL, 'agent_session.assignment_orphaned', 'agent_session', ?, ?, ?)`,
+  )
+  for (const orphan of orphans) {
+    insertAudit.run(
+      newId('aud'),
+      orphan.id,
+      JSON.stringify({ previousAssignmentId: orphan.assignment_id }),
+      now,
+    )
+  }
+
+  db.prepare(
+    `UPDATE agent_sessions SET assignment_id = NULL
+     WHERE assignment_id IS NOT NULL
+       AND assignment_id NOT IN (SELECT id FROM assignments)`,
+  ).run()
+
+  return orphans.map((orphan) => ({
+    sessionId: orphan.id,
+    previousAssignmentId: orphan.assignment_id,
+  }))
+}
+
+function upPhase2(db: Database): void {
+  db.exec(PHASE_2_SCHEMA)
+  // 外键迁移前先清理孤儿：置 NULL + 审计（U6）；否则重建后的外键无法提交。
+  clearOrphanedSessionBindings(db, new Date().toISOString())
+  db.exec(AGENT_SESSIONS_REBUILD)
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -127,6 +296,12 @@ export const MIGRATIONS: Migration[] = [
     up: (db) => {
       db.exec(PHASE_1_TOOL_POLICY_SCHEMA)
     },
+  },
+  {
+    version: 3,
+    name: 'phase2_team_work_assignment',
+    rebuildsTables: true,
+    up: upPhase2,
   },
 ]
 
@@ -145,6 +320,46 @@ export type MigrationResult = {
   applied: string[]
 }
 
+/** user_version 不可参数化；version 来自本文件的常量整数，写入前做严格校验。 */
+function applyUserVersion(db: Database, version: number): void {
+  if (!Number.isInteger(version) || version <= 0) {
+    throw new Error(`invalid migration version: ${version}`)
+  }
+  db.exec(`PRAGMA user_version = ${version}`)
+}
+
+/**
+ * 重建表迁移：PRAGMA foreign_keys 在事务内是 no-op，只能在事务外切换。
+ * 事务内执行 up → 全库 foreign_key_check → 写 user_version，失败整体回滚并恢复开关。
+ */
+function runRebuildMigration(db: Database, migration: Migration): void {
+  db.exec('PRAGMA foreign_keys = OFF')
+  try {
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      migration.up(db)
+      const violations = db.prepare('PRAGMA foreign_key_check').all()
+      if (violations.length > 0) {
+        throw new Error(
+          `migration ${migration.name} left ${violations.length} foreign key violation(s): ${JSON.stringify(violations.slice(0, 5))}`,
+        )
+      }
+      applyUserVersion(db, migration.version)
+      db.exec('COMMIT')
+    } catch (error) {
+      try {
+        db.exec('ROLLBACK')
+      } catch {
+        // 回滚失败不掩盖原始异常。
+      }
+      throw error
+    }
+  } finally {
+    // 无论成败都必须恢复外键检查，不能把连接留在关闭状态。
+    db.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
 /** 执行所有未应用的迁移；返回迁移前后的版本与已应用迁移名。 */
 export function migrate(db: Database, migrations: Migration[] = MIGRATIONS): MigrationResult {
   const from = currentUserVersion(db)
@@ -153,14 +368,17 @@ export function migrate(db: Database, migrations: Migration[] = MIGRATIONS): Mig
 
   for (const migration of pending) {
     if (migration.version <= from) continue
+
+    if (migration.rebuildsTables) {
+      runRebuildMigration(db, migration)
+      applied.push(migration.name)
+      continue
+    }
+
     db.exec('BEGIN IMMEDIATE')
     try {
       migration.up(db)
-      // user_version 不可参数化；version 来自本文件的常量整数，先做严格校验。
-      if (!Number.isInteger(migration.version) || migration.version <= 0) {
-        throw new Error(`invalid migration version: ${migration.version}`)
-      }
-      db.exec(`PRAGMA user_version = ${migration.version}`)
+      applyUserVersion(db, migration.version)
       db.exec('COMMIT')
       applied.push(migration.name)
     } catch (error) {

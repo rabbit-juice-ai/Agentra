@@ -75,6 +75,14 @@ export class SessionRepository {
     return row ? toSession(row) : null
   }
 
+  /** 绑定到 Assignment（阶段 2）。assignment_id 在 v3 起有外键指向 assignments(id)。 */
+  bindAssignment(id: string, assignmentId: string, now: string): void {
+    const result = this.db
+      .prepare('UPDATE agent_sessions SET assignment_id = ?, updated_at = ? WHERE id = ?')
+      .run(assignmentId, now, id)
+    if (result.changes === 0) throw new Error(`session not found for bind: ${id}`)
+  }
+
   end(id: string, now: string): void {
     this.db
       .prepare(
