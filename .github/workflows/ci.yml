@@ -26,10 +26,12 @@ jobs:
           node-version: '22.13.0'
           cache: pnpm
 
-      # 需要下载 Electron 二进制：sqlite-electron.test.ts 在缺失时会 skipIf，
-      # 不下载就会变成"假绿"，所以这里不禁用下载。
+      # 需要下载 Electron 二进制：sqlite-electron.test.ts 在缺失时判失败（A3 起不再 skip），
+      # 不下载就会红，所以这里不禁用下载。
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
+      # 构建期闸门：发布向产物不得包含开发者执行控制台（U2，见 scripts/check-release-bundle.mjs）。
+      - run: pnpm build

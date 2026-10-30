@@ -31,6 +31,12 @@ function shortId(id: string): string {
   return id.length > 14 ? `${id.slice(0, 14)}…` : id
 }
 
+/**
+ * 构建产物检查用的标记（U2）：发布构建里这个字符串必须不存在。
+ * 由 scripts/check-release-bundle.mjs 在每次 build 后断言。
+ */
+export const DEV_CONSOLE_MARKER = 'agentra-dev-console'
+
 /** 执行控制台：选 Agent + prompt → 启动 → 实时输出 → 中断/取消 → 终态。 */
 export function ConsolePage({
   agents,
@@ -74,7 +80,7 @@ export function ConsolePage({
   }
 
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
+    <div data-agentra-console={DEV_CONSOLE_MARKER} style={{ display: 'grid', gap: 16 }}>
       <section style={panelStyle}>
         <h2 style={sectionTitleStyle}>启动执行</h2>
         <div

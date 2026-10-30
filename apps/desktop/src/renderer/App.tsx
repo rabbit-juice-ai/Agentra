@@ -58,7 +58,9 @@ function TabButton({
 
 export function App() {
   const store = useAgentra()
-  const [tab, setTab] = useState<Tab>('console')
+  // 构建期常量（不是运行时判断）：发布构建里 __AGENTRA_DEV_CONSOLE__ 被替换为 false，
+  // 默认落在 Agents 页；带控制台的构建才默认进控制台。
+  const [tab, setTab] = useState<Tab>(__AGENTRA_DEV_CONSOLE__ ? 'console' : 'agents')
 
   return (
     <div
@@ -84,9 +86,11 @@ export function App() {
       >
         <strong style={{ fontSize: 15 }}>Agentra</strong>
         <nav style={{ display: 'flex' }}>
-          <TabButton active={tab === 'console'} onClick={() => setTab('console')}>
-            执行控制台
-          </TabButton>
+          {__AGENTRA_DEV_CONSOLE__ && (
+            <TabButton active={tab === 'console'} onClick={() => setTab('console')}>
+              执行控制台
+            </TabButton>
+          )}
           <TabButton active={tab === 'agents'} onClick={() => setTab('agents')}>
             Agents
           </TabButton>
@@ -120,7 +124,7 @@ export function App() {
       )}
 
       <main style={{ padding: 20 }}>
-        {tab === 'console' ? (
+        {__AGENTRA_DEV_CONSOLE__ && tab === 'console' ? (
           <ConsolePage
             agents={store.agents}
             state={store.consoleState}

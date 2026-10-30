@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "AGENTRA_DEV_CONSOLE=1 electron-vite dev",
     "start": "electron-vite preview",
     "test": "vitest run",
-    "build": "electron-vite build",
+    "build": "electron-vite build && node ../../scripts/check-release-bundle.mjs",
+    "build:dev-console": "AGENTRA_DEV_CONSOLE=1 electron-vite build && node ../../scripts/check-release-bundle.mjs --expect-console",
     "typecheck:node": "tsc -p tsconfig.json --noEmit",
     "typecheck:web": "tsc -p src/renderer/tsconfig.json --noEmit"
   },

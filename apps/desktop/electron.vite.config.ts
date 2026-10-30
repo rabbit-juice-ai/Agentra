@@ -2,6 +2,13 @@ import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
+/**
+ * 开发者执行控制台的构建期开关（U2）。
+ * 默认 false：`pnpm build` 产出发布向产物，控制台页面与导航项在打包时被 tree-shaking 移除
+ * （不是运行时判断）。需要带控制台的构建显式设置 `AGENTRA_DEV_CONSOLE=1`，走 build:dev-console。
+ */
+const devConsole = process.env.AGENTRA_DEV_CONSOLE === '1'
+
 export default defineConfig({
   main: {
     // workspace 包必须打进 bundle：其 exports 指向 TS 源码，Electron 运行时无法直接
@@ -28,6 +35,11 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
     plugins: [react()],
+    // 构建期常量替换：源码里的 __AGENTRA_DEV_CONSOLE__ 被替换成字面量 false/true，
+    // 随后 Rollup/esbuild 删除死分支与只被死分支引用的模块。
+    define: {
+      __AGENTRA_DEV_CONSOLE__: JSON.stringify(devConsole),
+    },
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'src/renderer/index.html'),
