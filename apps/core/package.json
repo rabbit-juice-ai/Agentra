@@ -13,7 +13,6 @@
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\""
   },
   "dependencies": {
-    "@agentra/daemon": "workspace:*",
     "@agentra/protocol": "workspace:*",
     "@agentra/runtime-sdk": "workspace:*",
     "@agentra/shared": "workspace:*",
@@ -21,6 +20,7 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@agentra/daemon": "workspace:*",
     "@agentra/runtime-cli": "workspace:*",
     "@types/ws": "8.18.2"
   }

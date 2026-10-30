@@ -38,7 +38,7 @@ export type ProviderType = z.infer<typeof ProviderType>
 export const ProviderHealthStatus = z.enum(PROVIDER_HEALTH_STATUSES)
 export type ProviderHealthStatus = z.infer<typeof ProviderHealthStatus>
 
-export const RuntimeProvider = z.object({
+export const RuntimeProviderRecord = z.object({
   id: z.string().min(1),
   providerType: ProviderType,
   providerName: z.string().min(1),
@@ -50,7 +50,7 @@ export const RuntimeProvider = z.object({
   createdAt: IsoTimestamp,
   updatedAt: IsoTimestamp,
 })
-export type RuntimeProvider = z.infer<typeof RuntimeProvider>
+export type RuntimeProviderRecord = z.infer<typeof RuntimeProviderRecord>
 
 export const ExecutionState = z.enum(EXECUTION_STATES)
 export type ExecutionState = z.infer<typeof ExecutionState>

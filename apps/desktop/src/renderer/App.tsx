@@ -139,6 +139,7 @@ export function App() {
             onCreate={store.actions.createAgent}
             onUpdate={store.actions.updateAgent}
             onArchive={store.actions.archiveAgent}
+            onSetStatus={store.actions.setAgentStatus}
             onRefreshProviders={store.actions.refreshProviderDiscovery}
           />
         )}

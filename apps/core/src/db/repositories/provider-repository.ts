@@ -1,8 +1,8 @@
 import {
   type ProviderHealthStatus,
   type RuntimeInfo,
-  type RuntimeProvider,
-  RuntimeProvider as RuntimeProviderSchema,
+  type RuntimeProviderRecord,
+  RuntimeProviderRecord as RuntimeProviderSchema,
 } from '@agentra/protocol'
 import { ProviderCapabilities } from '@agentra/runtime-sdk'
 import type { Database } from '../database'
@@ -21,7 +21,7 @@ type ProviderRow = {
   updated_at: string
 }
 
-function toProvider(row: ProviderRow): RuntimeProvider {
+function toProvider(row: ProviderRow): RuntimeProviderRecord {
   return RuntimeProviderSchema.parse({
     id: row.id,
     providerType: row.provider_type,
@@ -40,11 +40,11 @@ function toProvider(row: ProviderRow): RuntimeProvider {
   })
 }
 
-/** RuntimeProvider Registry 的持久化层：发现结果 upsert，不物理删除。 */
+/** RuntimeProviderRecord Registry 的持久化层：发现结果 upsert，不物理删除。 */
 export class ProviderRepository {
   constructor(private readonly db: Database) {}
 
-  upsertDiscovered(info: RuntimeInfo, now: string): RuntimeProvider {
+  upsertDiscovered(info: RuntimeInfo, now: string): RuntimeProviderRecord {
     const capabilities = serializeJsonColumn(
       ProviderCapabilities,
       info.capabilities,
@@ -83,14 +83,14 @@ export class ProviderRepository {
     return provider
   }
 
-  list(): RuntimeProvider[] {
+  list(): RuntimeProviderRecord[] {
     const rows = this.db
       .prepare('SELECT * FROM runtime_providers ORDER BY provider_name ASC, id ASC')
       .all() as ProviderRow[]
     return rows.map(toProvider)
   }
 
-  get(id: string): RuntimeProvider | null {
+  get(id: string): RuntimeProviderRecord | null {
     const row = this.db.prepare('SELECT * FROM runtime_providers WHERE id = ?').get(id) as
       | ProviderRow
       | undefined

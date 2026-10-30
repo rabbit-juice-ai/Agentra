@@ -2,7 +2,7 @@ import type {
   AgentCreateParams,
   AgentProfile,
   AgentUpdateParams,
-  RuntimeProvider,
+  RuntimeProviderRecord,
 } from '@agentra/protocol'
 import { type FormEvent, useEffect, useState } from 'react'
 import {
@@ -16,7 +16,7 @@ import {
 } from './styles'
 
 type Props = {
-  providers: RuntimeProvider[]
+  providers: RuntimeProviderRecord[]
   initial: AgentProfile | null
   busy: boolean
   onSubmit: (params: AgentCreateParams | AgentUpdateParams) => Promise<boolean>
@@ -127,7 +127,7 @@ export function AgentForm({ providers, initial, busy, onSubmit, onCancel }: Prop
           </select>
         </label>
         <label>
-          <span style={labelStyle}>最大并发</span>
+          <span style={labelStyle}>最大并发（阶段 2 生效）</span>
           <input
             style={inputStyle}
             type="number"

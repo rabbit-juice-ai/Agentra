@@ -16,7 +16,7 @@ import {
   PROTOCOL_VERSION,
   RpcMethodError,
   type RuntimeEvent,
-  type RuntimeProvider,
+  type RuntimeProviderRecord,
 } from '@agentra/protocol'
 import { executionScratchDir, newId } from '@agentra/shared'
 import type { RuntimeClient } from '../daemon/daemon-client'
@@ -448,7 +448,7 @@ export class ExecutionService {
     this.hub.publish(event)
   }
 
-  private resolveProvider(agent: AgentProfile): RuntimeProvider {
+  private resolveProvider(agent: AgentProfile): RuntimeProviderRecord {
     const candidates = this.registry.list()
     if (candidates.length === 0) {
       throw new RpcMethodError(
@@ -478,7 +478,7 @@ export class ExecutionService {
     return healthy ?? fallback
   }
 
-  private assertProviderUsable(provider: RuntimeProvider): void {
+  private assertProviderUsable(provider: RuntimeProviderRecord): void {
     if (!provider.executablePath) {
       throw new RpcMethodError(
         'CLI_UNAVAILABLE',

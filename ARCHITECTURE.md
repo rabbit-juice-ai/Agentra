@@ -119,6 +119,8 @@ Packages 建议（状态列区分已落地包与规划包；新增包须在此�
 | `protocol-a2a` | A2A 接入 | 计划中（阶段 7） |
 | `ui` | 共享 UI 组件 | 计划中（阶段 3 起按需抽取） |
 
+依赖声明须与代码实际引用一致：仅用于 workspace 链接或构建顺序、代码中并不 import 的包列入 `devDependencies`（例如 Core 对 `@agentra/daemon`——Core 通过文件路径拉起 Daemon，不引用其代码）；测试运行所需的工具必须在被测包自身声明（例如 desktop 的 `vitest`），不得依赖根目录的提升。
+
 ## 5. Agent Runtime 抽象
 
 建议接口（示意，实施时补充严格类型和错误模型）：
@@ -155,6 +157,10 @@ Provider 应声明 capabilities：
 - unsupported：不支持
 
 禁止把“停止后重新启动”标记成“原生恢复”。
+
+**能力声明口径（阶段 1 修订）**：capabilities 描述**当前适配器可被调用方使用的能力**，不是底层 CLI 的原始能力。声明 `native` / `emulated` 必须有可执行实现路径；声明 `unsupported` 的能力不得提供可用路径，调用必须返回 `CAPABILITY_UNSUPPORTED` 且不改变执行状态。该不变式由能力一致性测试守护（`packages/runtime-cli/src/capabilities-consistency.test.ts`），声明与实现锚点必须一一对应。
+
+**类型归属（阶段 1 修订）**：`packages/runtime-sdk` 是运行时类型的**唯一来源**——`RuntimeInfo`、`RuntimeProvider` 接口与能力模型均在 SDK 定义；`packages/protocol` 只做 Zod schema 包装并保留编译期护栏（`satisfies`），不得重定义同一形状。持久化的 Provider 记录在 protocol 中命名为 `RuntimeProviderRecord`，与 SDK 的 `RuntimeProvider` 接口区分。
 
 ## 6. 协议职责边界
 
@@ -205,6 +211,12 @@ Provider 应声明 capabilities：
 - artifact.created
 
 **命名分层说明（Minor 处理，D-017）**：本节事件名为**协议层**命名（RPC/事件信封，供跨进程传输与去重）；WORKFLOW.md §8 的事件清单为**领域语义层**（面向业务状态）。两套命名在 `packages/protocol` 中集中定义映射，例如 `approval.decided`（协议层，带 decision 字段）对应 `approval.approved / approval.changes_requested / approval.rejected`（领域层）；`workflow.node.completed` 对应 `node.succeeded`。实现时以协议层 schema 为准，领域事件由 Core 在写入 workflow_events 时派生。
+
+### 7.1 错误码与协议版本（阶段 1 修订）
+
+- **错误码唯一来源**为 `packages/protocol/src/envelope.ts` 的 `RpcErrorCode`，共 12 个：`PARSE_ERROR`、`INVALID_PARAMS`、`METHOD_NOT_FOUND`、`VERSION_MISMATCH`、`NOT_READY`、`INTERNAL`、`CLI_UNAVAILABLE`、`CLI_NOT_AUTHENTICATED`、`CAPABILITY_UNSUPPORTED`、`EXECUTION_NOT_FOUND`、`AGENT_NOT_FOUND`、`PROVIDER_NOT_FOUND`。
+- **适配器错误码必须先映射再跨进程**：Runtime SDK 的 `RuntimeErrorCode` 与协议错误码同名，但 SDK 多出的 `RUNTIME_ERROR` 在协议层没有对应值，统一映射为 `INTERNAL` 并保留原始 message；不为此扩展协议枚举。
+- **协议版本号唯一来源**为 `PROTOCOL_VERSION`（`packages/protocol/src/version.ts`），禁止字面量。RPC 信封、健康响应与 Core/Daemon 的 pid 文件均引用该常量；健康响应的 `protocolVersion` 以字面量类型校验，版本不匹配的响应必须被拒绝而不是宽松接受。
 
 ## 8. 工作流执行与事务边界
 
@@ -279,6 +291,8 @@ Provider 应声明 capabilities：
 - correlationId
 
 日志应支持结构化存储和按关联 ID 查询。敏感内容需脱敏。
+
+**日志文件的写入权归启动方**：Core 与 Daemon 分别由各自的 launcher 以 stdio 重定向写入 `<role>.log`，logger 本身只写 stderr。两处同时写同一文件会让每行重复，禁止；在前台直接运行（`pnpm dev:*`）时日志落在终端，这是期望行为。
 
 ## 13. 测试策略
 

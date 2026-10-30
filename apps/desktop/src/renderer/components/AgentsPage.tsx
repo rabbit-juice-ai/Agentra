@@ -2,7 +2,7 @@ import type {
   AgentCreateParams,
   AgentProfile,
   AgentUpdateParams,
-  RuntimeProvider,
+  RuntimeProviderRecord,
 } from '@agentra/protocol'
 import { useState } from 'react'
 import { AgentForm } from './AgentForm'
@@ -19,11 +19,13 @@ import {
 
 type Props = {
   agents: AgentProfile[]
-  providers: RuntimeProvider[]
+  providers: RuntimeProviderRecord[]
   busy: boolean
   onCreate: (params: AgentCreateParams) => Promise<boolean>
   onUpdate: (params: AgentUpdateParams) => Promise<boolean>
   onArchive: (id: string) => Promise<void>
+  /** 停用只阻止新 Execution，不中断已运行任务（用户 U4）。 */
+  onSetStatus: (id: string, status: 'active' | 'disabled') => Promise<void>
   onRefreshProviders: () => Promise<void>
 }
 
@@ -34,6 +36,7 @@ export function AgentsPage({
   onCreate,
   onUpdate,
   onArchive,
+  onSetStatus,
   onRefreshProviders,
 }: Props) {
   const [formMode, setFormMode] = useState<'none' | 'create' | 'edit'>('none')
@@ -90,7 +93,7 @@ export function AgentsPage({
                   <th style={{ padding: '6px 4px' }}>角色</th>
                   <th style={{ padding: '6px 4px' }}>Provider</th>
                   <th style={{ padding: '6px 4px' }}>状态</th>
-                  <th style={{ padding: '6px 4px' }}>并发</th>
+                  <th style={{ padding: '6px 4px' }}>并发（阶段 2 生效）</th>
                   <th style={{ padding: '6px 4px' }} />
                 </tr>
               </thead>
@@ -115,6 +118,22 @@ export function AgentsPage({
                       >
                         编辑
                       </button>
+                      {agent.status !== 'archived' && (
+                        <button
+                          type="button"
+                          style={{ ...buttonStyle, marginRight: 6 }}
+                          onClick={() =>
+                            void onSetStatus(
+                              agent.id,
+                              agent.status === 'active' ? 'disabled' : 'active',
+                            )
+                          }
+                          disabled={busy}
+                          title="停用只阻止新执行，不中断已运行任务"
+                        >
+                          {agent.status === 'active' ? '停用' : '启用'}
+                        </button>
+                      )}
                       <button
                         type="button"
                         style={dangerButtonStyle}

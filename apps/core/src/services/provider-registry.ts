@@ -1,4 +1,4 @@
-import { RpcMethodError, type RuntimeProvider } from '@agentra/protocol'
+import { RpcMethodError, type RuntimeProviderRecord } from '@agentra/protocol'
 import type { RuntimeClient } from '../daemon/daemon-client'
 import type { ProviderRepository } from '../db/repositories/provider-repository'
 
@@ -9,7 +9,7 @@ export type RegistryLogger = {
 }
 
 /**
- * RuntimeProvider Registry：发现结果持久化到 runtime_providers，Core 只读 DB。
+ * RuntimeProviderRecord Registry：发现结果持久化到 runtime_providers，Core 只读 DB。
  * Daemon 负责探测（路径/版本/认证），Core 负责业务侧选择。
  */
 export class ProviderRegistry {
@@ -20,17 +20,17 @@ export class ProviderRegistry {
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
-  list(): RuntimeProvider[] {
+  list(): RuntimeProviderRecord[] {
     return this.providers.list()
   }
 
-  get(id: string): RuntimeProvider {
+  get(id: string): RuntimeProviderRecord {
     const provider = this.providers.get(id)
     if (!provider) throw new RpcMethodError('PROVIDER_NOT_FOUND', `provider not found: ${id}`)
     return provider
   }
 
-  async refresh(): Promise<RuntimeProvider[]> {
+  async refresh(): Promise<RuntimeProviderRecord[]> {
     const infos = await this.runtime.discover()
     const now = this.now()
     const updated = infos.map((info) => this.providers.upsertDiscovered(info, now))

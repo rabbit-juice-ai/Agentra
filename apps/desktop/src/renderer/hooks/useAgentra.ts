@@ -3,7 +3,7 @@ import type {
   AgentProfile,
   AgentUpdateParams,
   HealthResult,
-  RuntimeProvider,
+  RuntimeProviderRecord,
 } from '@agentra/protocol'
 import { useCallback, useEffect, useReducer, useState } from 'react'
 import { ApiError, api } from '../services/api'
@@ -22,7 +22,7 @@ const POLL_INTERVAL_MS = 5000
  */
 export function useAgentra() {
   const [agents, setAgents] = useState<AgentProfile[]>([])
-  const [providers, setProviders] = useState<RuntimeProvider[]>([])
+  const [providers, setProviders] = useState<RuntimeProviderRecord[]>([])
   const [consoleState, dispatch] = useReducer(consoleReducer, initialConsoleState)
   const [coreHealth, setCoreHealth] = useState<HealthResult | null>(null)
   const [daemonHealth, setDaemonHealth] = useState<HealthResult | null>(null)
@@ -157,6 +157,22 @@ export function useAgentra() {
     [refreshAgents, reportError],
   )
 
+  const setAgentStatus = useCallback(
+    async (id: string, status: 'active' | 'disabled'): Promise<void> => {
+      setBusy(true)
+      try {
+        await api.updateAgent({ id, status })
+        await refreshAgents()
+        setBanner(status === 'active' ? 'Agent 已启用' : 'Agent 已停用（不影响已运行任务）')
+      } catch (error) {
+        reportError(error)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshAgents, reportError],
+  )
+
   const refreshProviderDiscovery = useCallback(async (): Promise<void> => {
     setBusy(true)
     try {
@@ -247,6 +263,7 @@ export function useAgentra() {
       createAgent,
       updateAgent,
       archiveAgent,
+      setAgentStatus,
       refreshProviderDiscovery,
       startExecution,
       selectExecution,

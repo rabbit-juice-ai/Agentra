@@ -230,10 +230,10 @@ export class ClaudeCodeProvider implements RuntimeProvider {
   }
 
   async resume(): Promise<ExecutionHandle> {
-    // 能力声明为 native 指 CLI 支持 --resume；阶段 1 不暴露恢复入口（无 Work/审批上下文）。
+    // 与 CLAUDE_CODE_CAPABILITIES.resume=unsupported 一致：未实现即不得提供可用路径。
     throw new RuntimeError(
-      'RUNTIME_ERROR',
-      'resume is not exposed in phase 1; start a new execution instead',
+      'CAPABILITY_UNSUPPORTED',
+      'provider declares resume=unsupported; start a new execution instead',
     )
   }
 

@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { PROTOCOL_VERSION } from '@agentra/protocol'
 import { ClaudeCodeProvider } from '@agentra/runtime-cli'
 import { agentraHome, agentraPaths, createLogger, ensureDirs, isDirectRun } from '@agentra/shared'
 import { startNdjsonServer } from './rpc/ndjson-server'
@@ -13,7 +14,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const home = agentraHome(env)
   const paths = agentraPaths(home)
   ensureDirs(paths)
-  const logger = createLogger('daemon', paths.daemonLog)
+  const logger = createLogger('daemon')
 
   const hub = new RuntimeEventHub()
   const claude = new ClaudeCodeProvider({ discovery: { env } })
@@ -45,7 +46,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     JSON.stringify({
       pid: process.pid,
       startedAt: new Date().toISOString(),
-      protocolVersion: '1',
+      protocolVersion: PROTOCOL_VERSION,
       socketPath: paths.daemonSocket,
     }),
     { mode: 0o600 },

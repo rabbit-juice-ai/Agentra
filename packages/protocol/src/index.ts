@@ -9,7 +9,7 @@ export {
   ProviderHealthStatus,
   ProviderType,
   RuntimeInfo,
-  RuntimeProvider,
+  RuntimeProviderRecord,
 } from './dto'
 export {
   RpcError,

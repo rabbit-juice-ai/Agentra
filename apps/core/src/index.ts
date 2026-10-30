@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { PROTOCOL_VERSION } from '@agentra/protocol'
 import { agentraHome, agentraPaths, createLogger, ensureDirs, isDirectRun } from '@agentra/shared'
 import { DaemonClient } from './daemon/daemon-client'
 import { ensureDaemon } from './daemon-launcher'
@@ -22,7 +23,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const home = agentraHome(env)
   const paths = agentraPaths(home)
   ensureDirs(paths)
-  const logger = createLogger('core', paths.coreLog)
+  const logger = createLogger('core')
 
   // 启动链：Core 负责 Daemon 存活（探活优先，附着已有实例）。
   const daemon = await ensureDaemon(paths, env)
@@ -80,7 +81,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     JSON.stringify({
       pid: process.pid,
       startedAt: new Date().toISOString(),
-      protocolVersion: '1',
+      protocolVersion: PROTOCOL_VERSION,
       socketPath: paths.coreSocket,
     }),
     { mode: 0o600 },

@@ -6,7 +6,7 @@ import type {
   ExecutionLog,
   ExecutionSendMessageParams,
   RuntimeEvent,
-  RuntimeProvider,
+  RuntimeProviderRecord,
 } from '@agentra/protocol'
 import type { RpcResult } from '../../shared/api'
 
@@ -41,9 +41,9 @@ export const api = {
   archiveAgent: async (id: string): Promise<AgentProfile> =>
     (await unwrap(window.agentra.archiveAgent({ id }))).agent,
 
-  listProviders: async (): Promise<RuntimeProvider[]> =>
+  listProviders: async (): Promise<RuntimeProviderRecord[]> =>
     (await unwrap(window.agentra.listProviders())).providers,
-  refreshProviders: async (): Promise<RuntimeProvider[]> =>
+  refreshProviders: async (): Promise<RuntimeProviderRecord[]> =>
     (await unwrap(window.agentra.refreshProviders())).providers,
 
   startExecution: async (agentId: string, prompt: string): Promise<Execution> =>

@@ -1,9 +1,9 @@
-import type { RuntimeProvider } from '@agentra/protocol'
+import type { RuntimeProviderRecord } from '@agentra/protocol'
 import { StatusBadge } from './StatusBadge'
 import { buttonStyle, colors, panelStyle, sectionTitleStyle } from './styles'
 
 type Props = {
-  providers: RuntimeProvider[]
+  providers: RuntimeProviderRecord[]
   busy: boolean
   onRefresh: () => void
 }

@@ -25,19 +25,29 @@ function resolveElectronBinary(): string | null {
 }
 
 const electronBinary = resolveElectronBinary()
-const available = electronBinary !== null && fs.existsSync(scriptPath)
 
 const dirs: string[] = []
 afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-describe.skipIf(!available)('electron runtime sqlite verification', () => {
+describe('electron runtime sqlite verification', () => {
   it('passes schema, parameterized writes, WAL, snapshot backup and integrity_check', () => {
+    // D-017 阶段 1 验收⑦：本项是"必须完成"的验证，缺失运行环境时判失败而不是 skip——
+    // skip 会让没装 Electron 的环境（含禁用二进制下载的 CI）显示为绿色。
+    if (!electronBinary) {
+      throw new Error(
+        'Electron 二进制未找到（apps/desktop/node_modules/electron）。该项验收不可跳过，请先执行 pnpm install。',
+      )
+    }
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(`Electron SQLite 验证脚本缺失：${scriptPath}`)
+    }
+
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agt-ele-'))
     dirs.push(dataDir)
 
-    const result = spawnSync(electronBinary as string, [scriptPath, dataDir], {
+    const result = spawnSync(electronBinary, [scriptPath, dataDir], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       encoding: 'utf8',
       timeout: 120_000,
