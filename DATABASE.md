@@ -182,10 +182,10 @@ Provider 是运行时实现，AgentProfile 是员工身份。不得把两者合�
 发布版本不可修改。模板编辑应产生新 draft/version。
 
 Workflow definition 建议包含：
-- nodes：节点 key、type、label、config、position
+- nodes：节点 key、type、label、config、position（MVP type 白名单：start、agent_task、parallel_split、join、human_approval、condition、end；发布时含其他值拒绝 UNKNOWN_NODE_TYPE）
 - edges：source、target、condition、edge type
 - branches：逻辑分支标识（可由图结构推导，但运行时需有稳定实例 ID）
-- settings：并发、失败策略、超时、人工参与默认策略
+- settings：并发、失败策略、超时、reworkPolicy（默认轮次上限 2）、人工参与默认策略
 - schemaVersion
 
 ### 2.6 Workflow Runtime
