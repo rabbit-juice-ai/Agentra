@@ -2,11 +2,17 @@ import type {
   AgentCreateParams,
   AgentProfile,
   AgentUpdateParams,
+  AssignmentCreateParams,
+  AssignmentStatus,
   Execution,
   ExecutionLog,
   ExecutionSendMessageParams,
   RuntimeEvent,
   RuntimeProviderRecord,
+  TeamCreateParams,
+  TeamMemberAddParams,
+  WorkCreateParams,
+  WorkStatus,
 } from '@agentra/protocol'
 import type { RpcResult } from '../../shared/api'
 
@@ -62,6 +68,50 @@ export const api = {
     (await unwrap(window.agentra.interruptExecution({ executionId }))).interrupted,
   sendMessage: async (params: ExecutionSendMessageParams): Promise<void> => {
     await unwrap(window.agentra.sendExecutionMessage(params))
+  },
+
+  listTeams: async (includeArchived = false) =>
+    (await unwrap(window.agentra.listTeams({ includeArchived }))).teams,
+  createTeam: async (params: TeamCreateParams) =>
+    (await unwrap(window.agentra.createTeam(params))).team,
+  listTeamMembers: async (teamId: string) =>
+    (await unwrap(window.agentra.listTeamMembers({ teamId }))).members,
+  addTeamMember: async (params: TeamMemberAddParams) =>
+    (await unwrap(window.agentra.addTeamMember(params))).member,
+
+  listWorks: async (includeArchived = false) =>
+    (await unwrap(window.agentra.listWorks({ includeArchived }))).works,
+  createWork: async (params: WorkCreateParams) =>
+    (await unwrap(window.agentra.createWork(params))).work,
+  linkWorkTeam: async (workId: string, teamId: string) =>
+    (await unwrap(window.agentra.linkWorkTeam({ workId, teamId }))).work,
+  workAction: async (
+    action: 'activate' | 'pause' | 'resume' | 'complete',
+    id: string,
+  ): Promise<{ id: string; status: WorkStatus }> => {
+    const call = {
+      activate: window.agentra.activateWork,
+      pause: window.agentra.pauseWork,
+      resume: window.agentra.resumeWork,
+      complete: window.agentra.completeWork,
+    }[action]
+    return (await unwrap(call({ id }))).work
+  },
+
+  listAssignments: async (workId: string) =>
+    (await unwrap(window.agentra.listAssignments({ workId }))).assignments,
+  createAssignment: async (params: AssignmentCreateParams) =>
+    (await unwrap(window.agentra.createAssignment(params))).assignment,
+  assignmentAction: async (
+    action: 'pause' | 'resume' | 'complete',
+    id: string,
+  ): Promise<{ id: string; status: AssignmentStatus }> => {
+    const call = {
+      pause: window.agentra.pauseAssignment,
+      resume: window.agentra.resumeAssignment,
+      complete: window.agentra.completeAssignment,
+    }[action]
+    return (await unwrap(call({ id }))).assignment
   },
 
   onEvent: (listener: (event: RuntimeEvent) => void): (() => void) =>

@@ -8,6 +8,8 @@ export {
 export {
   AgentProfile,
   AgentStatus,
+  Assignment,
+  AssignmentStatus,
   DEFAULT_TOOL_PERMISSIONS,
   Execution,
   ExecutionLog,
@@ -18,7 +20,12 @@ export {
   ProviderType,
   RuntimeInfo,
   RuntimeProviderRecord,
+  Team,
+  TeamMember,
+  TeamStatus,
   ToolPermissions,
+  Work,
+  WorkStatus,
 } from './dto'
 export {
   RpcError,
@@ -54,6 +61,21 @@ export {
   AgentUpdateParams,
   EmptyParams,
 } from './methods/agent'
+export {
+  ASSIGNMENT_COMPLETE_METHOD,
+  ASSIGNMENT_CREATE_METHOD,
+  ASSIGNMENT_GET_METHOD,
+  ASSIGNMENT_LIST_METHOD,
+  ASSIGNMENT_PAUSE_METHOD,
+  ASSIGNMENT_REMOVE_METHOD,
+  ASSIGNMENT_RESUME_METHOD,
+  AssignmentCreateParams,
+  AssignmentGetParams,
+  AssignmentIdParams,
+  AssignmentListParams,
+  AssignmentListResult,
+  AssignmentResult,
+} from './methods/assignment'
 export {
   DAEMON_DISCOVER_METHOD,
   DAEMON_EXECUTION_CANCEL_METHOD,
@@ -120,4 +142,44 @@ export {
   RuntimeProviderListResult,
   RuntimeProviderRefreshParams,
 } from './methods/runtime'
+export {
+  TEAM_ARCHIVE_METHOD,
+  TEAM_CREATE_METHOD,
+  TEAM_GET_METHOD,
+  TEAM_LIST_METHOD,
+  TEAM_MEMBER_ADD_METHOD,
+  TEAM_MEMBER_LIST_METHOD,
+  TEAM_MEMBER_REMOVE_METHOD,
+  TeamArchiveParams,
+  TeamCreateParams,
+  TeamGetParams,
+  TeamListParams,
+  TeamListResult,
+  TeamMemberAddParams,
+  TeamMemberListParams,
+  TeamMemberListResult,
+  TeamMemberRemoveParams,
+  TeamMemberRemoveResult,
+  TeamMemberResult,
+  TeamResult,
+} from './methods/team'
+export {
+  WORK_ACTIVATE_METHOD,
+  WORK_ARCHIVE_METHOD,
+  WORK_COMPLETE_METHOD,
+  WORK_CREATE_METHOD,
+  WORK_GET_METHOD,
+  WORK_LINK_TEAM_METHOD,
+  WORK_LIST_METHOD,
+  WORK_PAUSE_METHOD,
+  WORK_RESUME_METHOD,
+  WORK_TERMINATE_METHOD,
+  WorkCreateParams,
+  WorkGetParams,
+  WorkIdParams,
+  WorkLinkTeamParams,
+  WorkListParams,
+  WorkListResult,
+  WorkResult,
+} from './methods/work'
 export { PROTOCOL_VERSION, ProtocolVersionSchema } from './version'

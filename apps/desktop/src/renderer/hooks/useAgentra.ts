@@ -2,8 +2,16 @@ import type {
   AgentCreateParams,
   AgentProfile,
   AgentUpdateParams,
+  Assignment,
+  AssignmentCreateParams,
   HealthResult,
   RuntimeProviderRecord,
+  Team,
+  TeamCreateParams,
+  TeamMember,
+  TeamMemberAddParams,
+  Work,
+  WorkCreateParams,
 } from '@agentra/protocol'
 import { useCallback, useEffect, useReducer, useState } from 'react'
 import { ApiError, api } from '../services/api'
@@ -22,6 +30,10 @@ const POLL_INTERVAL_MS = 5000
  */
 export function useAgentra() {
   const [agents, setAgents] = useState<AgentProfile[]>([])
+  const [teams, setTeams] = useState<Team[]>([])
+  const [works, setWorks] = useState<Work[]>([])
+  const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({})
+  const [assignmentsByWork, setAssignmentsByWork] = useState<Record<string, Assignment[]>>({})
   const [providers, setProviders] = useState<RuntimeProviderRecord[]>([])
   const [consoleState, dispatch] = useReducer(consoleReducer, initialConsoleState)
   const [coreHealth, setCoreHealth] = useState<HealthResult | null>(null)
@@ -41,6 +53,46 @@ export function useAgentra() {
       reportError(error)
     }
   }, [reportError])
+
+  const refreshTeams = useCallback(async () => {
+    try {
+      setTeams(await api.listTeams())
+    } catch (error) {
+      reportError(error)
+    }
+  }, [reportError])
+
+  const refreshWorks = useCallback(async () => {
+    try {
+      setWorks(await api.listWorks())
+    } catch (error) {
+      reportError(error)
+    }
+  }, [reportError])
+
+  const refreshTeamMembers = useCallback(
+    async (teamId: string) => {
+      try {
+        const members = await api.listTeamMembers(teamId)
+        setTeamMembers((current) => ({ ...current, [teamId]: members }))
+      } catch (error) {
+        reportError(error)
+      }
+    },
+    [reportError],
+  )
+
+  const refreshAssignments = useCallback(
+    async (workId: string) => {
+      try {
+        const assignments = await api.listAssignments(workId)
+        setAssignmentsByWork((current) => ({ ...current, [workId]: assignments }))
+      } catch (error) {
+        reportError(error)
+      }
+    },
+    [reportError],
+  )
 
   const refreshProviders = useCallback(async () => {
     try {
@@ -90,12 +142,21 @@ export function useAgentra() {
     void refreshProviders()
     void refreshExecutions()
     void refreshHealth()
+    void refreshTeams()
+    void refreshWorks()
     const timer = setInterval(() => {
       void refreshHealth()
       void refreshExecutions()
     }, POLL_INTERVAL_MS)
     return () => clearInterval(timer)
-  }, [refreshAgents, refreshProviders, refreshExecutions, refreshHealth])
+  }, [
+    refreshAgents,
+    refreshProviders,
+    refreshExecutions,
+    refreshHealth,
+    refreshTeams,
+    refreshWorks,
+  ])
 
   // Core 就绪（含重连）后补拉首屏数据：启动时 renderer 常先于 Core 就绪，首拉会撞 NOT_READY，
   // 而 agents / providers 没有轮询，不补拉就会一直是空列表。
@@ -105,9 +166,18 @@ export function useAgentra() {
       void refreshProviders()
       void refreshExecutions()
       void refreshHealth()
+      void refreshTeams()
+      void refreshWorks()
       setBanner((current) => (current?.includes('NOT_READY') ? null : current))
     })
-  }, [refreshAgents, refreshProviders, refreshExecutions, refreshHealth])
+  }, [
+    refreshAgents,
+    refreshProviders,
+    refreshExecutions,
+    refreshHealth,
+    refreshTeams,
+    refreshWorks,
+  ])
 
   useEffect(() => {
     return api.onEvent((event) => {
@@ -262,8 +332,135 @@ export function useAgentra() {
     [reportError],
   )
 
+  const createTeam = useCallback(
+    async (params: TeamCreateParams): Promise<boolean> => {
+      setBusy(true)
+      try {
+        await api.createTeam(params)
+        await refreshTeams()
+        setBanner('Team 已创建')
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshTeams, reportError],
+  )
+
+  const addTeamMember = useCallback(
+    async (params: TeamMemberAddParams): Promise<boolean> => {
+      setBusy(true)
+      try {
+        await api.addTeamMember(params)
+        await refreshTeamMembers(params.teamId)
+        setBanner('成员已加入 Team')
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshTeamMembers, reportError],
+  )
+
+  const createWork = useCallback(
+    async (params: WorkCreateParams): Promise<boolean> => {
+      setBusy(true)
+      try {
+        await api.createWork(params)
+        await refreshWorks()
+        setBanner('Work 已创建')
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshWorks, reportError],
+  )
+
+  const linkWorkTeam = useCallback(
+    async (workId: string, teamId: string): Promise<void> => {
+      setBusy(true)
+      try {
+        await api.linkWorkTeam(workId, teamId)
+        await refreshWorks()
+        setBanner('Team 已关联到 Work')
+      } catch (error) {
+        reportError(error)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshWorks, reportError],
+  )
+
+  const workAction = useCallback(
+    async (action: 'activate' | 'pause' | 'resume' | 'complete', id: string): Promise<void> => {
+      setBusy(true)
+      try {
+        await api.workAction(action, id)
+        await refreshWorks()
+        const label = { activate: '激活', pause: '暂停', resume: '恢复', complete: '完成' }[action]
+        setBanner(`Work 已${label}`)
+      } catch (error) {
+        reportError(error)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshWorks, reportError],
+  )
+
+  const createAssignment = useCallback(
+    async (params: AssignmentCreateParams): Promise<boolean> => {
+      setBusy(true)
+      try {
+        await api.createAssignment(params)
+        await refreshAssignments(params.workId)
+        setBanner('Assignment 已创建')
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshAssignments, reportError],
+  )
+
+  const assignmentAction = useCallback(
+    async (action: 'pause' | 'resume' | 'complete', workId: string, id: string): Promise<void> => {
+      setBusy(true)
+      try {
+        await api.assignmentAction(action, id)
+        await refreshAssignments(workId)
+        setBanner(
+          `Assignment 已${action === 'pause' ? '暂停' : action === 'resume' ? '恢复' : '完成'}`,
+        )
+      } catch (error) {
+        reportError(error)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshAssignments, reportError],
+  )
+
   return {
     agents,
+    teams,
+    works,
+    teamMembers,
+    assignmentsByWork,
     providers,
     consoleState,
     coreHealth,
@@ -283,6 +480,15 @@ export function useAgentra() {
       interruptExecution,
       sendMessage,
       refreshExecutions,
+      createTeam,
+      addTeamMember,
+      refreshTeamMembers,
+      createWork,
+      linkWorkTeam,
+      workAction,
+      createAssignment,
+      refreshAssignments,
+      assignmentAction,
     },
   }
 }

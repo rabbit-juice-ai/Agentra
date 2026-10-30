@@ -6,16 +6,23 @@ import { ensureDaemon } from './daemon-launcher'
 import { openDatabase } from './db/database'
 import { migrate } from './db/migrations'
 import { AgentRepository } from './db/repositories/agent-repository'
+import { AssignmentRepository } from './db/repositories/assignment-repository'
+import { AuditRepository } from './db/repositories/audit-repository'
 import { ExecutionLogRepository } from './db/repositories/execution-log-repository'
 import { ExecutionRepository } from './db/repositories/execution-repository'
 import { ProviderRepository } from './db/repositories/provider-repository'
 import { SessionRepository } from './db/repositories/session-repository'
+import { TeamRepository } from './db/repositories/team-repository'
+import { WorkRepository } from './db/repositories/work-repository'
 import { coreMethods } from './rpc/methods'
 import { startWsServer } from './rpc/ws-server'
 import { AgentService } from './services/agent-service'
+import { AssignmentService } from './services/assignment-service'
 import { CoreEventHub } from './services/event-hub'
 import { ExecutionService } from './services/execution-service'
 import { ProviderRegistry } from './services/provider-registry'
+import { TeamService } from './services/team-service'
+import { WorkService } from './services/work-service'
 
 const VERSION = '0.1.0'
 
@@ -40,6 +47,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   })
 
   const agentRepository = new AgentRepository(db)
+  const teamRepository = new TeamRepository(db)
+  const workRepository = new WorkRepository(db)
+  const assignmentRepository = new AssignmentRepository(db)
+  const auditRepository = new AuditRepository(db)
   const providerRepository = new ProviderRepository(db)
   const sessionRepository = new SessionRepository(db)
   const executionRepository = new ExecutionRepository(db)
@@ -51,6 +62,16 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   await registry.refreshQuietly()
 
   const agentService = new AgentService(db, agentRepository, providerRepository)
+  const teamService = new TeamService(db, teamRepository, agentRepository)
+  const workService = new WorkService(db, workRepository, teamRepository, auditRepository)
+  const assignmentService = new AssignmentService(
+    db,
+    assignmentRepository,
+    workRepository,
+    agentRepository,
+    teamRepository,
+    sessionRepository,
+  )
   const executionService = new ExecutionService({
     db,
     runtime,
@@ -94,6 +115,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       registry,
       executions: executionService,
       hub,
+      teams: teamService,
+      works: workService,
+      assignments: assignmentService,
     }),
   )
   logger.info('core started', {

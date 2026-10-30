@@ -3,6 +3,10 @@ import type {
   AgentListResult,
   AgentResult,
   AgentUpdateParams,
+  AssignmentCreateParams,
+  AssignmentIdParams,
+  AssignmentListResult,
+  AssignmentResult,
   ExecutionGetResult,
   ExecutionInterruptResult,
   ExecutionListResult,
@@ -15,6 +19,20 @@ import type {
   HealthResult,
   RuntimeEvent,
   RuntimeProviderListResult,
+  TeamArchiveParams,
+  TeamCreateParams,
+  TeamGetParams,
+  TeamListResult,
+  TeamMemberAddParams,
+  TeamMemberListResult,
+  TeamMemberRemoveParams,
+  TeamMemberResult,
+  TeamResult,
+  WorkCreateParams,
+  WorkIdParams,
+  WorkLinkTeamParams,
+  WorkListResult,
+  WorkResult,
 } from '@agentra/protocol'
 
 /** Desktop 主进程 ↔ renderer 的唯一结果形态（错误码原样透传 Core）。 */
@@ -47,6 +65,31 @@ export type AgentraApi = {
   sendExecutionMessage(
     params: ExecutionSendMessageParams,
   ): Promise<RpcResult<ExecutionSendMessageResult>>
+
+  // ---- 阶段 2：Team ----
+  listTeams(params?: { includeArchived?: boolean }): Promise<RpcResult<TeamListResult>>
+  getTeam(params: TeamGetParams): Promise<RpcResult<TeamResult>>
+  createTeam(params: TeamCreateParams): Promise<RpcResult<TeamResult>>
+  archiveTeam(params: TeamArchiveParams): Promise<RpcResult<TeamResult>>
+  listTeamMembers(params: { teamId: string }): Promise<RpcResult<TeamMemberListResult>>
+  addTeamMember(params: TeamMemberAddParams): Promise<RpcResult<TeamMemberResult>>
+  removeTeamMember(params: TeamMemberRemoveParams): Promise<RpcResult<{ removed: true }>>
+
+  // ---- 阶段 2：Work ----
+  listWorks(params?: { includeArchived?: boolean }): Promise<RpcResult<WorkListResult>>
+  createWork(params: WorkCreateParams): Promise<RpcResult<WorkResult>>
+  linkWorkTeam(params: WorkLinkTeamParams): Promise<RpcResult<WorkResult>>
+  activateWork(params: WorkIdParams): Promise<RpcResult<WorkResult>>
+  pauseWork(params: WorkIdParams): Promise<RpcResult<WorkResult>>
+  resumeWork(params: WorkIdParams): Promise<RpcResult<WorkResult>>
+  completeWork(params: WorkIdParams): Promise<RpcResult<WorkResult>>
+
+  // ---- 阶段 2：Assignment ----
+  listAssignments(params: { workId: string }): Promise<RpcResult<AssignmentListResult>>
+  createAssignment(params: AssignmentCreateParams): Promise<RpcResult<AssignmentResult>>
+  pauseAssignment(params: AssignmentIdParams): Promise<RpcResult<AssignmentResult>>
+  resumeAssignment(params: AssignmentIdParams): Promise<RpcResult<AssignmentResult>>
+  completeAssignment(params: AssignmentIdParams): Promise<RpcResult<AssignmentResult>>
 
   /** 订阅 Core 推送的执行事件；返回取消订阅函数。 */
   onEvent(listener: (event: RuntimeEvent) => void): () => void

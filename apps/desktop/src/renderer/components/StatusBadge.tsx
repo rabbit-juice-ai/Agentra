@@ -12,6 +12,10 @@ const STATUS_COLORS: Record<string, string> = {
   unauthenticated: colors.amber,
   unknown: colors.muted,
   active: colors.green,
+  draft: colors.muted,
+  paused: colors.amber,
+  completed: colors.green,
+  removed: colors.muted,
   disabled: colors.amber,
   archived: colors.muted,
 }

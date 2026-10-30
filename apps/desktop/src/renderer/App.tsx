@@ -3,9 +3,11 @@ import { useState } from 'react'
 import { AgentsPage } from './components/AgentsPage'
 import { ConsolePage } from './components/ConsolePage'
 import { buttonStyle, colors } from './components/styles'
+import { TeamsPage } from './components/TeamsPage'
+import { WorksPage } from './components/WorksPage'
 import { useAgentra } from './hooks/useAgentra'
 
-type Tab = 'console' | 'agents'
+type Tab = 'console' | 'agents' | 'teams' | 'works'
 
 function HealthDot({ label, health }: { label: string; health: HealthResult | null }) {
   const ok = health !== null
@@ -94,6 +96,12 @@ export function App() {
           <TabButton active={tab === 'agents'} onClick={() => setTab('agents')}>
             Agents
           </TabButton>
+          <TabButton active={tab === 'teams'} onClick={() => setTab('teams')}>
+            Teams
+          </TabButton>
+          <TabButton active={tab === 'works'} onClick={() => setTab('works')}>
+            Works
+          </TabButton>
         </nav>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 16 }}>
           <HealthDot label="Core" health={store.coreHealth} />
@@ -134,6 +142,30 @@ export function App() {
             onCancel={store.actions.cancelExecution}
             onInterrupt={store.actions.interruptExecution}
             onSendMessage={store.actions.sendMessage}
+          />
+        ) : tab === 'teams' ? (
+          <TeamsPage
+            teams={store.teams}
+            agents={store.agents}
+            membersByTeam={store.teamMembers}
+            busy={store.busy}
+            onCreate={store.actions.createTeam}
+            onAddMember={store.actions.addTeamMember}
+            onRefreshMembers={store.actions.refreshTeamMembers}
+          />
+        ) : tab === 'works' ? (
+          <WorksPage
+            works={store.works}
+            teams={store.teams}
+            agents={store.agents}
+            assignmentsByWork={store.assignmentsByWork}
+            busy={store.busy}
+            onCreate={store.actions.createWork}
+            onLinkTeam={store.actions.linkWorkTeam}
+            onWorkAction={store.actions.workAction}
+            onCreateAssignment={store.actions.createAssignment}
+            onAssignmentAction={store.actions.assignmentAction}
+            onRefreshAssignments={store.actions.refreshAssignments}
           />
         ) : (
           <AgentsPage

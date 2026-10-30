@@ -27,6 +27,20 @@ const MARKERS = [
   { name: '导航项文案', value: '执行控制台' },
 ]
 
+/**
+ * 产品页面标记：Team / Work 是阶段 2 的产品功能，**两种构建都必须包含**。
+ * 这条正向断言防止有人把产品页也挂到 __AGENTRA_DEV_CONSOLE__ 开关上，
+ * 或让检查脚本把它们的消失当成"隔离成功"。
+ */
+const REQUIRED_MARKERS = [
+  { name: 'Team 页面', value: 'agentra-product-teams' },
+  { name: 'Work 页面', value: 'agentra-product-works' },
+]
+
+function modeLabel(devConsole) {
+  return devConsole ? '开发控制台' : '发布'
+}
+
 /** 打包器可能把非 ASCII 字符转义成 \uXXXX，先还原再匹配。 */
 const unescapeUnicode = (text) =>
   text.replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
@@ -57,10 +71,14 @@ for (const marker of MARKERS) {
   }
 }
 
+for (const marker of REQUIRED_MARKERS) {
+  const present = contents.some((content) => content.includes(marker.value))
+  if (!present) problems.push(`${modeLabel(expectConsole)}缺少产品页面「${marker.name}」`)
+}
+
 if (problems.length > 0) {
   for (const problem of problems) console.error(`✗ ${problem}`)
   process.exit(1)
 }
 
-const mode = expectConsole ? '开发控制台' : '发布'
-console.log(`[check-release-bundle] ${mode}构建检查通过（扫描 ${files.length} 个 JS 产物）`)
+console.log(`[check-release-bundle] ${modeLabel(expectConsole)}构建检查通过（扫描 ${files.length} 个 JS 产物）`)

@@ -19,6 +19,9 @@ export const RpcErrorCode = z.enum([
   'PROVIDER_NOT_FOUND',
   // 阶段 1 收尾（U3）：Agent 未配置任何允许工具（allow 为空）时启动执行返回该码，且不创建 Execution。
   'AGENT_TOOLS_NOT_CONFIGURED',
+  // 阶段 2（PRD A-19 / DEVELOPMENT_PLAN 阶段 2 验收）：两个 Work 争用同一非 Worktree 目录时返回。
+  // B2 只加枚举与文档，行为在 B3（工作目录锁）生效。
+  'WORKDIR_LOCKED',
 ])
 export type RpcErrorCode = z.infer<typeof RpcErrorCode>
 

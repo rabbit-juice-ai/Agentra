@@ -18,6 +18,28 @@ const api: AgentraApi = {
   listProviders: () => ipcRenderer.invoke('agentra:provider-list'),
   refreshProviders: () => ipcRenderer.invoke('agentra:provider-refresh'),
 
+  listTeams: (params) => ipcRenderer.invoke('agentra:team-list', params ?? {}),
+  getTeam: (params) => ipcRenderer.invoke('agentra:team-get', params),
+  createTeam: (params) => ipcRenderer.invoke('agentra:team-create', params),
+  archiveTeam: (params) => ipcRenderer.invoke('agentra:team-archive', params),
+  listTeamMembers: (params) => ipcRenderer.invoke('agentra:team-member-list', params),
+  addTeamMember: (params) => ipcRenderer.invoke('agentra:team-member-add', params),
+  removeTeamMember: (params) => ipcRenderer.invoke('agentra:team-member-remove', params),
+
+  listWorks: (params) => ipcRenderer.invoke('agentra:work-list', params ?? {}),
+  createWork: (params) => ipcRenderer.invoke('agentra:work-create', params),
+  linkWorkTeam: (params) => ipcRenderer.invoke('agentra:work-link-team', params),
+  activateWork: (params) => ipcRenderer.invoke('agentra:work-activate', params),
+  pauseWork: (params) => ipcRenderer.invoke('agentra:work-pause', params),
+  resumeWork: (params) => ipcRenderer.invoke('agentra:work-resume', params),
+  completeWork: (params) => ipcRenderer.invoke('agentra:work-complete', params),
+
+  listAssignments: (params) => ipcRenderer.invoke('agentra:assignment-list', params),
+  createAssignment: (params) => ipcRenderer.invoke('agentra:assignment-create', params),
+  pauseAssignment: (params) => ipcRenderer.invoke('agentra:assignment-pause', params),
+  resumeAssignment: (params) => ipcRenderer.invoke('agentra:assignment-resume', params),
+  completeAssignment: (params) => ipcRenderer.invoke('agentra:assignment-complete', params),
+
   startExecution: (params) => ipcRenderer.invoke('agentra:execution-start', params),
   getExecution: (params) => ipcRenderer.invoke('agentra:execution-get', params),
   listExecutions: (params) => ipcRenderer.invoke('agentra:execution-list', params ?? {}),

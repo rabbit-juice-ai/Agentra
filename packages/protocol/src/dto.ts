@@ -162,3 +162,75 @@ export const RuntimeInfo = z.object({
   discoveredAt: IsoTimestamp,
 }) satisfies z.ZodType<RuntimeInfoShape>
 export type RuntimeInfo = z.infer<typeof RuntimeInfo>
+
+// ---------------------------------------------------------------------------
+// 阶段 2：Team / Work / Assignment（DATABASE §2.2 / §2.3）
+// ---------------------------------------------------------------------------
+
+export const TeamStatus = z.enum(['active', 'archived'])
+export type TeamStatus = z.infer<typeof TeamStatus>
+
+export const Team = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string(),
+  status: TeamStatus,
+  createdAt: IsoTimestamp,
+  updatedAt: IsoTimestamp,
+  archivedAt: IsoTimestamp.nullable(),
+})
+export type Team = z.infer<typeof Team>
+
+export const TeamMember = z.object({
+  id: z.string().min(1),
+  teamId: z.string().min(1),
+  agentId: z.string().min(1),
+  teamRole: z.string().min(1),
+  joinedAt: IsoTimestamp,
+})
+export type TeamMember = z.infer<typeof TeamMember>
+
+export const WorkStatus = z.enum([
+  'draft',
+  'active',
+  'paused',
+  'completed',
+  'cancelled',
+  'archived',
+])
+export type WorkStatus = z.infer<typeof WorkStatus>
+
+export const Work = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string(),
+  objective: z.string(),
+  status: WorkStatus,
+  priority: z.string().min(1),
+  rootPath: z.string().min(1),
+  repositoryPath: z.string().min(1).nullable(),
+  /** 关联的 Team（来自 work_teams），只读派生字段。 */
+  teamIds: z.array(z.string().min(1)),
+  createdAt: IsoTimestamp,
+  updatedAt: IsoTimestamp,
+  completedAt: IsoTimestamp.nullable(),
+})
+export type Work = z.infer<typeof Work>
+
+export const AssignmentStatus = z.enum(['active', 'paused', 'completed', 'removed'])
+export type AssignmentStatus = z.infer<typeof AssignmentStatus>
+
+export const Assignment = z.object({
+  id: z.string().min(1),
+  workId: z.string().min(1),
+  agentId: z.string().min(1),
+  teamId: z.string().min(1).nullable(),
+  workRole: z.string().min(1),
+  taskScope: z.string(),
+  status: AssignmentStatus,
+  concurrencyLimit: z.number().int().min(1).nullable(),
+  contextRef: z.string().nullable(),
+  createdAt: IsoTimestamp,
+  updatedAt: IsoTimestamp,
+})
+export type Assignment = z.infer<typeof Assignment>

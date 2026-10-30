@@ -6,6 +6,13 @@ import {
   AGENT_UPDATE_METHOD,
   AgentListResult,
   AgentResult,
+  ASSIGNMENT_COMPLETE_METHOD,
+  ASSIGNMENT_CREATE_METHOD,
+  ASSIGNMENT_LIST_METHOD,
+  ASSIGNMENT_PAUSE_METHOD,
+  ASSIGNMENT_RESUME_METHOD,
+  AssignmentListResult,
+  AssignmentResult,
   CORE_HEALTH_METHOD,
   DAEMON_HEALTH_METHOD,
   EVENTS_SUBSCRIBE_METHOD,
@@ -26,6 +33,27 @@ import {
   RUNTIME_PROVIDER_LIST_METHOD,
   RUNTIME_PROVIDER_REFRESH_METHOD,
   RuntimeProviderListResult,
+  TEAM_ARCHIVE_METHOD,
+  TEAM_CREATE_METHOD,
+  TEAM_GET_METHOD,
+  TEAM_LIST_METHOD,
+  TEAM_MEMBER_ADD_METHOD,
+  TEAM_MEMBER_LIST_METHOD,
+  TEAM_MEMBER_REMOVE_METHOD,
+  TeamListResult,
+  TeamMemberListResult,
+  TeamMemberRemoveResult,
+  TeamMemberResult,
+  TeamResult,
+  WORK_ACTIVATE_METHOD,
+  WORK_COMPLETE_METHOD,
+  WORK_CREATE_METHOD,
+  WORK_LINK_TEAM_METHOD,
+  WORK_LIST_METHOD,
+  WORK_PAUSE_METHOD,
+  WORK_RESUME_METHOD,
+  WorkListResult,
+  WorkResult,
 } from '@agentra/protocol'
 import { agentraPaths } from '@agentra/shared'
 import { app, BrowserWindow, ipcMain } from 'electron'
@@ -103,6 +131,66 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:provider-refresh', () =>
     callCore(RUNTIME_PROVIDER_REFRESH_METHOD, {}, RuntimeProviderListResult),
+  )
+
+  ipcMain.handle('agentra:team-list', (_event, params: unknown) =>
+    callCore(TEAM_LIST_METHOD, params ?? {}, TeamListResult),
+  )
+  ipcMain.handle('agentra:team-get', (_event, params: unknown) =>
+    callCore(TEAM_GET_METHOD, params, TeamResult),
+  )
+  ipcMain.handle('agentra:team-create', (_event, params: unknown) =>
+    callCore(TEAM_CREATE_METHOD, params, TeamResult),
+  )
+  ipcMain.handle('agentra:team-archive', (_event, params: unknown) =>
+    callCore(TEAM_ARCHIVE_METHOD, params, TeamResult),
+  )
+  ipcMain.handle('agentra:team-member-list', (_event, params: unknown) =>
+    callCore(TEAM_MEMBER_LIST_METHOD, params, TeamMemberListResult),
+  )
+  ipcMain.handle('agentra:team-member-add', (_event, params: unknown) =>
+    callCore(TEAM_MEMBER_ADD_METHOD, params, TeamMemberResult),
+  )
+  ipcMain.handle('agentra:team-member-remove', (_event, params: unknown) =>
+    callCore(TEAM_MEMBER_REMOVE_METHOD, params, TeamMemberRemoveResult),
+  )
+
+  ipcMain.handle('agentra:work-list', (_event, params: unknown) =>
+    callCore(WORK_LIST_METHOD, params ?? {}, WorkListResult),
+  )
+  ipcMain.handle('agentra:work-create', (_event, params: unknown) =>
+    callCore(WORK_CREATE_METHOD, params, WorkResult),
+  )
+  ipcMain.handle('agentra:work-link-team', (_event, params: unknown) =>
+    callCore(WORK_LINK_TEAM_METHOD, params, WorkResult),
+  )
+  ipcMain.handle('agentra:work-activate', (_event, params: unknown) =>
+    callCore(WORK_ACTIVATE_METHOD, params, WorkResult),
+  )
+  ipcMain.handle('agentra:work-pause', (_event, params: unknown) =>
+    callCore(WORK_PAUSE_METHOD, params, WorkResult),
+  )
+  ipcMain.handle('agentra:work-resume', (_event, params: unknown) =>
+    callCore(WORK_RESUME_METHOD, params, WorkResult),
+  )
+  ipcMain.handle('agentra:work-complete', (_event, params: unknown) =>
+    callCore(WORK_COMPLETE_METHOD, params, WorkResult),
+  )
+
+  ipcMain.handle('agentra:assignment-list', (_event, params: unknown) =>
+    callCore(ASSIGNMENT_LIST_METHOD, params, AssignmentListResult),
+  )
+  ipcMain.handle('agentra:assignment-create', (_event, params: unknown) =>
+    callCore(ASSIGNMENT_CREATE_METHOD, params, AssignmentResult),
+  )
+  ipcMain.handle('agentra:assignment-pause', (_event, params: unknown) =>
+    callCore(ASSIGNMENT_PAUSE_METHOD, params, AssignmentResult),
+  )
+  ipcMain.handle('agentra:assignment-resume', (_event, params: unknown) =>
+    callCore(ASSIGNMENT_RESUME_METHOD, params, AssignmentResult),
+  )
+  ipcMain.handle('agentra:assignment-complete', (_event, params: unknown) =>
+    callCore(ASSIGNMENT_COMPLETE_METHOD, params, AssignmentResult),
   )
 
   ipcMain.handle('agentra:execution-start', (_event, params: unknown) =>
