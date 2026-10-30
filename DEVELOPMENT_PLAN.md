@@ -49,7 +49,7 @@
 - 能启动任务、看到输出、完成和取消。
 - kill -9 执行进程后 10 秒内 executions.status 变为 failed/crashed，并写入 execution exited/crashed 事件。
 - capabilities_json 中不支持能力值=unsupported；对 unsupported 的 interrupt 发起请求必须返回定义的错误码且不改变 Execution 状态。
-- CLI 不可用或未认证时启动执行：返回定义错误码（如 `CLI_UNAVAILABLE` / `CLI_NOT_AUTHENTICATED`，在 protocol 中定义）与可执行提示，且不创建 Execution（Minor #9）。
+- CLI 不可用或未认证时启动执行：返回固定错误码 `CLI_UNAVAILABLE` / `CLI_NOT_AUTHENTICATED`（在 protocol 中定义）与可执行提示，且不创建 Execution（Minor #9）。
 - 当前 Electron 运行环境（`ELECTRON_RUN_AS_NODE`）下 SQLite 基本集成验证通过：建表、参数化写入、WAL、简单快照备份、`PRAGMA integrity_check`（裁定 D-017；验证脚本纳入测试）。
 
 ## 阶段 2：Team、Work、Assignment 和工作区
@@ -190,7 +190,7 @@ MVP 人工参与范围 = 单一 Human Approval 原语（决策 D-012/D-015）。
 ## 阶段 5.5：备份与恢复（决策 D-013，MVP 必须交付）
 
 依赖：阶段 4 的重启恢复设施、阶段 5 的 Artifact 模块。
-验证边界（裁定 D-017）：阶段 1 只做当前 Electron 运行环境的 SQLite 基本集成验证；本阶段的 8 项验收是备份恢复的**完整验收**，VACUUM INTO 快照验证不能代替；打包态完整复验在阶段 6。
+验证边界（裁定 D-017）：阶段 1 只做当前 Electron 运行环境的 SQLite 基本集成验证；本阶段的 8 项验收（+B9 承接项）是备份恢复的**完整验收**，VACUUM INTO 快照验证不能代替；打包态完整复验在阶段 6。
 
 ### 任务
 - [ ] SQLite WAL 一致性备份（VACUUM INTO 或 backup API）。
@@ -206,7 +206,7 @@ MVP 人工参与范围 = 单一 Human Approval 原语（决策 D-012/D-015）。
 - [ ] 外部项目路径缺失检测与提示。
 - [ ] backups 表与备份历史记录。
 
-### 验收（决策 D-013 的 8 项）
+### 验收（决策 D-013 的 8 项 + A15 承接项 B9）
 - B1. 正常备份和导出：manifest 与实际文件一致、sha256 匹配。
 - B2. SQLite WAL 并发写入时的一致性备份：备份期间持续写入，备份产物完整可用。
 - B3. 备份文件损坏检测：篡改备份包后校验失败并明确报错，不得进入恢复。

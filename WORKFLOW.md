@@ -207,12 +207,12 @@ AgentTask: Frontend Dev（approve 后才启动） |
 - workflow.started / paused / resumed / completed / failed
 - branch.paused / branch.resumed / branch.completed
 - node.ready / started / checkpoint / waiting_approval / succeeded / failed / cancelled
-
-（版本归属：`checkpoint` 与 `taken_over` 事件随 Checkpoint（V1.1）/Human Takeover（V1.2）能力启用，MVP 不产生；其余事件 MVP 启用。）
 - approval.requested / approved / changes_requested / rejected / taken_over
 - rework.requested / rework.started / rework.completed / rework.exhausted（超限）
 - artifact.created / artifact.versioned
 - execution.started / interrupted / exited / crashed
+
+（版本归属：`checkpoint` 与 `taken_over` 事件随 Checkpoint（V1.1）/Human Takeover（V1.2）能力启用，MVP 不产生；其余事件 MVP 启用。）
 
 ## 9. 恢复规则
 
