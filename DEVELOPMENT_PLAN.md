@@ -1,6 +1,6 @@
 # 开发计划与任务清单
 
-版本：V1.2（基于 v1.0.0 Development Baseline 的 D-016 修订）  
+版本：V1.2（基于 v1.0.0 Development Baseline 的 D-016/D-017 修订）  
 开发策略：小步迭代、每阶段可运行、每阶段可验收  
 前置：阶段「产品文档修订与基线冻结」完成并经用户批准后，才进入阶段 0 及后续业务开发。
 
@@ -49,7 +49,8 @@
 - 能启动任务、看到输出、完成和取消。
 - kill -9 执行进程后 10 秒内 executions.status 变为 failed/crashed，并写入 execution exited/crashed 事件。
 - capabilities_json 中不支持能力值=unsupported；对 unsupported 的 interrupt 发起请求必须返回定义的错误码且不改变 Execution 状态。
-- CLI 不可用或未认证时启动执行：返回定义错误码与可执行提示，且不创建 Execution（Minor #13）。
+- CLI 不可用或未认证时启动执行：返回定义错误码（如 `CLI_UNAVAILABLE` / `CLI_NOT_AUTHENTICATED`，在 protocol 中定义）与可执行提示，且不创建 Execution（Minor #9）。
+- 当前 Electron 运行环境（`ELECTRON_RUN_AS_NODE`）下 SQLite 基本集成验证通过：建表、参数化写入、WAL、简单快照备份、`PRAGMA integrity_check`（裁定 D-017；验证脚本纳入测试）。
 
 ## 阶段 2：Team、Work、Assignment 和工作区
 
@@ -109,7 +110,7 @@
 - [ ] DAG 依赖计算。
 - [ ] Ready Queue。
 - [ ] Agent 并发调度。
-- [ ] **节点类型注册表**：节点处理器按 type 分发，新增节点类型不改引擎核心（D-010 可扩展约束，Minor #10）。
+- [ ] **节点类型注册表**：节点处理器按 type 分发，新增节点类型不改引擎核心（D-010 可扩展约束，Minor #6）。
 - [ ] ParallelSplit 执行。
 - [ ] Join(all_success) 执行。
 - [ ] Condition 执行（受限表达式判断、pass/fail 路由、无匹配分支进 failed）。
@@ -147,7 +148,7 @@
   - F. 连续返工超过 2 轮（不含首次）后：分支暂停、rework.exhausted 事件写入、进入人工处理。
   - G. 系统重启后返工状态正确恢复：轮次计数不丢、不重复执行已完成副作用任务、in_rework 的返工不重复创建。
 - 结构化测试结果解析失败（不符合 outputContract）时测试节点 failed 并产生明确错误类型，不触发返工。
-- 每轮返工保留执行记录（新 attempt）、Artifact 版本与测试报告，历史轮次不可覆盖（数据库断言，D-011 规则 7，Minor #11）。
+- 每轮返工保留执行记录（新 attempt）、Artifact 版本与测试报告，历史轮次不可覆盖（数据库断言，D-011 规则 7，Minor #7）。
 - 节点处理器按注册表按 type 分发（代码审查可验证）；未知类型在发布阶段被拒（阶段 3 已覆盖）。
 
 ## 阶段 5：人工审批和交付物
@@ -184,7 +185,7 @@ MVP 人工参与范围 = 单一 Human Approval 原语（决策 D-012/D-015）。
 - A12. 执行前审批阻塞：配置 beforeExecute 的 AgentTask 在 approval.status=pending 期间不得创建 Execution；approve 后才启动。
 - A13. 每条决策记录含 decided_by/decided_at/decision_comment（request_changes 时非空），字段完整性校验。
 - A14. UI V1 被要求修改（request_changes）→ UI 提交 V2（新 Artifact 版本）→ 用户批准 V2 → 前端随后启动；两个版本和全部审批意见保留。
-- A15. 审批决策、返工触发、备份/恢复操作均可在 audit_logs 中按 actor/action/target 查询。（Minor #12：其中备份/恢复相关审计断言依赖阶段 5.5 产物，在阶段 5.5 验收时一并执行；阶段 5 仅验收审批与返工审计。）
+- A15. 审批决策、返工触发、备份/恢复操作均可在 audit_logs 中按 actor/action/target 查询。（Minor #8：其中备份/恢复相关审计断言依赖阶段 5.5 产物，在阶段 5.5 验收时一并执行；阶段 5 仅验收审批与返工审计。）
 
 ## 阶段 5.5：备份与恢复（决策 D-013，MVP 必须交付）
 
@@ -214,6 +215,7 @@ MVP 人工参与范围 = 单一 Human Approval 原语（决策 D-012/D-015）。
 - B6. 恢复后数据完整性：PRAGMA integrity_check 通过；待审批/返工状态正确恢复且无副作用重复执行。
 - B7. Artifact 文件恢复：托管 Artifact 文件随备份恢复且校验值一致。
 - B8. 外部项目目录缺失提示：works.root_path 指向不存在路径时给出明确提示。
+- B9. 备份/恢复操作可在 audit_logs 中按 actor/action/target 查询（承接阶段 5 A15 的延后断言）。
 
 ## 阶段 6：真实项目 MVP E2E
 
@@ -236,6 +238,7 @@ MVP 人工参与范围 = 单一 Human Approval 原语（决策 D-012/D-015）。
 ### 验收
 - PRD §9 的编号化验收条目（A-01…A-xx）逐条执行并记录通过/失败；"通过"定义为每条编号项的断言全部为真。
 - 完全退出 Desktop/Core/Daemon 并重启后：workflow_runs/branch_runs/node_runs 状态与重启前一致；pending 审批仍为 pending 且可继续决策；已决策审批记录字段不变；无任何 Execution 被重复执行。
+- 打包态复验通过：打包产物中 Core（`ELECTRON_RUN_AS_NODE`）的 node:sqlite 集成、迁移与执行链路行为与开发态一致（裁定 D-017）。
 
 ## 阶段 7：协议扩展（非 MVP 阻塞项）
 

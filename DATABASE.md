@@ -1,6 +1,6 @@
 # 数据库设计
 
-版本：V1.2（基于 v1.0.0 Development Baseline 的 D-016 修订）  
+版本：V1.2（基于 v1.0.0 Development Baseline 的 D-016/D-017 修订）  
 数据库：SQLite（WAL 模式）  
 数据访问：Node.js 内置 `node:sqlite` + Core 统一 Repository/Data Access Layer（无 ORM；决策 D-016）
 
@@ -400,7 +400,7 @@ Workflow definition 建议包含：
 ```
 <backup-dir>/<backup-id>/
 ├── manifest.json        # { manifestVersion, createdAt, type, database: {file, sha256, bytes}, artifacts: [{path, sha256, bytes}], counts }
-├── database.db          # SQLite 一致性备份（WAL 兼容：VACUUM INTO 产物；已实测 WAL 并发写入下快照一致）
+├── database.db          # SQLite 一致性备份（WAL 兼容：VACUUM INTO 或 backup API 产物；VACUUM INTO 已实测并发一致，最终方式阶段 5.5 定案）
 └── artifacts/           # Agentra 托管的 Artifact 文件（按原相对路径存放）
 ```
 

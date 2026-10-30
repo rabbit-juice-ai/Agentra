@@ -1,6 +1,6 @@
 # 技术架构设计
 
-版本：V1.2（基于 v1.0.0 Development Baseline 的 D-016 修订）  
+版本：V1.2（基于 v1.0.0 Development Baseline 的 D-016/D-017 修订）  
 目标：macOS 本地桌面应用
 
 ## 1. 架构原则
