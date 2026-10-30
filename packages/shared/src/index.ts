@@ -6,5 +6,6 @@ export {
   agentraHome,
   agentraPaths,
   ensureDirs,
+  executionScratchDir,
   MAX_SOCKET_PATH_BYTES,
 } from './paths'

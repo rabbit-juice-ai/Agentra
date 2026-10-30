@@ -22,6 +22,8 @@ export type AgentraPaths = {
   home: string
   runtime: string
   logs: string
+  scratch: string
+  database: string
   coreSocket: string
   daemonSocket: string
   corePid: string
@@ -42,6 +44,7 @@ function assertSocketPathLength(socketPath: string): void {
 export function agentraPaths(home: string = agentraHome()): AgentraPaths {
   const runtime = path.join(home, 'runtime')
   const logs = path.join(home, 'logs')
+  const scratch = path.join(home, 'scratch')
   const coreSocket = path.join(runtime, 'core.sock')
   const daemonSocket = path.join(runtime, 'daemon.sock')
   assertSocketPathLength(coreSocket)
@@ -50,6 +53,8 @@ export function agentraPaths(home: string = agentraHome()): AgentraPaths {
     home,
     runtime,
     logs,
+    scratch,
+    database: path.join(home, 'agentra.db'),
     coreSocket,
     daemonSocket,
     corePid: path.join(runtime, 'core.pid'),
@@ -59,9 +64,28 @@ export function agentraPaths(home: string = agentraHome()): AgentraPaths {
   }
 }
 
-/** 确保目录存在（runtime/logs，权限 0700）。 */
+/** 确保目录存在（runtime/logs/scratch，权限 0700）。 */
 export function ensureDirs(paths: AgentraPaths): void {
-  for (const dir of [paths.home, paths.runtime, paths.logs]) {
+  for (const dir of [paths.home, paths.runtime, paths.logs, paths.scratch]) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   }
+}
+
+/** 执行 ID 白名单：仅允许生成器产出的安全字符，杜绝路径穿越。 */
+const EXECUTION_ID_PATTERN = /^exe-[0-9a-f-]{36}$/
+
+/**
+ * 阶段 1 执行工作目录：<data>/scratch/<executionId>。
+ * 无 Work 工作区，绝不写用户项目目录；返回前做规范化与边界检查。
+ */
+export function executionScratchDir(scratchRoot: string, executionId: string): string {
+  if (!EXECUTION_ID_PATTERN.test(executionId)) {
+    throw new Error(`invalid execution id for scratch directory: ${executionId}`)
+  }
+  const root = path.resolve(scratchRoot)
+  const dir = path.resolve(root, executionId)
+  if (dir !== path.join(root, executionId) || !dir.startsWith(`${root}${path.sep}`)) {
+    throw new Error(`scratch directory escapes scratch root: ${dir}`)
+  }
+  return dir
 }
