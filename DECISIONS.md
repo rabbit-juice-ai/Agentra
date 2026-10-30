@@ -102,14 +102,41 @@
 - Agentra 自身兼容性验证（2026-10-30 实测，非引用 Antumi 结论）：
   | 验证项 | 结果 |
   |---|---|
-  | 纯 Node 22.23.2 | node:sqlite 建表/参数化写入/WAL/`VACUUM INTO`/`integrity_check` 全部通过（有 experimental 警告） |
-  | Electron 45.1.0 + `ELECTRON_RUN_AS_NODE=1` | 内置 Node 24.22.1，同一脚本全部通过，无实验警告 |
+  | 纯 Node 22.23.2 | node:sqlite 建表/参数化写入/WAL/`VACUUM INTO`/`integrity_check` 全部通过（有 ExperimentalWarning） |
+  | Electron 45.1.0 + `ELECTRON_RUN_AS_NODE=1` | 内置 Node 24.22.1，同一脚本全部通过；本次实测未观察到 ExperimentalWarning（不推定其他版本/打包态行为） |
   | WAL 并发备份 | 写入进程 3 秒写 54,914 行期间 `VACUUM INTO` 快照一致（12,600 行），备份 integrity ok |
-  | 最低版本 | Node ≥ 22.13（开发/测试）；Electron ≥ 45（生产 Core，内置 Node 24.22.1） |
-  | 打包态一致性 | 打包与开发使用同一 Electron 二进制；`ELECTRON_RUN_AS_NODE` 已实测；打包阶段（阶段 6）复验 |
+  | 版本对应关系 | Electron 45.1.0 ↔ 内置 Node 24.22.1（实测） |
+  | 最低版本 | 开发/测试 Node ≥ 22.13；生产 Core 运行于锁定版本 Electron 的内置 Node，不单独假设 Node 版本 |
+  | 验证分层 | 阶段 1：当前 Electron 运行环境的基本 SQLite 集成验证；阶段 5.5：备份恢复完整 8 项验收（快照验证不能代替）；阶段 6：完整打包态复验 |
 - 文档同步（本轮已完成）：DATABASE.md V1.2（头部与设计原则）、ARCHITECTURE.md V1.2（技术栈表、运行时基线、Core 职责）、DEVELOPMENT_PLAN.md V1.2（阶段 1 任务注明 node:sqlite）；DEVELOPMENT_PLAN 中无 Drizzle 安装步骤（已检查）。
 - 变更性质：冻结后经用户批准的正式变更（变更申请记录于本条）；v1.0.0 基线继续有效，不做重新冻结。
-- 遗留风险：node:sqlite 在 Node 22 标记 experimental（API 可能变化）——通过固定 Electron/Node 版本与 Repository 层隔离缓解；备份/恢复的完整验收在阶段 5.5 执行。
+- 遗留风险：node:sqlite 在 Node 22 标记 experimental（API 可能变化）——通过固定 Electron/Node 版本与 Repository 层隔离缓解；备份/恢复的完整验收在阶段 5.5 执行；打包态行为在阶段 6 复验。
+
+### D-017：阶段 1 数据库方案与未决问题裁定（2026-10-30，用户裁定）
+1. 开发环境最低 Node.js 版本 ≥ 22.13，**不因 ExperimentalWarning 强制升级 Node 24**。
+2. 生产环境使用**锁定版本 Electron 内置的 Node.js**，不单独假设 Node 版本；版本对应关系明确记录：**Electron 45.1.0 ↔ 内置 Node 24.22.1**（实测）。
+3. 必须验证 `ELECTRON_RUN_AS_NODE` 模式下 node:sqlite 的实际兼容性（验证结果见 D-016；本次实测未观察到 ExperimentalWarning，但不得推定为 Node 24 必然无警告）。
+4. **阶段 1** 必须完成当前 Electron 运行环境的基本 SQLite 集成验证；**完整打包态复验放在阶段 6**。
+5. **备份恢复完整 8 项验收放在阶段 5.5**；当前 VACUUM INTO 验证不能代替完整验收。
+6. 冻结后 Minor 9 项逐项分类：涉及架构、数据一致性、安全或验收标准的必须在冻结前处理；非关键优化进入 Minor Backlog。
+
+**Minor 9 项处理清单（D-017 附件）**：
+
+| # | Minor 项 | 分类 | 处理结论 |
+|---|---|---|---|
+| 1 | WORKFLOW §3 节点状态 MVP 子集悬空引用 | 验收标准 | ✅ 冻结前已处理：WORKFLOW §3 明确列出 MVP 启用状态子集（waiting_input/waiting_checkpoint 为 V1.1） |
+| 2 | Join Policy all_terminal 未标注归属 | 验收标准 | ✅ 冻结前已处理：WORKFLOW §2 标注 all_terminal 为后续版本 |
+| 3 | 事件命名双轨（ARCHITECTURE §7 vs WORKFLOW §8）未声明映射 | 架构 | ✅ 冻结前已处理：ARCHITECTURE §7 增加协议层/领域层命名映射说明 |
+| 4 | AGENTS §1 / README "docs 文档包" 路径引用与实际（根目录）不符 | 非关键（文档卫生） | → Minor Backlog |
+| 5 | 节点展示名 ↔ 类型标识（snake_case）对应说明缺失 | 非关键（命名说明） | → Minor Backlog |
+| 6 | D-010 "引擎节点类型可扩展" 无验收条款 | 架构/验收标准 | ✅ 冻结前已处理：DEVELOPMENT_PLAN 阶段 4 增加节点类型注册表任务与验收 |
+| 7 | D-011 规则 7 测试失败路径缺"历史轮次不可覆盖"断言 | 验收标准 | ✅ 冻结前已处理：DEVELOPMENT_PLAN 阶段 4 验收新增数据库断言 |
+| 8 | 阶段 5 A15 依赖阶段 5.5 产物（顺序倒挂） | 验收标准 | ✅ 冻结前已处理：A15 注明备份/恢复审计断言在阶段 5.5 执行 |
+| 9 | CLI 不可用/未认证拦截无验收断言 | 验收标准 | ✅ 冻结前已处理：DEVELOPMENT_PLAN 阶段 1 验收新增 |
+
+处理统计：**7 项冻结前处理完毕，2 项进入 Minor Backlog**（#4、#5）。
+
+**本裁定不等于批准基线冻结，也不等于批准正式业务代码开发；最终等待用户审核并批准 Development Baseline。**
 
 ## 暂定事项（实施前需验证，不可当作已确认事实）
 
@@ -145,3 +172,5 @@
 - 冻结后规则：修改本基线内 MVP 需求须走正式变更申请（更新 DECISIONS.md 并经用户批准）。冻结后首个文档修订批次统一处理 QA 残留 Minor 清单（复验报告所列 9 项，均为措辞/注释级）。
 - 冻结后变更记录：
   - D-016（2026-10-30 经用户批准）：数据库访问方案定为 node:sqlite（无 ORM）——DATABASE.md / ARCHITECTURE.md / DEVELOPMENT_PLAN.md 升级为 V1.2；v1.0.0 基线其余内容不变，未重新冻结（待用户审核修订内容）。
+  - D-017（2026-10-30 经用户裁定）：阶段 1 数据库方案与未决问题裁定；Minor 9 项中 7 项冻结前处理、2 项进入 Minor Backlog（#4 docs 路径引用、#5 节点命名映射说明）。
+  - Minor Backlog（非关键，冻结后处理）：#4 AGENTS §1 / README "docs 文档包" 路径引用对齐；#5 PRD §5.5 补展示名↔类型标识对应说明。

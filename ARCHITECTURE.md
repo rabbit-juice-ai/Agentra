@@ -38,7 +38,7 @@
 
 具体版本在初始化时选择当前稳定且相互兼容的版本，并锁定 lockfile；不要在文档中硬编码未经验证的版本号。
 
-**运行时基线（Agentra 实测，2026-10-30）**：Electron 45.1.0 内置 Node 24.22.1；`ELECTRON_RUN_AS_NODE=1` 模式下 node:sqlite 建表、参数化写入、WAL、`VACUUM INTO` 备份、`PRAGMA integrity_check` 全部通过；开发环境 Node 22.23.2 同样通过。最低要求：Node ≥ 22.13，Electron ≥ 45。node:sqlite 在 Node 22 为 experimental（有警告），Electron 45 内置 Node 24 下无实验警告。打包态与开发态使用同一 Electron 二进制，运行时一致性在打包阶段（阶段 6）复验。
+**运行时基线（Agentra 实测，2026-10-30；裁定 D-017）**：生产 Core 经 `ELECTRON_RUN_AS_NODE` 运行于锁定版本的 Electron，不单独假设 Node 版本；版本对应关系：**Electron 45.1.0 ↔ 内置 Node 24.22.1**（实测）。`ELECTRON_RUN_AS_NODE=1` 模式下 node:sqlite 建表、参数化写入、WAL、`VACUUM INTO` 备份、`PRAGMA integrity_check` 全部通过；本次实测未观察到 ExperimentalWarning，但不推定其他 Node 24 / Electron 版本或打包态行为。开发/测试最低 Node ≥ 22.13（实测 22.23.2；Node 22 下有 ExperimentalWarning，不强制升级 Node 24）。验证分层：阶段 1 当前 Electron 运行环境的 SQLite 基本集成验证；阶段 5.5 备份恢复完整 8 项验收（VACUUM INTO 快照验证不能代替）；阶段 6 完整打包态复验。
 
 ## 3. 三层进程职责
 
@@ -199,6 +199,8 @@ Provider 应声明 capabilities：
 - approval.requested
 - approval.decided
 - artifact.created
+
+**命名分层说明（Minor 处理，D-017）**：本节事件名为**协议层**命名（RPC/事件信封，供跨进程传输与去重）；WORKFLOW.md §8 的事件清单为**领域语义层**（面向业务状态）。两套命名在 `packages/protocol` 中集中定义映射，例如 `approval.decided`（协议层，带 decision 字段）对应 `approval.approved / approval.changes_requested / approval.rejected`（领域层）；`workflow.node.completed` 对应 `node.succeeded`。实现时以协议层 schema 为准，领域事件由 Core 在写入 workflow_events 时派生。
 
 ## 8. 工作流执行与事务边界
 

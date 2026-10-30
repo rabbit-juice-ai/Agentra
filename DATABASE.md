@@ -18,7 +18,11 @@
 - **数据库访问统一经 Core 的 Repository/Data Access Layer；Daemon 不直接访问业务数据库。**
 - **使用参数化 SQL（禁止字符串拼接）；写操作使用事务；启用 WAL 与 busy_timeout。**
 - **迁移自管：`PRAGMA user_version` 递增的版本化迁移（MIGRATIONS 数组），可重复执行、可测试；不引入 ORM。**
-- **运行时最低版本（Agentra 实测，2026-10-30）**：开发/测试 Node ≥ 22.13（实测 22.23.2）；生产 Core 经 `ELECTRON_RUN_AS_NODE` 运行于 Electron ≥ 45（内置 Node 24.22.1，实测 node:sqlite 可用）。node:sqlite 在 Node 22 标记 experimental（有警告），Electron 45 内置 Node 24 下无实验警告。
+- **运行时版本与验证分层（Agentra 实测，2026-10-30；裁定 D-017）**：
+  - 开发/测试最低 Node ≥ 22.13（实测 22.23.2）。Node 22 下 node:sqlite 标记为 experimental 并打印 ExperimentalWarning；**不因此强制升级到 Node 24**。
+  - 生产 Core 经 `ELECTRON_RUN_AS_NODE` 运行于**锁定版本**的 Electron，不单独假设 Node 版本。版本对应关系：**Electron 45.1.0 ↔ 内置 Node 24.22.1**（实测）。
+  - 本次实测在 Electron 45.1.0 内置 Node 24.22.1 下未观察到 ExperimentalWarning；**不推定**其他 Node 24 / Electron 版本或打包态行为。
+  - 验证分层：**阶段 1** 做当前 Electron 运行环境的 SQLite 基本集成验证（建表/参数化写入/WAL/简单快照备份）；**阶段 5.5** 做备份恢复完整 8 项验收（本阶段的 VACUUM INTO 快照验证不能代替）；**阶段 6** 做完整打包态复验。
 
 ## 2. 核心表
 

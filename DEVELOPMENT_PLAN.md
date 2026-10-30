@@ -30,6 +30,7 @@
 
 ### 任务
 - [ ] SQLite 初始化和 Migration 机制（node:sqlite + `PRAGMA user_version` 版本化迁移 + Core 统一 Repository/DAL，决策 D-016）。
+- [ ] **当前 Electron 运行环境（ELECTRON_RUN_AS_NODE）下 SQLite 基本集成验证**：建表、参数化写入、WAL、简单快照备份、integrity_check（裁定 D-017；不等于阶段 5.5 的完整备份恢复验收）。
 - [ ] 实现 AgentProfile CRUD。
 - [ ] 实现 RuntimeProvider Registry。
 - [ ] CLI 自动发现（先实现 Claude Code Provider，验证后再扩展 Codex）。
@@ -48,6 +49,7 @@
 - 能启动任务、看到输出、完成和取消。
 - kill -9 执行进程后 10 秒内 executions.status 变为 failed/crashed，并写入 execution exited/crashed 事件。
 - capabilities_json 中不支持能力值=unsupported；对 unsupported 的 interrupt 发起请求必须返回定义的错误码且不改变 Execution 状态。
+- CLI 不可用或未认证时启动执行：返回定义错误码与可执行提示，且不创建 Execution（Minor #13）。
 
 ## 阶段 2：Team、Work、Assignment 和工作区
 
@@ -107,6 +109,7 @@
 - [ ] DAG 依赖计算。
 - [ ] Ready Queue。
 - [ ] Agent 并发调度。
+- [ ] **节点类型注册表**：节点处理器按 type 分发，新增节点类型不改引擎核心（D-010 可扩展约束，Minor #10）。
 - [ ] ParallelSplit 执行。
 - [ ] Join(all_success) 执行。
 - [ ] Condition 执行（受限表达式判断、pass/fail 路由、无匹配分支进 failed）。
@@ -144,6 +147,8 @@
   - F. 连续返工超过 2 轮（不含首次）后：分支暂停、rework.exhausted 事件写入、进入人工处理。
   - G. 系统重启后返工状态正确恢复：轮次计数不丢、不重复执行已完成副作用任务、in_rework 的返工不重复创建。
 - 结构化测试结果解析失败（不符合 outputContract）时测试节点 failed 并产生明确错误类型，不触发返工。
+- 每轮返工保留执行记录（新 attempt）、Artifact 版本与测试报告，历史轮次不可覆盖（数据库断言，D-011 规则 7，Minor #11）。
+- 节点处理器按注册表按 type 分发（代码审查可验证）；未知类型在发布阶段被拒（阶段 3 已覆盖）。
 
 ## 阶段 5：人工审批和交付物
 
@@ -179,11 +184,12 @@ MVP 人工参与范围 = 单一 Human Approval 原语（决策 D-012/D-015）。
 - A12. 执行前审批阻塞：配置 beforeExecute 的 AgentTask 在 approval.status=pending 期间不得创建 Execution；approve 后才启动。
 - A13. 每条决策记录含 decided_by/decided_at/decision_comment（request_changes 时非空），字段完整性校验。
 - A14. UI V1 被要求修改（request_changes）→ UI 提交 V2（新 Artifact 版本）→ 用户批准 V2 → 前端随后启动；两个版本和全部审批意见保留。
-- A15. 审批决策、返工触发、备份/恢复操作均可在 audit_logs 中按 actor/action/target 查询。
+- A15. 审批决策、返工触发、备份/恢复操作均可在 audit_logs 中按 actor/action/target 查询。（Minor #12：其中备份/恢复相关审计断言依赖阶段 5.5 产物，在阶段 5.5 验收时一并执行；阶段 5 仅验收审批与返工审计。）
 
 ## 阶段 5.5：备份与恢复（决策 D-013，MVP 必须交付）
 
 依赖：阶段 4 的重启恢复设施、阶段 5 的 Artifact 模块。
+验证边界（裁定 D-017）：阶段 1 只做当前 Electron 运行环境的 SQLite 基本集成验证；本阶段的 8 项验收是备份恢复的**完整验收**，VACUUM INTO 快照验证不能代替；打包态完整复验在阶段 6。
 
 ### 任务
 - [ ] SQLite WAL 一致性备份（VACUUM INTO 或 backup API）。
@@ -224,6 +230,7 @@ MVP 人工参与范围 = 单一 Human Approval 原语（决策 D-012/D-015）。
 - [ ] 产品经理验收。
 - [ ] 用户最终审批。
 - [ ] 完全退出应用（含 Core/Daemon）后重启恢复测试。
+- [ ] **完整打包态复验**（裁定 D-017）：打包产物中 Core 经 ELECTRON_RUN_AS_NODE 运行，验证 node:sqlite 基本集成与健康检查、迁移、执行链路一致（开发态与打包态一致性）。
 - [ ] 编写用户操作说明。
 
 ### 验收

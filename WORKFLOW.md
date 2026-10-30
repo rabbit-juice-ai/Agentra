@@ -1,6 +1,6 @@
 # 工作流定义与执行语义
 
-版本：V1.1（修订版，基线冻结前）  
+版本：V1.2（基于 v1.0.0 Development Baseline 的 D-017 修订）  
 本文件是 Workflow Engine 的规范性要求。
 
 ## 1. 核心模型
@@ -59,7 +59,7 @@
 
 Join Policy：
 - all_success：全部成功（MVP 实现）
-- all_terminal：全部进入终态
+- all_terminal：全部进入终态（后续版本）
 - quorum：达到指定数量（后续版本）
 
 Join 必须按配置策略等待，不可提前放行。
@@ -87,7 +87,7 @@ Join 必须按配置策略等待，不可提前放行。
 - skipped：跳过
 - reconciliation_required：状态待核对
 
-MVP 实际启用子集以 DEVELOPMENT_PLAN 阶段 4 实现清单为准；schema 保留全量枚举以支持后续版本扩展。
+**MVP 启用状态子集（D-017 明确，消除悬空引用）**：blocked、ready、running、waiting_approval、paused、succeeded、changes_requested、rejected、failed、cancelled、skipped、reconciliation_required。`waiting_input`、`waiting_checkpoint` 随 Human Input/Checkpoint（V1.1）启用，MVP 不产生这两个状态；schema 保留全量枚举以支持后续版本扩展。
 
 状态迁移必须由 Workflow Engine 状态机校验，UI 不可直接写状态。
 
