@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "start": "electron-vite preview",
-    "test": "echo \"desktop 阶段0无自动化测试（手动验收）\" && exit 0",
+    "test": "vitest run",
     "build": "electron-vite build",
     "typecheck:node": "tsc -p tsconfig.json --noEmit",
     "typecheck:web": "tsc -p src/renderer/tsconfig.json --noEmit"

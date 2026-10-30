@@ -10,6 +10,6 @@
     "types": ["node"],
     "lib": ["ES2023", "DOM"]
   },
-  "include": ["src/main", "src/preload"],
+  "include": ["src/main", "src/preload", "src/shared"],
   "references": [{ "path": "../../packages/protocol" }, { "path": "../../packages/shared" }]
 }

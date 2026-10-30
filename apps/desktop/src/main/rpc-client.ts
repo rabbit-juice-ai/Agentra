@@ -1,12 +1,23 @@
 import net from 'node:net'
-import { PROTOCOL_VERSION, type RpcResponse, rpcFailure } from '@agentra/protocol'
+import {
+  EventFrame,
+  PROTOCOL_VERSION,
+  type RpcResponse,
+  type RuntimeEvent,
+  rpcFailure,
+} from '@agentra/protocol'
 import { newId } from '@agentra/shared'
 import WebSocket from 'ws'
 
-/** Desktop → Core 的 WS-over-UDS 客户端：请求 Promise 化。 */
+/**
+ * Desktop → Core 的 WS-over-UDS 客户端：请求 Promise 化 + 事件推送订阅。
+ * 连接断开时通知监听者（由主进程决定是否重连）。
+ */
 export class CoreRpcClient {
   private ws: WebSocket | null = null
-  private pending = new Map<string, (response: RpcResponse) => void>()
+  private readonly pending = new Map<string, (response: RpcResponse) => void>()
+  private readonly eventListeners = new Set<(event: RuntimeEvent) => void>()
+  private readonly closeListeners = new Set<() => void>()
 
   constructor(private readonly socketPath: string) {}
 
@@ -23,21 +34,22 @@ export class CoreRpcClient {
       ws.once('open', () => resolve())
       ws.once('error', (error) => reject(error))
     })
-    this.ws.on('message', (data) => {
-      try {
-        const response = JSON.parse(String(data)) as RpcResponse
-        const settle = this.pending.get(response.requestId)
-        if (settle) {
-          this.pending.delete(response.requestId)
-          settle(response)
-        }
-      } catch {
-        // 非 JSON 帧：忽略（协议不允许，但客户端保持健壮）。
-      }
+    const ws = this.ws
+    if (!ws) throw new Error('client closed')
+    ws.on('message', (data) => {
+      this.handleMessage(String(data))
+    })
+    ws.on('close', () => {
+      this.ws = null
+      this.failPending()
+      for (const listener of this.closeListeners) listener()
+    })
+    ws.on('error', () => {
+      // 错误后通常伴随 close；由 close 统一处理重连。
     })
   }
 
-  async call(method: string, params: unknown = {}, timeoutMs = 5000): Promise<RpcResponse> {
+  async call(method: string, params: unknown = {}, timeoutMs = 15_000): Promise<RpcResponse> {
     const ws = this.ws
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       return rpcFailure('client-not-open', 'NOT_READY', 'core connection is not open')
@@ -57,9 +69,59 @@ export class CoreRpcClient {
     return response
   }
 
+  /** 订阅 Core 事件；返回取消订阅函数。 */
+  subscribe(listener: (event: RuntimeEvent) => void): () => void {
+    this.eventListeners.add(listener)
+    return () => {
+      this.eventListeners.delete(listener)
+    }
+  }
+
+  onClose(listener: () => void): () => void {
+    this.closeListeners.add(listener)
+    return () => {
+      this.closeListeners.delete(listener)
+    }
+  }
+
   close(): void {
     this.ws?.close()
     this.ws = null
+    this.failPending()
+  }
+
+  private handleMessage(raw: string): void {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      // 非 JSON 帧：忽略（协议不允许，但客户端保持健壮）。
+      return
+    }
+    const eventFrame = EventFrame.safeParse(parsed)
+    if (eventFrame.success) {
+      for (const listener of this.eventListeners) {
+        try {
+          listener(eventFrame.data.event)
+        } catch {
+          // 单个监听者异常不影响其他监听者。
+        }
+      }
+      return
+    }
+    const response = parsed as RpcResponse
+    if (typeof response?.requestId !== 'string') return
+    const settle = this.pending.get(response.requestId)
+    if (settle) {
+      this.pending.delete(response.requestId)
+      settle(response)
+    }
+  }
+
+  private failPending(): void {
+    for (const [requestId, settle] of this.pending) {
+      settle(rpcFailure(requestId, 'NOT_READY', 'core connection closed'))
+    }
     this.pending.clear()
   }
 }

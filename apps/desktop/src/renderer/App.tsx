@@ -1,121 +1,148 @@
-import { useCallback, useEffect, useState } from 'react'
+import type { HealthResult } from '@agentra/protocol'
+import { useState } from 'react'
+import { AgentsPage } from './components/AgentsPage'
+import { ConsolePage } from './components/ConsolePage'
+import { buttonStyle, colors } from './components/styles'
+import { useAgentra } from './hooks/useAgentra'
 
-type HealthView = {
-  loading: boolean
-  status: string
-  detail: string
-  pid?: number
-  uptimeSeconds?: number
-  version?: string
-}
+type Tab = 'console' | 'agents'
 
-type HealthApi = {
-  getCoreHealth: () => Promise<{ ok: boolean; result?: unknown; error?: string }>
-  getDaemonHealth: () => Promise<{ ok: boolean; result?: unknown; error?: string }>
-}
-
-declare global {
-  interface Window {
-    agentra: HealthApi
-  }
-}
-
-const initial: HealthView = { loading: true, status: '…', detail: '' }
-
-function toView(
-  promise: Promise<{ ok: boolean; result?: unknown; error?: string }>,
-): Promise<HealthView> {
-  return promise.then((res) => {
-    if (!res.ok) return { loading: false, status: '断连', detail: res.error ?? 'unknown error' }
-    const r = res.result as Record<string, unknown>
-    return {
-      loading: false,
-      status: String(r.status ?? 'ok'),
-      detail: '',
-      pid: typeof r.pid === 'number' ? r.pid : undefined,
-      uptimeSeconds: typeof r.uptimeSeconds === 'number' ? r.uptimeSeconds : undefined,
-      version: typeof r.version === 'string' ? r.version : undefined,
-    }
-  })
-}
-
-function Card({ name, view }: { name: string; view: HealthView }) {
-  const ok = view.status === 'ok'
-  const color = ok ? '#1a7f37' : view.status === '断连' ? '#cf222e' : '#9a6700'
+function HealthDot({ label, health }: { label: string; health: HealthResult | null }) {
+  const ok = health !== null
   return (
-    <div
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          background: ok ? colors.green : colors.red,
+          display: 'inline-block',
+        }}
+      />
+      <span style={{ color: colors.muted }}>
+        {label} {ok ? `pid ${health.pid}` : '断连'}
+      </span>
+    </span>
+  )
+}
+
+function TabButton({
+  active,
+  children,
+  onClick,
+}: {
+  active: boolean
+  children: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
       style={{
-        border: '1px solid #d0d7de',
-        borderRadius: 8,
-        padding: '16px 20px',
-        minWidth: 260,
-        fontFamily: 'system-ui, sans-serif',
+        ...buttonStyle,
+        border: 'none',
+        borderBottom: `2px solid ${active ? colors.blue : 'transparent'}`,
+        borderRadius: 0,
+        background: 'transparent',
+        color: active ? colors.text : colors.muted,
+        fontWeight: active ? 600 : 400,
+        padding: '8px 12px',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: 5,
-            background: color,
-            display: 'inline-block',
-          }}
-        />
-        <strong style={{ fontSize: 15 }}>{name}</strong>
-        <span style={{ marginLeft: 'auto', color, fontSize: 13 }}>{view.status}</span>
-      </div>
-      {view.pid !== undefined && (
-        <div style={{ marginTop: 8, fontSize: 12, color: '#57606a', lineHeight: 1.7 }}>
-          pid {view.pid} · uptime {Math.floor(view.uptimeSeconds ?? 0)}s · v{view.version}
-        </div>
-      )}
-      {view.detail && (
-        <div style={{ marginTop: 8, fontSize: 12, color: '#cf222e' }}>{view.detail}</div>
-      )}
-    </div>
+      {children}
+    </button>
   )
 }
 
 export function App() {
-  const [core, setCore] = useState<HealthView>(initial)
-  const [daemon, setDaemon] = useState<HealthView>(initial)
-
-  const refresh = useCallback(() => {
-    setCore(initial)
-    setDaemon(initial)
-    void toView(window.agentra.getCoreHealth()).then(setCore)
-    void toView(window.agentra.getDaemonHealth()).then(setDaemon)
-  }, [])
-
-  useEffect(() => {
-    refresh()
-    const timer = setInterval(refresh, 5000)
-    return () => clearInterval(timer)
-  }, [refresh])
+  const store = useAgentra()
+  const [tab, setTab] = useState<Tab>('console')
 
   return (
-    <div style={{ padding: 24, fontFamily: 'system-ui, sans-serif' }}>
-      <h1 style={{ fontSize: 18, margin: '0 0 4px' }}>Agentra</h1>
-      <p style={{ fontSize: 13, color: '#57606a', margin: '0 0 20px' }}>
-        阶段 0 · 服务健康状态（每 5 秒刷新）
-        <button
-          type="button"
-          onClick={refresh}
-          style={{ marginLeft: 12, fontSize: 12, cursor: 'pointer' }}
+    <div
+      style={{
+        minHeight: '100vh',
+        background: colors.bg,
+        color: colors.text,
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+      }}
+    >
+      <header
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 16,
+          padding: '10px 20px',
+          background: colors.panel,
+          borderBottom: `1px solid ${colors.border}`,
+          position: 'sticky',
+          top: 0,
+          zIndex: 10,
+        }}
+      >
+        <strong style={{ fontSize: 15 }}>Agentra</strong>
+        <nav style={{ display: 'flex' }}>
+          <TabButton active={tab === 'console'} onClick={() => setTab('console')}>
+            执行控制台
+          </TabButton>
+          <TabButton active={tab === 'agents'} onClick={() => setTab('agents')}>
+            Agents
+          </TabButton>
+        </nav>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 16 }}>
+          <HealthDot label="Core" health={store.coreHealth} />
+          <HealthDot label="Daemon" health={store.daemonHealth} />
+        </div>
+      </header>
+
+      {store.banner && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            margin: '12px 20px 0',
+            padding: '8px 12px',
+            borderRadius: 6,
+            border: `1px solid ${colors.amber}`,
+            background: '#fff8c5',
+            fontSize: 13,
+            color: colors.text,
+          }}
         >
-          立即刷新
-        </button>
-      </p>
-      <div style={{ display: 'flex', gap: 16 }}>
-        <Card name="Core" view={core} />
-        <Card name="Daemon" view={daemon} />
-      </div>
-      {(core.status === '断连' || daemon.status === '断连') && (
-        <p style={{ fontSize: 12, color: '#9a6700', marginTop: 16 }}>
-          提示：服务断连时请检查 ~/Library/Application Support/agentra/logs/ 下的日志。
-        </p>
+          <span style={{ flex: 1 }}>{store.banner}</span>
+          <button type="button" style={buttonStyle} onClick={store.dismissBanner}>
+            关闭
+          </button>
+        </div>
       )}
+
+      <main style={{ padding: 20 }}>
+        {tab === 'console' ? (
+          <ConsolePage
+            agents={store.agents}
+            state={store.consoleState}
+            busy={store.busy}
+            onStart={store.actions.startExecution}
+            onSelect={store.actions.selectExecution}
+            onCancel={store.actions.cancelExecution}
+            onInterrupt={store.actions.interruptExecution}
+            onSendMessage={store.actions.sendMessage}
+          />
+        ) : (
+          <AgentsPage
+            agents={store.agents}
+            providers={store.providers}
+            busy={store.busy}
+            onCreate={store.actions.createAgent}
+            onUpdate={store.actions.updateAgent}
+            onArchive={store.actions.archiveAgent}
+            onRefreshProviders={store.actions.refreshProviderDiscovery}
+          />
+        )}
+      </main>
     </div>
   )
 }
