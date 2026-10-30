@@ -9,6 +9,14 @@ export const RpcErrorCode = z.enum([
   'VERSION_MISMATCH',
   'NOT_READY',
   'INTERNAL',
+  // 阶段 1：CLI 不可用 / 未认证时启动执行必须返回固定错误码，且不创建 Execution。
+  'CLI_UNAVAILABLE',
+  'CLI_NOT_AUTHENTICATED',
+  // 阶段 1：Provider 显式声明 unsupported 的能力被调用时返回，且不改变执行状态。
+  'CAPABILITY_UNSUPPORTED',
+  'EXECUTION_NOT_FOUND',
+  'AGENT_NOT_FOUND',
+  'PROVIDER_NOT_FOUND',
 ])
 export type RpcErrorCode = z.infer<typeof RpcErrorCode>
 
@@ -52,4 +60,18 @@ export function rpcFailure(requestId: string, code: RpcErrorCode, message: strin
 /** 构造成功响应的便捷函数。 */
 export function rpcSuccess(requestId: string, result: unknown): RpcSuccess {
   return { requestId, ok: true, result }
+}
+
+/**
+ * 处理器可抛出的业务错误：分发器把它映射为对应错误码，
+ * 而不是统一压成 INTERNAL（否则客户端无法区分可操作的失败原因）。
+ */
+export class RpcMethodError extends Error {
+  constructor(
+    readonly code: RpcErrorCode,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'RpcMethodError'
+  }
 }

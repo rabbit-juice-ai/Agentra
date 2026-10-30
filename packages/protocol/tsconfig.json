@@ -7,5 +7,6 @@
     "outDir": "dist-types",
     "rootDir": "src"
   },
-  "include": ["src"]
+  "include": ["src"],
+  "references": [{ "path": "../runtime-sdk" }]
 }

@@ -11,6 +11,7 @@
     "build": "esbuild src/index.ts --bundle --platform=neutral --format=esm --outfile=dist/index.js --external:zod"
   },
   "dependencies": {
+    "@agentra/runtime-sdk": "workspace:*",
     "zod": "4.6.7"
   }
 }
