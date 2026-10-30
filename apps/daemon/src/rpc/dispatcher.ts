@@ -1,19 +1,31 @@
 import type { RpcResponse } from '@agentra/protocol'
-import { PROTOCOL_VERSION, RpcRequest, rpcFailure } from '@agentra/protocol'
+import { PROTOCOL_VERSION, RpcMethodError, RpcRequest, rpcFailure } from '@agentra/protocol'
 
-export type RpcHandler = (params: unknown) => unknown | Promise<unknown>
+/** 每个连接一份：事件推送与关闭回调（订阅型连接需要）。 */
+export type RpcContext = {
+  push: (frame: unknown) => void
+  onClose: (listener: () => void) => void
+}
+
+export type RpcHandler = (params: unknown, ctx: RpcContext) => unknown | Promise<unknown>
 
 export type MethodTable = Record<
   string,
   { handler: RpcHandler; paramsSchema: null | { parse: (p: unknown) => unknown } }
 >
 
+const NOOP_CONTEXT: RpcContext = { push: () => {}, onClose: () => {} }
+
 /**
  * NDJSON 帧解析 + 信封校验 + method 分发。
  * 校验顺序：JSON 解析 → 信封（含 protocolVersion）→ method 查表 → params 校验 → handler。
+ * 业务处理器抛 RpcMethodError 时保留其错误码（如 CLI_UNAVAILABLE）。
  */
 export function createDispatcher(methods: MethodTable) {
-  return async function dispatch(frame: string): Promise<RpcResponse> {
+  return async function dispatch(
+    frame: string,
+    ctx: RpcContext = NOOP_CONTEXT,
+  ): Promise<RpcResponse> {
     let parsed: unknown
     try {
       parsed = JSON.parse(frame)
@@ -53,9 +65,12 @@ export function createDispatcher(methods: MethodTable) {
     }
 
     try {
-      const result = await entry.handler(params)
+      const result = await entry.handler(params, ctx)
       return { requestId: request.requestId, ok: true, result }
     } catch (error) {
+      if (error instanceof RpcMethodError) {
+        return rpcFailure(request.requestId, error.code, error.message)
+      }
       // 处理器内部失败不是入参问题：回 INTERNAL，避免客户端误判为可重试的入参错误。
       const message = error instanceof Error ? error.message : String(error)
       return rpcFailure(request.requestId, 'INTERNAL', message)

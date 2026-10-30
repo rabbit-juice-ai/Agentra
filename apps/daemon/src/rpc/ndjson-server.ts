@@ -1,13 +1,13 @@
 import fs from 'node:fs'
 import net from 'node:net'
 import { rpcFailure } from '@agentra/protocol'
-import { createDispatcher, type MethodTable } from './dispatcher'
+import { createDispatcher, type MethodTable, type RpcContext } from './dispatcher'
 
 export type NdjsonServer = { close: () => void; socketPath: string }
 
 /**
  * 在 Unix Domain Socket 上起 NDJSON RPC 服务。
- * 每行一个 JSON 信封，响应同样按行回写。仅绑定本机 UDS，无 TCP 端口。
+ * 每行一个 JSON 信封，响应同样按行回写；订阅型连接（daemon.subscribe）可收到服务端推送的事件帧。
  */
 export function startNdjsonServer(
   socketPath: string,
@@ -17,6 +17,23 @@ export function startNdjsonServer(
   const dispatch = createDispatcher(methods)
   const server = net.createServer((socket) => {
     let buffer = ''
+    const closeListeners: (() => void)[] = []
+    const ctx: RpcContext = {
+      push: (frame) => {
+        if (!socket.destroyed) socket.write(`${JSON.stringify(frame)}\n`)
+      },
+      onClose: (listener) => closeListeners.push(listener),
+    }
+    socket.on('close', () => {
+      for (const listener of closeListeners.splice(0)) {
+        try {
+          listener()
+        } catch {
+          // 关闭回调异常不得影响其他订阅者清理。
+        }
+      }
+    })
+
     socket.setEncoding('utf8')
     socket.on('data', (chunk) => {
       buffer += chunk
@@ -25,15 +42,14 @@ export function startNdjsonServer(
         const line = buffer.slice(0, newlineIndex).trim()
         buffer = buffer.slice(newlineIndex + 1)
         if (line.length > 0) {
-          void dispatch(line)
+          void dispatch(line, ctx)
             .then((response) => {
-              socket.write(`${JSON.stringify(response)}\n`)
+              ctx.push(response)
             })
             .catch((error: unknown) => {
               // 分发器本身不应抛错；兜底转换为 INTERNAL 响应。
               const message = error instanceof Error ? error.message : String(error)
-              const fallback = rpcFailure('internal-error', 'INTERNAL', message)
-              socket.write(`${JSON.stringify(fallback)}\n`)
+              ctx.push(rpcFailure('internal-error', 'INTERNAL', message))
             })
         }
         newlineIndex = buffer.indexOf('\n')

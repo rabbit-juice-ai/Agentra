@@ -1,7 +1,11 @@
 import fs from 'node:fs'
+import { ClaudeCodeProvider } from '@agentra/runtime-cli'
 import { agentraHome, agentraPaths, createLogger, ensureDirs, isDirectRun } from '@agentra/shared'
 import { startNdjsonServer } from './rpc/ndjson-server'
+import { RuntimeEventHub } from './runtime/event-hub'
+import { ExecutionManager } from './runtime/execution-manager'
 import { daemonHealthMethods } from './services/health'
+import { runtimeMethods } from './services/runtime'
 
 const VERSION = '0.1.0'
 
@@ -10,6 +14,30 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const paths = agentraPaths(home)
   ensureDirs(paths)
   const logger = createLogger('daemon', paths.daemonLog)
+
+  const hub = new RuntimeEventHub()
+  const claude = new ClaudeCodeProvider({ discovery: { env } })
+  // 启动即发现：把路径/版本/认证状态带入进程，供 Core 的 runtime.provider.refresh 读取。
+  try {
+    const [info] = await claude.discover()
+    logger.info('runtime provider discovered', {
+      providerId: info?.providerId,
+      executablePath: info?.executablePath,
+      version: info?.version,
+      healthStatus: info?.healthStatus,
+    })
+  } catch (error) {
+    logger.warn('runtime provider discovery failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  const manager = new ExecutionManager({
+    scratchRoot: paths.scratch,
+    providers: new Map([[claude.id, claude]]),
+    hub,
+    logger,
+  })
 
   // pid 文件：探活与 stop 脚本使用。
   fs.writeFileSync(
@@ -25,7 +53,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
 
   const server = await startNdjsonServer(
     paths.daemonSocket,
-    daemonHealthMethods(VERSION),
+    { ...daemonHealthMethods(VERSION), ...runtimeMethods(manager, hub) },
     (error) => {
       logger.error('daemon server error', { error: error.message })
     },
@@ -35,10 +63,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     socketPath: server.socketPath,
     pid: process.pid,
     version: VERSION,
+    scratchRoot: paths.scratch,
   })
 
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string): Promise<void> => {
     logger.info('daemon shutting down', { signal })
+    // 取消运行中的子进程，避免留下孤儿 CLI 进程。
+    await manager.shutdown()
     server.close()
     try {
       fs.unlinkSync(paths.daemonPid)
@@ -47,8 +78,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     }
     process.exit(0)
   }
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
-  process.on('SIGINT', () => shutdown('SIGINT'))
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  process.on('SIGINT', () => void shutdown('SIGINT'))
 }
 
 // 被直接运行时启动（tsx 源码 / esbuild 打包产物）；被测试导入时不自动启动。
