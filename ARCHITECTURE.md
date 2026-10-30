@@ -104,16 +104,20 @@ Core 建议模块：
 - database
 - rpc
 
-Packages 建议：
-- protocol：RPC DTO、事件 Schema、版本
-- domain-types：共享领域类型
-- workflow-schema：工作流定义与验证
-- runtime-sdk：统一运行时接口
-- runtime-cli：CLI Provider
-- runtime-acp：未来 ACP Provider
-- protocol-mcp：MCP 工具接入
-- protocol-a2a：未来 A2A 接入
-- ui：共享 UI 组件
+Packages 建议（状态列区分已落地包与规划包；新增包须在此登记，已废弃包保留行并标注原因）：
+
+| 包 | 职责 | 状态 |
+|---|---|---|
+| `shared` | 数据根目录与路径、结构化日志、ID 生成等基础工具 | 已实现 |
+| `protocol` | RPC DTO、事件 Schema、版本 | 已实现 |
+| `runtime-sdk` | 统一运行时接口与能力模型 | 已实现 |
+| `runtime-cli` | CLI Provider（当前为 Claude Code） | 已实现 |
+| `domain-types` | 共享领域类型 | 计划中（未排期；当前共享类型由 `protocol` 的 DTO 承担） |
+| `workflow-schema` | 工作流定义与验证 | 计划中（阶段 3） |
+| `runtime-acp` | ACP Provider | 计划中（阶段 7） |
+| `protocol-mcp` | MCP 工具接入 | 计划中（阶段 7） |
+| `protocol-a2a` | A2A 接入 | 计划中（阶段 7） |
+| `ui` | 共享 UI 组件 | 计划中（阶段 3 起按需抽取） |
 
 ## 5. Agent Runtime 抽象
 

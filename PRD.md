@@ -88,14 +88,17 @@ Agent Team Workspace 是一款运行在 macOS 本地的 AI Agent 员工团队管
 - 支持暂停、恢复和终止整个 Work（暂停 Work 后所有分支不再启动新 NodeRun；终止为终态且不可逆；并发冲突行为见验收 A-19：同目录争用返回 WORKDIR_LOCKED 提示，Worktree 隔离时不阻塞）。
 
 ### 5.5 工作流设计器
-MVP 画布节点（7 种，决策 D-010）：
-- Start（系统结构节点，唯一入口）
-- Agent Task
-- Parallel Split
-- Join
-- Human Approval
-- Condition
-- End
+MVP 画布节点（7 种，决策 D-010）。类型标识与 DATABASE §2.5 的 MVP type 白名单逐字一致：
+
+| 展示名 | 类型标识（snake_case） |
+|---|---|
+| Start（系统结构节点，唯一入口） | `start` |
+| Agent Task | `agent_task` |
+| Parallel Split | `parallel_split` |
+| Join | `join` |
+| Human Approval | `human_approval` |
+| Condition | `condition` |
+| End | `end` |
 
 设计器支持节点拖拽、连线、配置面板、校验、保存、复制模板和发布新版本。模板版本发布后不可原地修改；修改应生成新版本。画布节点面板仅提供上述 7 种；发布含未知节点类型的定义被拒绝。
 
@@ -144,6 +147,7 @@ MVP 人工参与 = 单一 Human Approval 原语（决策 D-012/D-015）：
 - 对不支持原生暂停/恢复的 Provider，明确降级为安全中断、保存上下文、重新启动；不可伪造能力。
 - Desktop 不直接管理 CLI 进程。
 - **AgentTask 输出契约**：AgentTask 节点可声明结构化输出要求（outputContract），输出经 Schema 校验后供 Condition 节点与返工机制使用。测试类任务必须输出：pass/fail、失败原因、关联任务、影响范围、相关 Artifact。输出不符合契约时任务按失败处理，不触发返工。
+- **开发者执行控制台（非 MVP 产品功能）**：阶段 1 在开发构建中提供直接选择 Agent 并输入 prompt 启动单次执行的调试入口，仅用于工程验收与排障。该入口不是产品功能：其产生的 Execution 不归属任何 Work / Assignment（`assignment_id` 与 `node_run_id` 均为空），不得出现在工作台、审批中心、Artifact 或审计产品视图中；产品内的正式执行必须遵循 Team / Work / Assignment 归属，不允许任何入口产生绕过 Work 边界的游离执行。发布构建不包含该页面与导航入口（硬约束，dev-only 构建开关），构建开关与打包产物检查见 DEVELOPMENT_PLAN 阶段 6（验收 A-22）。
 
 ### 5.9 交付物管理
 - 交付物有类型、路径/存储位置、版本、创建者、关联节点和校验状态。
@@ -225,6 +229,7 @@ MVP 人工参与 = 单一 Human Approval 原语（决策 D-012/D-015）：
 - Human Input（V1.1）、Checkpoint（V1.1）、人工选择条件分支（V1.1）、Human Takeover（V1.2）、多级审批（V1.2）。
 - 定时自动备份/保留策略（V1.1）、云端/增量备份、跨设备迁移（V1.2）。
 - Wait 定时等待、Artifact Review 独立节点、Retry/Loop 画布节点。
+- 开发者执行控制台的产品化（不作为 MVP 交付入口；发布构建不包含，见 D-018）。
 
 ## 9. MVP 验收标准（编号化）
 
@@ -249,3 +254,4 @@ MVP 人工参与 = 单一 Human Approval 原语（决策 D-012/D-015）：
 - A-19 并发冲突可感知：两个 Work 指向同一非 Worktree 目录时第二次启动返回 WORKDIR_LOCKED 并提示；同一 Agent 达到并发上限时第二个任务排队不启动（上限释放后自动调度）。
 - A-20 Work 级暂停/恢复：暂停 Work 后其所有分支无新 NodeRun 进入 running，恢复后仅依赖满足的节点进入 ready；其他 Work 不受影响。
 - A-21 Work 级终止：确认后所有未终结 WorkflowRun 置 cancelled、pending 审批置 cancelled（系统取消路径）、运行中 Execution 停止；已完成节点/审批/Artifact 记录保留；终止操作写入 audit_logs；再次操作该 Work 提示已终态。
+- A-22 发布构建不含开发者执行控制台：打包产物中 (1) 不存在该页面与导航入口；(2) 不暴露可直接创建游离 Execution 的 IPC / API；(3) 直接请求无法绕过 UI 限制创建无 Work / Assignment 归属的 Execution；(4) 阶段 6 对打包产物执行自动化检查，四项断言全部为真。

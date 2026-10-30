@@ -142,7 +142,7 @@ Provider 是运行时实现，AgentProfile 是员工身份。不得把两者合�
 - provider_id FK
 - external_session_id nullable
 - context_ref nullable
-- status
+- status: active | ended
 - created_at
 - updated_at
 - last_active_at nullable
@@ -154,7 +154,8 @@ Provider 是运行时实现，AgentProfile 是员工身份。不得把两者合�
 - provider_id FK
 - external_execution_id nullable
 - process_id nullable
-- status
+- status: pending | running | succeeded | failed | cancelled | crashed
+  - **状态范围说明**：不含 `reconciliation_required`——该状态属于 `workflow_runs`（§2.6，阶段 4 引入），Execution 层不引入。
 - working_directory
 - started_at nullable
 - ended_at nullable
