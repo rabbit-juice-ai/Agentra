@@ -180,6 +180,34 @@ describe('method params', () => {
       AgentCreateParams.safeParse({ ...base, toolPermissions: { version: 2, allow: [], deny: [] } })
         .success,
     ).toBe(false)
+
+    // 重复项：比较前先 trim（[" Read", "Read"] 视为重复）
+    expect(
+      AgentCreateParams.safeParse({
+        ...base,
+        toolPermissions: { version: 1, allow: ['Read', 'Read'], deny: [] },
+      }).success,
+    ).toBe(false)
+    expect(
+      AgentCreateParams.safeParse({
+        ...base,
+        toolPermissions: { version: 1, allow: [' Read', 'Read'], deny: [] },
+      }).success,
+    ).toBe(false)
+    expect(
+      AgentCreateParams.safeParse({
+        ...base,
+        toolPermissions: { version: 1, allow: ['Read'], deny: [' Read '] },
+      }).success,
+    ).toBe(false)
+
+    // 只含空白的项不参与重复判定（Core 归一化时过滤），不构成新的拒绝
+    expect(
+      AgentCreateParams.safeParse({
+        ...base,
+        toolPermissions: { version: 1, allow: [' ', '  '], deny: [] },
+      }).success,
+    ).toBe(true)
   })
 
   it('validates agent creation input', () => {

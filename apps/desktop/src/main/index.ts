@@ -134,6 +134,13 @@ function broadcastEvent(event: unknown): void {
   }
 }
 
+/** Core 连接就绪（含断线重连成功）：renderer 收到后补拉首屏数据。 */
+function broadcastCoreReady(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('agentra:core-ready')
+  }
+}
+
 function scheduleReconnect(): void {
   if (reconnectTimer) return
   reconnectTimer = setTimeout(() => {
@@ -163,6 +170,9 @@ async function connectCore(): Promise<void> {
     })
     // 订阅事件：renderer 通过 IPC 接收 execution.output / execution.state。
     await next.call(EVENTS_SUBSCRIBE_METHOD, {})
+    // Core 就绪：通知 renderer 补拉首屏数据。
+    // 启动时 renderer 常先于 Core 就绪，首拉会撞 NOT_READY；agents / providers 没有轮询，不补拉就会一直是空列表。
+    broadcastCoreReady()
   } catch (error) {
     lastError = error instanceof Error ? error.message : String(error)
     client = null

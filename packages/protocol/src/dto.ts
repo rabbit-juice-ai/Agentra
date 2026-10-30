@@ -19,9 +19,16 @@ export type AgentStatus = z.infer<typeof AgentStatus>
 /**
  * 工具权限最小模型（U3）。
  * - allow 为空 = 未配置 = 拒绝执行（不默认全开）；
- * - deny 优先于 allow；同一工具不得同时出现在两个清单里，冲突在写入时拒绝；
- * - 单项 1–200 字符、各清单 ≤100 项；重复项由 Core 在归一化时去重。
+ * - deny 优先于 allow；同一工具不得同时出现在两个清单里；
+ * - 单项 1–200 字符、各清单 ≤100 项；
+ * - 重复项与 allow/deny 冲突一律在写入时拒绝（INVALID_PARAMS），不做静默去重。
+ *
+ * 判定口径：先去除首尾空白再比较——`[" Read", "Read"]` 视为重复，`allow:["Read"]` 与
+ * `deny:[" Read"]` 视为冲突。只含空白的项不参与重复判定（它们会被 Core 归一化时过滤掉）。
  */
+const normalizeToolList = (tools: readonly string[]): string[] =>
+  tools.map((tool) => tool.trim()).filter((tool) => tool.length > 0)
+
 export const ToolPermissions = z
   .object({
     version: z.literal(1),
@@ -29,9 +36,32 @@ export const ToolPermissions = z
     deny: z.array(z.string().min(1).max(200)).max(100),
   })
   .strict()
-  .refine((value) => value.allow.every((tool) => !value.deny.includes(tool)), {
-    message: 'allow 与 deny 不能包含同一工具（deny 优先，冲突必须在写入时拒绝）',
-    path: ['allow'],
+  .superRefine((value, ctx) => {
+    const allow = normalizeToolList(value.allow)
+    const deny = normalizeToolList(value.deny)
+
+    if (new Set(allow).size !== allow.length) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'allow 中存在重复工具（比较前先去除首尾空白）',
+        path: ['allow'],
+      })
+    }
+    if (new Set(deny).size !== deny.length) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'deny 中存在重复工具（比较前先去除首尾空白）',
+        path: ['deny'],
+      })
+    }
+    const overlap = allow.filter((tool) => deny.includes(tool))
+    if (overlap.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `allow 与 deny 不能包含同一工具（deny 优先，冲突必须在写入时拒绝）：${overlap.join(', ')}`,
+        path: ['allow'],
+      })
+    }
   })
 export type ToolPermissions = z.infer<typeof ToolPermissions>
 

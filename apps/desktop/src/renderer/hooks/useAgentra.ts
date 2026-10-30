@@ -97,6 +97,18 @@ export function useAgentra() {
     return () => clearInterval(timer)
   }, [refreshAgents, refreshProviders, refreshExecutions, refreshHealth])
 
+  // Core 就绪（含重连）后补拉首屏数据：启动时 renderer 常先于 Core 就绪，首拉会撞 NOT_READY，
+  // 而 agents / providers 没有轮询，不补拉就会一直是空列表。
+  useEffect(() => {
+    return api.onCoreReady(() => {
+      void refreshAgents()
+      void refreshProviders()
+      void refreshExecutions()
+      void refreshHealth()
+      setBanner((current) => (current?.includes('NOT_READY') ? null : current))
+    })
+  }, [refreshAgents, refreshProviders, refreshExecutions, refreshHealth])
+
   useEffect(() => {
     return api.onEvent((event) => {
       dispatch({ type: 'event', event })

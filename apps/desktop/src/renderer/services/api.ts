@@ -66,4 +66,6 @@ export const api = {
 
   onEvent: (listener: (event: RuntimeEvent) => void): (() => void) =>
     window.agentra.onEvent(listener),
+
+  onCoreReady: (listener: () => void): (() => void) => window.agentra.onCoreReady(listener),
 }

@@ -606,17 +606,46 @@ describe('工具权限强制（U3）', () => {
     expect(policyLog?.content).toContain('Read')
   })
 
-  it('保存时对 allow/deny 去重并保留顺序', async () => {
+  it('保存时 trim 生效、空白项被过滤、顺序保留（不因空白产生拒绝）', async () => {
     const h = await harness()
     const created = h.agents.create({
-      name: 'Dup',
+      name: 'Trim',
       role: 'engineer',
-      toolPermissions: { version: 1, allow: ['Read', ' Read ', 'Edit'], deny: ['Bash'] },
+      toolPermissions: { version: 1, allow: [' Read ', 'Edit', ' '], deny: [' Bash '] },
     })
     expect(h.agents.get(created.id).toolPermissions).toEqual({
       version: 1,
       allow: ['Read', 'Edit'],
       deny: ['Bash'],
     })
+  })
+
+  it('保存时拒绝重复项，比较前先 trim（A-23 ②）', async () => {
+    const h = await harness()
+    for (const allow of [
+      ['Read', 'Read'],
+      [' Read', 'Read'],
+      ['Read', 'Read '],
+    ]) {
+      expect(() =>
+        h.agents.create({
+          name: 'Dup',
+          role: 'engineer',
+          toolPermissions: { version: 1, allow, deny: [] },
+        }),
+      ).toThrow(expect.objectContaining({ code: 'INVALID_PARAMS' }))
+    }
+    expect(h.agents.list().some((agent) => agent.name === 'Dup')).toBe(false)
+  })
+
+  it('保存时拒绝 trim 后才冲突的 allow/deny（同一工具不同空白）', async () => {
+    const h = await harness()
+    expect(() =>
+      h.agents.create({
+        name: 'Conflict',
+        role: 'engineer',
+        toolPermissions: { version: 1, allow: ['Read'], deny: [' Read '] },
+      }),
+    ).toThrow(expect.objectContaining({ code: 'INVALID_PARAMS' }))
   })
 })

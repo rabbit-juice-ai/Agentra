@@ -50,4 +50,7 @@ export type AgentraApi = {
 
   /** 订阅 Core 推送的执行事件；返回取消订阅函数。 */
   onEvent(listener: (event: RuntimeEvent) => void): () => void
+
+  /** Core 连接就绪（含重连成功）时回调；renderer 据此补拉首屏数据。 */
+  onCoreReady(listener: () => void): () => void
 }

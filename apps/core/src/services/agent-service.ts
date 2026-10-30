@@ -4,7 +4,7 @@ import {
   type AgentUpdateParams,
   DEFAULT_TOOL_PERMISSIONS,
   RpcMethodError,
-  type ToolPermissions,
+  ToolPermissions,
 } from '@agentra/protocol'
 import { newId } from '@agentra/shared'
 import type { Database } from '../db/database'
@@ -21,14 +21,18 @@ function requireText(value: string, field: string): string {
 }
 
 /**
- * 工具权限归一化：去空白、去重、保持输入顺序。
- * allow ∩ deny 的冲突由 protocol 的 ToolPermissions schema 在写入前拒绝（INVALID_PARAMS）。
+ * 工具权限归一化：只做「去空白 + 过滤空白项 + 保持顺序」，不去重。
+ * 重复项与 allow/deny 冲突由 protocol 的 ToolPermissions schema 拒绝（RPC 边界返回 INVALID_PARAMS）；
+ * 这里再 parse 一次，保证直接调用服务层（绕过 RPC）时同样拒绝，而不是把非法配置落库。
  */
 function normalizeToolPermissions(input: ToolPermissions): ToolPermissions {
-  const dedupe = (tools: string[]): string[] => [
-    ...new Set(tools.map((tool) => tool.trim()).filter((tool) => tool.length > 0)),
-  ]
-  return { version: 1, allow: dedupe(input.allow), deny: dedupe(input.deny) }
+  const parsed = ToolPermissions.safeParse(input)
+  if (!parsed.success) {
+    throw new RpcMethodError('INVALID_PARAMS', `工具权限配置非法：${parsed.error.message}`)
+  }
+  const clean = (tools: string[]): string[] =>
+    tools.map((tool) => tool.trim()).filter((tool) => tool.length > 0)
+  return { version: 1, allow: clean(parsed.data.allow), deny: clean(parsed.data.deny) }
 }
 
 /** AgentProfile 领域服务：CRUD + 默认 Provider 绑定（归档而非物理删除）。 */

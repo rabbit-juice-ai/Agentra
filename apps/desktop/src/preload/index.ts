@@ -33,6 +33,14 @@ const api: AgentraApi = {
       ipcRenderer.removeListener('agentra:event', handler)
     }
   },
+
+  onCoreReady: (listener) => {
+    const handler = (): void => listener()
+    ipcRenderer.on('agentra:core-ready', handler)
+    return () => {
+      ipcRenderer.removeListener('agentra:core-ready', handler)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('agentra', api)

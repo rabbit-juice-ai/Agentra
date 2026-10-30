@@ -56,15 +56,40 @@ function cleanStaleFiles(paths: AgentraPaths, role: 'core' | 'daemon'): void {
 
 const CORE_ENTRY_BUNDLED = path.join('apps', 'core', 'dist', 'index.js')
 
+/**
+ * 定位 daemon 入口。
+ *
+ * 三种布局，按优先级：
+ * 1. 打包态：daemon 与 core 同目录（`resources/core/index.js` ↔ `resources/daemon/index.js`）。
+ * 2. 仓库态且 Core 从构建产物运行（`apps/core/dist/index.js`）：用 `apps/daemon/dist/index.js`。
+ * 3. 仓库态且 Core 从源码运行（tsx 跑 `apps/core/src/index.ts`）：用 `apps/daemon/src/index.ts`。
+ *
+ * 之前只找 `apps/core/daemon/index.js`（该目录不存在），导致永远回退到 src；
+ * 打包态 `src/` 不随包发布，回退会直接抛错，应用起不来。
+ */
 function resolveEntry(role: 'core' | 'daemon'): string {
-  // 打包态：Desktop 用 ELECTRON_RUN_AS_NODE 跑 bundle 后的单文件入口。
-  const selfDir = path.dirname(fileURLToPath(import.meta.url))
-  const bundled = path.resolve(selfDir, role === 'core' ? '../index.js' : '../daemon/index.js')
-  if (fs.existsSync(bundled)) return bundled
-  // 源码态：tsx 直接跑 src/index.ts。
-  const src = path.resolve(selfDir, role === 'core' ? 'index.ts' : `../../daemon/src/index.ts`)
-  if (fs.existsSync(src)) return src
-  throw new Error(`cannot locate ${role} entry (tried ${bundled} and ${src})`)
+  const selfFile = fileURLToPath(import.meta.url)
+  const selfDir = path.dirname(selfFile)
+  const fromSource = path.extname(selfFile) === '.ts'
+
+  if (role === 'core') {
+    const bundledCore = path.resolve(selfDir, '../index.js')
+    if (fs.existsSync(bundledCore)) return bundledCore
+    const srcCore = path.resolve(selfDir, 'index.ts')
+    if (fs.existsSync(srcCore)) return srcCore
+    throw new Error(`cannot locate core entry (tried ${bundledCore} and ${srcCore})`)
+  }
+
+  const packaged = path.resolve(selfDir, '../daemon/index.js')
+  if (fs.existsSync(packaged)) return packaged
+
+  const repoDist = path.resolve(selfDir, '../../daemon/dist/index.js')
+  const repoSrc = path.resolve(selfDir, '../../daemon/src/index.ts')
+  const candidates = fromSource ? [repoSrc, repoDist] : [repoDist, repoSrc]
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  throw new Error(`cannot locate daemon entry (tried ${[packaged, ...candidates].join(', ')})`)
 }
 
 export type LaunchResult = { spawned: boolean; state: ProbeState }
