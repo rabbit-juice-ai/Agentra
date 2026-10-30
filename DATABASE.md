@@ -1,6 +1,6 @@
 # 数据库设计
 
-版本：V1.0  
+版本：V1.1（修订版，基线冻结前）  
 数据库：SQLite（建议 WAL 模式）  
 ORM：Drizzle（推荐）
 
@@ -237,14 +237,20 @@ Workflow definition 建议包含：
 - workflow_run_id FK
 - node_run_id FK
 - approval_type: before_execute | checkpoint | after_execute | artifact_review | manual_route
+  - **MVP 子集**：before_execute、after_execute（经 Human Approval 原语实现；checkpoint/manual_route/artifact_review 为后续版本能力，MVP 仍保留枚举定义并标注）
 - status: pending | approved | changes_requested | rejected | taken_over | cancelled
+  - **MVP 子集**：pending、approved、changes_requested、rejected（taken_over/cancelled 为后续版本）
 - requested_by
 - decided_by nullable
 - decision_comment nullable
+  - **MVP 约束**：decision 决策为 request_changes 时必填修改意见
 - decision_payload_json nullable
 - artifact_version_id nullable
+- round integer default 1（审批轮次；request_changes 返工后重新进入本审批节点时递增）
+- rework_request_id nullable FK（request_changes 决策关联的返工任务；MVP 必填当 status=changes_requested）
 - requested_at
 - decided_at nullable
+- **幂等约束**：unique(node_run_id, round)——同一审批节点每轮至多一条记录；已进入终态（approved/changes_requested/rejected）的记录不可被后续请求修改（历史不可覆盖）。
 
 #### human_inputs
 - id PK
@@ -261,6 +267,28 @@ Workflow definition 建议包含：
 - checkpoint_ref nullable
 - checkpoint_data_json
 - created_at
+
+（checkpoints 为后续版本能力，MVP 不实现、仅保留表定义占位。）
+
+### 2.7.1 ReworkRequest（返工请求，决策 D-011/D-015）
+
+#### rework_requests
+- id PK
+- workflow_run_id FK
+- branch_run_id nullable FK
+- target_node_run_id FK（被返工任务的原始 NodeRun）
+- trigger_type: request_changes | test_failure
+- trigger_approval_id nullable FK（request_changes 触发时关联的 Approval 记录）
+- test_report_json nullable（测试失败触发时的结构化测试结果：pass/fail、失败原因、关联任务、影响范围、相关 Artifact）
+- round integer（第几轮返工，从 1 起；按 target_node_run 所在任务计数）
+- max_rounds integer default 2（不含首次执行）
+- status: requested | in_rework | completed | cancelled | exhausted（超限）
+- rework_node_run_id nullable FK（本轮返工执行产生的新 NodeRun attempt）
+- created_by（system | approval | user）
+- created_at
+- updated_at
+- **幂等约束**：unique(target_node_run_id, round)——同一任务同一轮至多一条 ReworkRequest；重复触发（重启恢复、重复审批提交）不得新建记录。
+- **关联说明**：ReworkRequest 完成后产生的新 Artifact 写入 artifact_versions 并经 rework_node_run_id 关联本轮执行；历史轮次的记录与 Artifact 版本一律保留不覆盖。
 
 ### 2.8 Artifact 与 Worktree
 
@@ -287,6 +315,8 @@ Workflow definition 建议包含：
 - metadata_json
 - created_at
 - unique(artifact_id, version)
+
+版本不可覆盖：返工、重新提交均产生新版本；审批与 ReworkRequest 通过 artifact_version_id 引用具体版本。
 
 #### artifact_reviews
 - id PK
@@ -342,6 +372,38 @@ Workflow definition 建议包含：
 - details_json
 - created_at
 
+### 2.10 备份与恢复（决策 D-013）
+
+#### backups
+- id PK
+- type: manual | pre_restore（恢复前自动备份当前数据）
+- manifest_version
+- db_sha256（数据库备份文件校验值）
+- artifact_files_json（托管 Artifact 文件清单：路径、大小、sha256）
+- file_count
+- status: creating | completed | failed | verified | restored
+- storage_path（备份包所在目录）
+- error_json nullable（失败原因；失败不得呈现为成功）
+- created_at
+- completed_at nullable
+- verified_at nullable
+
+备份包目录结构（含 manifest.json）：
+```
+<backup-dir>/<backup-id>/
+├── manifest.json        # { manifestVersion, createdAt, type, database: {file, sha256, bytes}, artifacts: [{path, sha256, bytes}], counts }
+├── database.db          # SQLite 一致性备份（WAL 兼容：VACUUM INTO 或 backup API 产物）
+└── artifacts/           # Agentra 托管的 Artifact 文件（按原相对路径存放）
+```
+
+不含：外部 Git 仓库/项目源码、CLI 程序、API Key/Token 等凭据、缓存与临时文件。
+
+恢复流程的持久化要求：
+- 恢复前自动创建 pre_restore 备份（失败则中止恢复）。
+- 恢复成功后写入 verified_at 并对新库执行完整性检查（PRAGMA integrity_check）。
+- 恢复后启动时执行工作流状态对账（见 WORKFLOW §9）：待审批与返工状态恢复，不重复执行外部副作用任务。
+- 恢复后检查外部项目路径（works.root_path / repository_path）是否存在，缺失的以结构化方式记录并提示用户。
+
 ## 3. 关键索引
 
 - assignments(work_id, agent_id)
@@ -350,6 +412,9 @@ Workflow definition 建议包含：
 - branch_runs(workflow_run_id, status)
 - node_runs(workflow_run_id, status)
 - approvals(status, requested_at)
+- approvals(node_run_id, round)（幂等唯一）
+- rework_requests(target_node_run_id, round)（幂等唯一）
+- rework_requests(workflow_run_id, status)
 - artifacts(work_id, created_at)
 - executions(status, updated_at)
 - workflow_events(workflow_run_id, occurred_at)
@@ -359,8 +424,9 @@ Workflow definition 建议包含：
 
 - 节点完成、Artifact 版本创建、WorkflowEvent 写入应尽量处于同一事务。
 - 下游调度必须在事务提交后发生。
-- 审批决策和对应状态变化应原子提交。
+- 审批决策和对应状态变化应原子提交；request_changes 决策与 ReworkRequest 创建同事务。
 - Daemon 事件以 event_id 去重。
+- ReworkRequest 轮次统计与状态迁移同事务（幂等键防重）。
 - 重启恢复时必须核对进程状态，避免重复执行有副作用的任务。
 - 任何无法确认的运行状态标记为 reconciliation_required，等待恢复策略处理。
 

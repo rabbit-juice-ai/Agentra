@@ -1,11 +1,11 @@
 # 工作流定义与执行语义
 
-版本：V1.0  
+版本：V1.1（修订版，基线冻结前）  
 本文件是 Workflow Engine 的规范性要求。
 
 ## 1. 核心模型
 
-工作流是一个有向图（DAG 为基础），由节点、边、分支和运行实例构成。V1 的循环通过显式 Retry/Loop 节点实现，不能允许任意图循环造成无限执行。
+工作流是一个有向无环图（DAG），由节点、边、分支和运行实例构成。**MVP 画布节点只有 7 种**（见第 2 节）；MVP 无任何循环节点，返工由 Workflow Engine 内建的 ReworkPolicy 实现（见第 10 节），不得通过任意图边形成无限循环，设计器必须拒绝含环定义的发布。
 
 - WorkflowTemplate：可复用模板。
 - WorkflowVersion：不可变发布版本。
@@ -13,8 +13,12 @@
 - BranchRun：分支运行状态。
 - NodeRun：节点执行实例。
 - Approval：人工决策实例。
+- ReworkRequest：引擎内建返工实例（非画布节点）。
 
-## 2. 节点类型
+## 2. 节点类型（MVP：7 种）
+
+### Start
+工作流唯一入口。每个 WorkflowVersion 必须有且仅有一个 Start 节点；运行从 Start 启动并写入 workflow.started 事件。发布含多个或零个 Start 的定义必须被拒绝。
 
 ### AgentTask
 执行 Agent 任务。配置：
@@ -23,23 +27,29 @@
 - inputArtifactRefs
 - workingDirectoryPolicy
 - permissionProfile
-- outputContract
+- outputContract（输出契约：经 Schema 验证的结构化输出要求；测试类任务必须含 pass/fail、失败原因、关联任务、影响范围、相关 Artifact 字段）
 - completionCriteria
 - timeout
-- retryPolicy
-- humanGates
+- retryPolicy（NodeRun 级执行重试，maxAttempts；与任务返工 ReworkPolicy 是两个概念，见第 10 节）
+- humanGates（MVP：beforeExecute / afterExecute 两种，经 Human Approval 原语实现）
 
 ### HumanApproval
-等待用户批准、要求修改、拒绝或接管。
+等待用户决策。MVP 决策集合与行为（决策 D-015）：
 
-### HumanInput
-等待用户提交文字、参数或文件。
+| 决策 | 行为 |
+|---|---|
+| approve | 审批通过，当前分支继续 |
+| reject | 审批不通过，当前分支暂停，**不自动返工**，等待用户后续决策 |
+| request_changes | 要求修改，**必须填写修改意见**并关联返工任务（创建 ReworkRequest）；返工完成后重新进入本节点，形成新一轮审批记录 |
 
-### HumanTakeover
-将任务交给用户手动处理；用户提交结果后恢复流程。
+- beforeExecute 使用场景：approval 状态为 pending 期间，不得创建对应 AgentTask 的 Execution。
+- afterExecute / ArtifactReview 使用场景：等待用户查看交付物并决策。
+- request_changes 触发的返工遵守 ReworkPolicy 的轮次上限（默认 2 轮，不含首次）；超限暂停分支进入人工处理。
+- 每轮审批生成独立 Approval 记录；历史决策不可被覆盖。
+- MVP 不支持的其他决策（take_over、cancel）与多级审批策略为后续版本。
 
 ### Condition
-对经过 Schema 验证的上下文进行条件判断。禁止执行任意 JavaScript/eval。条件语言应采用受限表达式或预定义运算符。
+对经过 Schema 验证的上下文进行条件判断。禁止执行任意 JavaScript/eval。条件语言采用受限表达式或预定义运算符。条件为真/假分别路由到预期后继；无匹配后继时节点进入 failed（不静默跳过）。MVP 典型用途：判断测试结果（pass/fail）以决定进入验收还是触发 ReworkRequest。
 
 ### ParallelSplit
 创建多个逻辑分支。每个分支创建独立 BranchRun 或映射到已有 BranchRun。
@@ -48,22 +58,16 @@
 等待指定上游分支/节点达到 Join Policy。
 
 Join Policy：
-- all_success：全部成功
+- all_success：全部成功（MVP 实现）
 - all_terminal：全部进入终态
 - quorum：达到指定数量（后续版本）
-V1 建议先实现 all_success。
 
-### Wait
-等待明确事件、人工输入或外部条件。定时等待可后续实现。
-
-### RetryLoop
-在最大次数和允许的目标节点范围内重试。必须保留每次 NodeRun attempt 历史。
-
-### ArtifactReview
-对指定 ArtifactVersion 执行审批。
+Join 必须按配置策略等待，不可提前放行。
 
 ### End
-结束当前工作流或分支。
+结束当前工作流或分支。End 置 succeeded 后 WorkflowRun 进入 completed 并写入 workflow.completed 事件。
+
+**后续版本节点**（不进 MVP，画布不提供）：HumanInput（V1.1）、HumanTakeover（V1.2）、Wait、RetryLoop、ArtifactReview（作为独立节点；MVP 中交付物审批经 HumanApproval 的 afterExecute 场景实现）。
 
 ## 3. 节点状态
 
@@ -82,6 +86,8 @@ V1 建议先实现 all_success。
 - cancelled：取消
 - skipped：跳过
 - reconciliation_required：状态待核对
+
+MVP 实际启用子集以 DEVELOPMENT_PLAN 阶段 4 实现清单为准；schema 保留全量枚举以支持后续版本扩展。
 
 状态迁移必须由 Workflow Engine 状态机校验，UI 不可直接写状态。
 
@@ -111,24 +117,24 @@ V1 建议先实现 all_success。
 - no interrupt：允许当前步骤结束后不再推进；或根据用户策略取消进程。
 - 不支持安全暂停时，UI 必须说明实际动作和风险。
 
+### 审批等待与分支暂停（决策 D-012/D-015）
+Human Approval 等待期间只暂停当前分支（分支进入 paused 或等效等待状态），其他并行分支继续执行。approve 后当前分支继续；reject 后当前分支保持暂停，等待用户后续决策（不自动返工）；request_changes 后当前分支等待关联 ReworkRequest 完成。
+
 ## 5. 人工参与配置
 
-任意节点可配置：
-- beforeExecute：启动前审批
-- duringExecute：执行中检查点
+MVP：任意节点可配置的人工门禁经 Human Approval 原语实现，支持：
+- beforeExecute：启动前审批（pending 期间不得创建 Execution）
 - afterExecute：执行后审批
+
+后续版本扩展（不进 MVP）：
+- duringExecute：执行中检查点
 - requireInput：等待人工输入
-- allowTakeover：允许人工接管
+- allowTakeover：人工接管
 - manualRouting：人工选择下游分支
 
-审批决策：
-- approve：放行
-- request_changes：要求修改并回到指定节点/路径
-- reject：拒绝并按拒绝路径处理
-- take_over：交给人处理
-- cancel：取消当前审批请求（需权限）
+审批决策（MVP 全集）：approve / request_changes / reject（行为见第 2 节 HumanApproval）。
 
-所有审批关联到 NodeRun 和具体 ArtifactVersion（若有），并保存意见和时间。
+所有审批关联到 NodeRun 和具体 ArtifactVersion（若有），并保存意见、决策人、时间和结果。审批操作必须幂等：对已进入终态的 Approval 重复提交决策返回定义错误且不产生任何状态迁移、不重复触发返工。
 
 ## 6. 依赖与调度规则
 
@@ -149,45 +155,45 @@ V1 建议先实现 all_success。
 ```text
 Start
   |
-Product Manager: PRD
+AgentTask: Product Manager — PRD
   |
-Parallel Split
-  |-----------------------------|
-  |                             |
-UI Design                    Backend Dev
-  |                             |
-Artifact V1                    Backend Artifact
-  |
-Human Approval
-  | approved
-  v
-Frontend Dev
-  |                             |
-  |-----------------------------|
-                |
-          Join(all_success)
-                |
-             Testing
-                |
-       Condition(test result)
-          | pass      | fail
-          v           v
-       Product     Route to responsible
-       Acceptance  Frontend/Backend/Product
+ParallelSplit
+  |--------------------------------------|
+  |                                      |
+AgentTask: UI Design            AgentTask: Backend Dev
+  |                                      |
+HumanApproval (afterExecute, UI V1)     Artifact: Backend API
+  |  approve → 继续当前分支               |
+  |  request_changes → ReworkRequest     |
+  |    （返工后重新进入本审批节点）          |
+  |                                      |
+AgentTask: Frontend Dev（approve 后才启动） |
+  |                                      |
+  |--------------------------------------|
+                  |
+        Join(all_success)
+                  |
+        AgentTask: Testing（输出结构化测试结果）
+                  |
+        Condition（测试结果 pass/fail）
+          | pass                    | fail
+          v                         v
+   AgentTask: Product        ReworkRequest（引擎内建，
+   Acceptance                只返工失败任务；完成后自动重测；
+          |                  超 2 轮暂停分支转人工）
+   HumanApproval (Final)
           |
-      Human Final Approval
-          |
-          End
+        End
 ```
 
 注意：
 - UI Design 和 Backend Dev 在 PRD 完成后并行。
-- UI 审批只阻塞 UI 分支的 Frontend Dev。
-- Backend Dev 不等待 UI 审批。
-- Frontend Dev 在 UI 审批通过前必须保持 blocked。
-- Testing 等待前端与后端均成功。
-- 测试失败根据报告路由返工，重试次数有限；超过上限升级给用户。
-- 产品验收后仍需用户最终审批。
+- UI 审批只阻塞 UI 分支；Backend Dev 不等待 UI 审批。
+- Frontend Dev 在 UI 审批 approve 前必须保持 blocked。
+- UI V1→V2 的修改循环由 request_changes + ReworkRequest 承载，不使用画布回边。
+- Testing 等待前端与后端均成功（Join all_success）。
+- 测试失败由引擎创建 ReworkRequest（非画布路由）；只返工失败任务；返工完成自动重测；超过 2 轮暂停分支转人工。
+- 产品验收后仍需用户最终审批（HumanApproval afterExecute）。
 
 ## 8. 事件与可靠性
 
@@ -198,6 +204,7 @@ Frontend Dev
 - branch.paused / branch.resumed / branch.completed
 - node.ready / started / checkpoint / waiting_approval / succeeded / failed / cancelled
 - approval.requested / approved / changes_requested / rejected / taken_over
+- rework.requested / rework.started / rework.completed / rework.exhausted（超限）
 - artifact.created / artifact.versioned
 - execution.started / interrupted / exited / crashed
 
@@ -205,18 +212,32 @@ Frontend Dev
 
 Core 启动后：
 1. 读取未终结的 WorkflowRun。
-2. 读取 BranchRun、NodeRun、Execution 状态。
+2. 读取 BranchRun、NodeRun、Execution、ReworkRequest 状态。
 3. 向 Daemon 查询执行句柄状态。
 4. 按 executionId 对账。
 5. 对确认仍运行的进程恢复事件订阅。
 6. 对确认已结束的进程处理最终结果。
 7. 对无法确认的状态标记 reconciliation_required。
 8. 不可对不幂等任务盲目重跑。
+9. 恢复 ReworkRequest 轮次统计与 pending 审批状态，不允许恢复后重复返工或重复审批。
 
-## 10. 失败与重试
+## 10. 失败、重试与返工
 
+两个不同层次的概念，不得混用：
+
+### 10.1 NodeRun 级执行重试（retryPolicy）
 - 每个 AgentTask 可定义 maxAttempts。
 - 每次重试生成新的 NodeRun attempt 或明确的 attempt 记录，保留之前日志和产物。
 - 重试必须说明输入 Artifact 版本。
-- 超出重试次数后走人工升级路径。
 - 外部副作用任务默认不自动重试，除非有幂等键或用户批准。
+
+### 10.2 任务返工（ReworkRequest / ReworkPolicy，引擎内建，MVP 核心）
+- 触发源：Human Approval 的 request_changes 决策（必填意见+关联返工任务），或测试节点结构化结果判定失败。
+- ReworkRequest 状态机：requested → in_rework → completed（自动重测）｜cancelled（人工处理取消）。
+- 轮次：按被返工任务统计 round（1 起），unique(被返工任务, round) 作为幂等键；持久化，重启后不得丢失或重复计数。
+- 默认最多 2 轮（不含首次执行）；以每任务每轮一条 ReworkRequest 记账。
+- 超限：暂停相关分支，写入 rework.exhausted 事件，进入人工处理；人工可选继续返工（重置轮次须显式授权并审计）、接管动作或终止。
+- 范围：只返工明确失败的任务及其必要下游；无关成功任务不得重复执行。
+- 完成后：自动重新触发测试（或回到触发返工的 Human Approval 节点重新审批）。
+- 每轮保留：执行记录（新 attempt）、Artifact 版本、测试报告/审批意见，全部不可覆盖。
+- 约束：任意图边不得形成无限循环；返工不得伪装成通用 Loop/Retry 节点；全程写入审计。

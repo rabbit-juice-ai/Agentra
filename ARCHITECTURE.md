@@ -1,6 +1,6 @@
 # 技术架构设计
 
-版本：V1.0  
+版本：V1.1（修订版，基线冻结前）  
 目标：macOS 本地桌面应用
 
 ## 1. 架构原则
@@ -92,8 +92,10 @@ Core 建议模块：
 - workflow-runtime
 - scheduler
 - approval
+- rework（ReworkRequest/ReworkPolicy：引擎内建返工调度，见 WORKFLOW §10）
 - artifact
 - worktree
+- backup（备份与恢复：WAL 一致性备份、Manifest、恢复预检/回滚）
 - event
 - audit
 - database
@@ -208,6 +210,17 @@ Provider 应声明 capabilities：
 
 不得在数据库事务未提交时就向下游发送“已完成”事件。
 
+### 审批服务与 Workflow Engine 的交互
+- beforeExecute 门禁：Approval pending 期间引擎不得创建对应 AgentTask 的 Execution。
+- 审批决策（approve/request_changes/reject）由 approval 模块接收、校验幂等后，事务内写入 Approval 终态并通知 workflow-runtime。
+- request_changes：同一事务内创建 ReworkRequest（trigger_type=request_changes，含必填意见与关联返工任务）；返工完成后引擎将流程引导回原 Human Approval 节点进入下一轮审批（round+1）。
+- reject：分支暂停，不自动返工，等待用户后续决策。
+- 审批服务不直接修改 NodeRun/BranchRun 状态；状态迁移全部经引擎状态机。
+
+### 返工调度（ReworkPolicy）
+- workflow-runtime 内的 rework 职责：接收触发源（request_changes / 测试结构化失败结果）、按幂等键创建 ReworkRequest、调度被返工任务的新 attempt、完成后自动重测、轮次统计与超限（暂停分支转人工）。
+- 返工轮次持久化于 rework_requests 表，重启后恢复且不得重复计数。
+
 ## 9. 崩溃恢复
 
 启动时：
@@ -226,6 +239,7 @@ Provider 应声明 capabilities：
 - app-data：SQLite、配置、日志。
 - workspaces：Work 项目目录。
 - artifacts：归档交付物或引用。
+- backups：备份包（manifest.json + database.db + artifacts/；见 DATABASE §2.10）。
 - runtime：临时 socket、pid、状态文件。
 
 每个 Work 使用独立目录。并行代码任务优先使用 Git Worktree；非 Git 项目使用独立子目录或显式互斥锁。
@@ -259,8 +273,9 @@ Provider 应声明 capabilities：
 
 ## 13. 测试策略
 
-- 单元测试：状态机、依赖判断、条件表达式、权限校验。
+- 单元测试：状态机、依赖判断、条件表达式、权限校验、ReworkPolicy 轮次统计与幂等键。
 - 集成测试：Core-DB、Core-Daemon IPC、Runtime Provider。
 - E2E：创建 Work、运行工作流、人工审批、暂停分支。
-- 故障测试：Core 重启、Daemon 重启、CLI 崩溃、重复事件。
+- 故障测试：Core 重启、Daemon 重启、CLI 崩溃、重复事件、ReworkRequest 恢复（轮次不丢不重）。
+- 备份专项：WAL 并发写入时的一致性备份、备份损坏检测、恢复失败回滚、恢复后完整性复查与副作用防重。
 - 安全测试：路径穿越、命令注入、未经授权的工具调用。
