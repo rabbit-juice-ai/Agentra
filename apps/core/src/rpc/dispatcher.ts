@@ -1,10 +1,12 @@
-import type { RpcRequest, RpcResponse } from '@agentra/protocol'
-import { RpcRequest, rpcFailure } from '@agentra/protocol'
-import { PROTOCOL_VERSION } from '@agentra/protocol'
+import type { RpcResponse } from '@agentra/protocol'
+import { PROTOCOL_VERSION, RpcRequest, rpcFailure } from '@agentra/protocol'
 
 export type RpcHandler = (params: unknown) => unknown | Promise<unknown>
 
-export type MethodTable = Record<string, { handler: RpcHandler; paramsSchema: null | { parse: (p: unknown) => unknown } }>
+export type MethodTable = Record<
+  string,
+  { handler: RpcHandler; paramsSchema: null | { parse: (p: unknown) => unknown } }
+>
 
 /**
  * NDJSON 帧解析 + 信封校验 + method 分发。
@@ -24,8 +26,15 @@ export function createDispatcher(methods: MethodTable) {
       // 区分版本不匹配与其他信封错误，客户端据此知道要不要升级。
       const version = (parsed as { protocolVersion?: unknown } | null)?.protocolVersion
       if (typeof version === 'string' && version !== PROTOCOL_VERSION) {
-        const requestId = typeof (parsed as { requestId?: unknown }).requestId === 'string' ? (parsed as { requestId: string }).requestId : 'version-mismatch'
-        return rpcFailure(requestId, 'VERSION_MISMATCH', `protocol version ${version} not supported; server speaks ${PROTOCOL_VERSION}`)
+        const requestId =
+          typeof (parsed as { requestId?: unknown }).requestId === 'string'
+            ? (parsed as { requestId: string }).requestId
+            : 'version-mismatch'
+        return rpcFailure(
+          requestId,
+          'VERSION_MISMATCH',
+          `protocol version ${version} not supported; server speaks ${PROTOCOL_VERSION}`,
+        )
       }
       return rpcFailure('invalid-request', 'PARSE_ERROR', 'request envelope failed validation')
     }
@@ -35,13 +44,21 @@ export function createDispatcher(methods: MethodTable) {
     if (!entry) {
       return rpcFailure(request.requestId, 'METHOD_NOT_FOUND', `unknown method: ${request.method}`)
     }
+    let params: unknown
     try {
-      const params = entry.paramsSchema ? entry.paramsSchema.parse(request.params) : request.params
-      const result = await entry.handler(params)
-      return { requestId: request.requestId, ok: true, result }
+      params = entry.paramsSchema ? entry.paramsSchema.parse(request.params) : request.params
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return rpcFailure(request.requestId, 'INVALID_PARAMS', message)
+    }
+
+    try {
+      const result = await entry.handler(params)
+      return { requestId: request.requestId, ok: true, result }
+    } catch (error) {
+      // 处理器内部失败不是入参问题：回 INTERNAL，避免客户端误判为可重试的入参错误。
+      const message = error instanceof Error ? error.message : String(error)
+      return rpcFailure(request.requestId, 'INTERNAL', message)
     }
   }
 }

@@ -44,9 +44,9 @@ export type RpcFailure = z.infer<typeof RpcFailure>
 export const RpcResponse = z.union([RpcSuccess, RpcFailure])
 export type RpcResponse = z.infer<typeof RpcResponse>
 
-/** 构造失败响应的便捷函数。 */
+/** 构造失败响应的便捷函数。error 经 Zod 校验，未知 code / 空 message 立即抛错。 */
 export function rpcFailure(requestId: string, code: RpcErrorCode, message: string): RpcFailure {
-  return { requestId, ok: false, error: { code, message } }
+  return { requestId, ok: false, error: RpcError.parse({ code, message }) }
 }
 
 /** 构造成功响应的便捷函数。 */

@@ -2,12 +2,12 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { agentraPaths, type AgentraPaths } from '@agentra/shared'
-import { probeSocket, pidAlive } from './probe'
+import { type AgentraPaths, agentraPaths } from '@agentra/shared'
+import { pidAlive, probeSocket } from './probe'
 
 const START_WAIT_MS = 15_000
 
-function resolveCoreEntry(paths: AgentraPaths): string {
+function resolveCoreEntry(): string {
   // 打包态：resources/core/index.js（esbuild bundle 产物，随应用分发）。
   // 源码态：仓库内 apps/core/dist/index.js，或 tsx 跑 src。
   const selfDir = path.dirname(fileURLToPath(import.meta.url))
@@ -29,7 +29,10 @@ function resolveCoreEntry(paths: AgentraPaths): string {
 export async function ensureCore(paths: AgentraPaths = agentraPaths()): Promise<void> {
   const state = await probeSocket(paths.coreSocket)
   if (state === 'live') return
-  if (state === 'unknown') throw new Error(`cannot tell whether core socket ${paths.coreSocket} is in use; refusing to proceed`)
+  if (state === 'unknown')
+    throw new Error(
+      `cannot tell whether core socket ${paths.coreSocket} is in use; refusing to proceed`,
+    )
 
   if (pidAlive(paths.corePid)) {
     const deadline = Date.now() + 10_000
@@ -48,12 +51,10 @@ export async function ensureCore(paths: AgentraPaths = agentraPaths()): Promise<
   }
 
   fs.mkdirSync(paths.logs, { recursive: true, mode: 0o700 })
-  const entry = resolveCoreEntry(paths)
+  const entry = resolveCoreEntry()
   const logFd = fs.openSync(paths.coreLog, 'a')
   const isTs = entry.endsWith('.ts')
-  const args = isTs
-    ? ['--import', 'tsx', entry]
-    : [entry]
+  const args = isTs ? ['--import', 'tsx', entry] : [entry]
   const child = spawn(process.execPath, args, {
     env: {
       ...process.env,

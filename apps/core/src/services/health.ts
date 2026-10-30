@@ -1,7 +1,13 @@
-import type { MethodTable } from './rpc/dispatcher'
-import { CORE_HEALTH_METHOD, HealthParams, PROTOCOL_VERSION, rpcFailure, type RpcResponse } from '@agentra/protocol'
-import { newId } from '@agentra/shared'
 import net from 'node:net'
+import {
+  CORE_HEALTH_METHOD,
+  DAEMON_HEALTH_METHOD,
+  HealthParams,
+  PROTOCOL_VERSION,
+  type RpcResponse,
+} from '@agentra/protocol'
+import { newId } from '@agentra/shared'
+import type { MethodTable } from '../rpc/dispatcher'
 
 const startedAt = Date.now()
 
@@ -23,7 +29,7 @@ export function coreHealthMethods(version: string, daemonSocketPath: string): Me
         version,
       }),
     },
-    ['daemon.health']: {
+    [DAEMON_HEALTH_METHOD]: {
       paramsSchema: HealthParams,
       handler: () => proxyDaemonHealth(daemonSocketPath),
     },
@@ -36,7 +42,12 @@ export function proxyDaemonHealth(daemonSocketPath: string): Promise<unknown> {
     const socket = net.connect(daemonSocketPath)
     let buffer = ''
     const requestId = newId('proxy')
-    const request = { requestId, protocolVersion: PROTOCOL_VERSION, method: 'daemon.health', params: {} }
+    const request = {
+      requestId,
+      protocolVersion: PROTOCOL_VERSION,
+      method: DAEMON_HEALTH_METHOD,
+      params: {},
+    }
     const timer = setTimeout(() => {
       socket.destroy()
       reject(new Error(`daemon.health proxy timed out (${daemonSocketPath})`))
@@ -52,7 +63,10 @@ export function proxyDaemonHealth(daemonSocketPath: string): Promise<unknown> {
         try {
           const response = JSON.parse(buffer.slice(0, newlineIndex)) as RpcResponse
           if (response.ok) resolve(response.result)
-          else reject(new Error(`daemon.health failed: ${response.error.code} ${response.error.message}`))
+          else
+            reject(
+              new Error(`daemon.health failed: ${response.error.code} ${response.error.message}`),
+            )
         } catch (error) {
           reject(error instanceof Error ? error : new Error(String(error)))
         }
@@ -64,5 +78,3 @@ export function proxyDaemonHealth(daemonSocketPath: string): Promise<unknown> {
     })
   })
 }
-
-export { rpcFailure }

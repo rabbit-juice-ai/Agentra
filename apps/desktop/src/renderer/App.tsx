@@ -22,17 +22,19 @@ declare global {
 
 const initial: HealthView = { loading: true, status: '…', detail: '' }
 
-function toView(promise: Promise<{ ok: boolean; result?: unknown; error?: string }>): Promise<HealthView> {
+function toView(
+  promise: Promise<{ ok: boolean; result?: unknown; error?: string }>,
+): Promise<HealthView> {
   return promise.then((res) => {
     if (!res.ok) return { loading: false, status: '断连', detail: res.error ?? 'unknown error' }
     const r = res.result as Record<string, unknown>
     return {
       loading: false,
-      status: String(r['status'] ?? 'ok'),
+      status: String(r.status ?? 'ok'),
       detail: '',
-      pid: typeof r['pid'] === 'number' ? r['pid'] : undefined,
-      uptimeSeconds: typeof r['uptimeSeconds'] === 'number' ? r['uptimeSeconds'] : undefined,
-      version: typeof r['version'] === 'string' ? r['version'] : undefined,
+      pid: typeof r.pid === 'number' ? r.pid : undefined,
+      uptimeSeconds: typeof r.uptimeSeconds === 'number' ? r.uptimeSeconds : undefined,
+      version: typeof r.version === 'string' ? r.version : undefined,
     }
   })
 }
@@ -51,7 +53,15 @@ function Card({ name, view }: { name: string; view: HealthView }) {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ width: 10, height: 10, borderRadius: 5, background: color, display: 'inline-block' }} />
+        <span
+          style={{
+            width: 10,
+            height: 10,
+            borderRadius: 5,
+            background: color,
+            display: 'inline-block',
+          }}
+        />
         <strong style={{ fontSize: 15 }}>{name}</strong>
         <span style={{ marginLeft: 'auto', color, fontSize: 13 }}>{view.status}</span>
       </div>
@@ -60,7 +70,9 @@ function Card({ name, view }: { name: string; view: HealthView }) {
           pid {view.pid} · uptime {Math.floor(view.uptimeSeconds ?? 0)}s · v{view.version}
         </div>
       )}
-      {view.detail && <div style={{ marginTop: 8, fontSize: 12, color: '#cf222e' }}>{view.detail}</div>}
+      {view.detail && (
+        <div style={{ marginTop: 8, fontSize: 12, color: '#cf222e' }}>{view.detail}</div>
+      )}
     </div>
   )
 }
@@ -87,7 +99,11 @@ export function App() {
       <h1 style={{ fontSize: 18, margin: '0 0 4px' }}>Agentra</h1>
       <p style={{ fontSize: 13, color: '#57606a', margin: '0 0 20px' }}>
         阶段 0 · 服务健康状态（每 5 秒刷新）
-        <button onClick={refresh} style={{ marginLeft: 12, fontSize: 12, cursor: 'pointer' }}>
+        <button
+          type="button"
+          onClick={refresh}
+          style={{ marginLeft: 12, fontSize: 12, cursor: 'pointer' }}
+        >
           立即刷新
         </button>
       </p>

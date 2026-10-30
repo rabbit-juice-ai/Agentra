@@ -1,12 +1,12 @@
-import net from 'node:net'
 import { mkdtempSync, rmSync } from 'node:fs'
+import net from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
 import { DAEMON_HEALTH_METHOD, PROTOCOL_VERSION, type RpcResponse } from '@agentra/protocol'
+import { afterAll, describe, expect, it } from 'vitest'
+import { createDispatcher } from './rpc/dispatcher'
 import { startNdjsonServer } from './rpc/ndjson-server'
 import { daemonHealthMethods } from './services/health'
-import { createDispatcher } from './rpc/dispatcher'
 
 const dirs: string[] = []
 const servers: { close: () => void }[] = []
@@ -56,9 +56,9 @@ describe('daemon ndjson server', () => {
     expect(res.ok).toBe(true)
     if (res.ok) {
       const result = res.result as Record<string, unknown>
-      expect(result['service']).toBe('daemon')
-      expect(result['protocolVersion']).toBe(PROTOCOL_VERSION)
-      expect(typeof result['pid']).toBe('number')
+      expect(result.service).toBe('daemon')
+      expect(result.protocolVersion).toBe(PROTOCOL_VERSION)
+      expect(typeof result.pid).toBe('number')
     }
   })
 

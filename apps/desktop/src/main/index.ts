@@ -1,9 +1,9 @@
-import { BrowserWindow, app, ipcMain } from 'electron'
 import path from 'node:path'
+import { CORE_HEALTH_METHOD, DAEMON_HEALTH_METHOD } from '@agentra/protocol'
 import { agentraPaths } from '@agentra/shared'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { ensureCore } from './core-launcher'
 import { CoreRpcClient } from './rpc-client'
-import { CORE_HEALTH_METHOD, DAEMON_HEALTH_METHOD } from '@agentra/protocol'
 
 // 窗口级单实例：第二次启动聚焦已有窗口（与 Core/Daemon 的 socket 探活是两回事）。
 const gotLock = app.requestSingleInstanceLock()
@@ -14,7 +14,9 @@ if (!gotLock) {
 let client: CoreRpcClient | null = null
 let lastError: string | null = null
 
-async function callCore(method: string): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+async function callCore(
+  method: string,
+): Promise<{ ok: boolean; result?: unknown; error?: string }> {
   if (!client) return { ok: false, error: lastError ?? 'core not connected' }
   try {
     const response = await client.call(method)
@@ -49,13 +51,13 @@ function createWindow(): void {
     height: 640,
     title: 'Agentra',
     webPreferences: {
-      preload: path.join(__dirname, '../preload/index.js'),
+      preload: path.join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   })
-  if (process.env['ELECTRON_RENDERER_URL']) {
-    void win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  if (process.env.ELECTRON_RENDERER_URL) {
+    void win.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
     void win.loadFile(path.join(__dirname, '../renderer/index.html'))
   }

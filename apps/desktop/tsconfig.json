@@ -11,8 +11,5 @@
     "lib": ["ES2023", "DOM"]
   },
   "include": ["src/main", "src/preload"],
-  "references": [
-    { "path": "../../packages/protocol" },
-    { "path": "../../packages/shared" }
-  ]
+  "references": [{ "path": "../../packages/protocol" }, { "path": "../../packages/shared" }]
 }

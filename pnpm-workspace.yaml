@@ -2,7 +2,9 @@ packages:
   - apps/*
   - packages/*
 
-onlyBuiltDependencies:
-  - electron
-  - esbuild
-  - '@biomejs/biome'
+# pnpm 11+ 用 allowBuilds 取代 onlyBuiltDependencies（旧键自 pnpm 11 起被静默忽略）。
+# 只放行确有 postinstall 需要的包，其余依赖保持默认拒绝构建脚本。
+allowBuilds:
+  electron: true
+  esbuild: true
+  '@biomejs/biome': true

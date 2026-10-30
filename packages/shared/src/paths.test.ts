@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { MAX_SOCKET_PATH_BYTES, agentraHome, agentraPaths, ensureDirs } from './paths'
+import { agentraHome, agentraPaths, ensureDirs, MAX_SOCKET_PATH_BYTES } from './paths'
 
 const tempDirs: string[] = []
 
@@ -13,7 +13,7 @@ function tempHome(): string {
 }
 
 afterEach(() => {
-  for (const dir of tempDirs.pop() ? [] : []) {
+  for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true })
   }
 })

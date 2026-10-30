@@ -1,5 +1,5 @@
-import type { MethodTable } from '../rpc/dispatcher'
 import { DAEMON_HEALTH_METHOD, HealthParams, PROTOCOL_VERSION } from '@agentra/protocol'
+import type { MethodTable } from '../rpc/dispatcher'
 
 const startedAt = Date.now()
 

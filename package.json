@@ -1,6 +1,7 @@
 {
   "name": "agentra-monorepo",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@12.16.1",
   "engines": {
     "node": ">=22.12.0"

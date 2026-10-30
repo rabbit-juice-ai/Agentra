@@ -1,10 +1,12 @@
-import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
-import react from '@vitejs/plugin-react'
 import { resolve } from 'node:path'
+import react from '@vitejs/plugin-react'
+import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // workspace 包必须打进 bundle：其 exports 指向 TS 源码，Electron 运行时无法直接
+    // 解析（Node ESM 不做无扩展名补全）。只外置真正的运行时依赖（ws）。
+    plugins: [externalizeDepsPlugin({ exclude: ['@agentra/protocol', '@agentra/shared'] })],
     build: {
       lib: { entry: resolve(__dirname, 'src/main/index.ts') },
     },
@@ -16,7 +18,8 @@ export default defineConfig({
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
-      lib: { entry: resolve(__dirname, 'src/preload/index.ts') },
+      // 强制 CJS：ESM preload 需要 .mjs 且必须关闭 sandbox；保持 sandbox 开启更安全。
+      lib: { entry: resolve(__dirname, 'src/preload/index.ts'), formats: ['cjs'] },
     },
     resolve: {
       conditions: ['source'],

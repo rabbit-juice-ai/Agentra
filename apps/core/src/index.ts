@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { agentraHome, agentraPaths, createLogger, ensureDirs } from '@agentra/shared'
+import { agentraHome, agentraPaths, createLogger, ensureDirs, isDirectRun } from '@agentra/shared'
 import { ensureDaemon } from './daemon-launcher'
 import { startWsServer } from './rpc/ws-server'
 import { coreHealthMethods } from './services/health'
@@ -16,10 +16,27 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const daemon = await ensureDaemon(paths, env)
   logger.info('daemon ensured', { spawned: daemon.spawned, socket: paths.daemonSocket })
 
-  fs.writeFileSync(paths.corePid, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), protocolVersion: '1', socketPath: paths.coreSocket }), { mode: 0o600 })
+  fs.writeFileSync(
+    paths.corePid,
+    JSON.stringify({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      protocolVersion: '1',
+      socketPath: paths.coreSocket,
+    }),
+    { mode: 0o600 },
+  )
 
-  const server = await startWsServer(paths.coreSocket, coreHealthMethods(VERSION, paths.daemonSocket))
-  logger.info('core started', { socketPath: server.socketPath, pid: process.pid, version: VERSION, daemonSpawned: daemon.spawned })
+  const server = await startWsServer(
+    paths.coreSocket,
+    coreHealthMethods(VERSION, paths.daemonSocket),
+  )
+  logger.info('core started', {
+    socketPath: server.socketPath,
+    pid: process.pid,
+    version: VERSION,
+    daemonSpawned: daemon.spawned,
+  })
 
   const shutdown = (signal: string) => {
     logger.info('core shutting down', { signal })
@@ -35,7 +52,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   process.on('SIGINT', () => shutdown('SIGINT'))
 }
 
-// 被直接运行时启动；被测试导入时不自动启动。
-if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('core/index.js')) {
+// 被直接运行时启动（tsx 源码 / esbuild 打包产物）；被测试导入时不自动启动。
+if (isDirectRun(import.meta.url)) {
   void main()
 }

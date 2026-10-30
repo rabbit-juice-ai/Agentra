@@ -12,7 +12,10 @@ export type LogEntry = {
 }
 
 /** 极简结构化 JSON 行日志：写 stderr + 可选日志文件。 */
-export function createLogger(service: string, logFile?: string): {
+export function createLogger(
+  service: string,
+  logFile?: string,
+): {
   log: Logger
   info: (message: string, data?: Record<string, unknown>) => void
   warn: (message: string, data?: Record<string, unknown>) => void

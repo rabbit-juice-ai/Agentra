@@ -17,7 +17,9 @@ export function probeSocket(socketPath: string, timeoutMs = 1500): Promise<Probe
     })
     socket.once('error', (error: NodeJS.ErrnoException) => {
       clearTimeout(timer)
-      resolve(error.code === 'ENOENT' ? 'absent' : error.code === 'ECONNREFUSED' ? 'absent' : 'unknown')
+      resolve(
+        error.code === 'ENOENT' ? 'absent' : error.code === 'ECONNREFUSED' ? 'absent' : 'unknown',
+      )
     })
   })
 }
@@ -28,7 +30,8 @@ export function pidAlive(pidFile: string): boolean {
     if (typeof raw.pid !== 'number') return false
     process.kill(raw.pid, 0)
     return true
-  } catch {
-    return false
+  } catch (error) {
+    // EPERM = 进程存在但当前用户无权发信号（如 pid 1）；只有 ESRCH/读文件失败才算不存在。
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
 }

@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -7,8 +6,13 @@ import path from 'node:path'
  * 数据根目录：默认家目录（内建盘），支持 AGENTRA_DATA_DIR 覆盖（测试隔离）。
  * 运行状态与数据库绝不放外置项目盘：断盘不影响运行中的 Core/Daemon。
  */
-export function agentraHome(env: NodeJS.ProcessEnv = process.env, homeDir: string = os.homedir()): string {
-  return env.AGENTRA_DATA_DIR ? path.resolve(env.AGENTRA_DATA_DIR) : path.join(homeDir, 'Library', 'Application Support', 'agentra')
+export function agentraHome(
+  env: NodeJS.ProcessEnv = process.env,
+  homeDir: string = os.homedir(),
+): string {
+  return env.AGENTRA_DATA_DIR
+    ? path.resolve(env.AGENTRA_DATA_DIR)
+    : path.join(homeDir, 'Library', 'Application Support', 'agentra')
 }
 
 // macOS sun_path 上限 104 字节，留余量。

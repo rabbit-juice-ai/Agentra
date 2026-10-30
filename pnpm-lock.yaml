@@ -199,8 +199,19 @@ importers:
       ws:
         specifier: 8.22.0
         version: 8.22.0
+    devDependencies:
+      '@types/ws':
+        specifier: 8.18.2
+        version: 8.18.2
 
-  apps/daemon: {}
+  apps/daemon:
+    dependencies:
+      '@agentra/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@agentra/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
 
   apps/desktop:
     dependencies:
@@ -226,6 +237,9 @@ importers:
       '@types/react-dom':
         specifier: 19.3.0
         version: 19.3.0(@types/react@19.3.0)
+      '@types/ws':
+        specifier: 8.18.2
+        version: 8.18.2
       '@vitejs/plugin-react':
         specifier: 5.1.1
         version: 5.1.1(vite@8.3.5(@types/node@26.6.2)(esbuild@0.28.2)(tsx@4.23.15))
@@ -882,6 +896,9 @@ packages:
 
   '@types/react@19.3.0':
     resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
+
+  '@types/ws@8.18.2':
+    resolution: {integrity: sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w==}
 
   '@vitejs/plugin-react@5.1.1':
     resolution: {integrity: sha512-WQfkSw0QbQ5aJ2CHYw23ZGkqnRwqKHD/KYsMeTkZzPT4Jcf0DcBxBtwMJxnu6E7oxw5+JC6ZAiePgh28uJ1HBA==}
@@ -1773,6 +1790,10 @@ snapshots:
   '@types/react@19.3.0':
     dependencies:
       csstype: 3.2.3
+
+  '@types/ws@8.18.2':
+    dependencies:
+      '@types/node': 26.6.2
 
   '@vitejs/plugin-react@5.1.1(vite@8.3.5(@types/node@26.6.2)(esbuild@0.28.2)(tsx@4.23.15))':
     dependencies:

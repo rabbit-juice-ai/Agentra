@@ -1,3 +1,10 @@
-export { agentraHome, agentraPaths, ensureDirs, MAX_SOCKET_PATH_BYTES, type AgentraPaths } from './paths'
+export { isDirectRun } from './entry'
 export { newId } from './ids'
-export { createLogger, type Logger, type LogEntry } from './logger'
+export { createLogger, type LogEntry, type Logger } from './logger'
+export {
+  type AgentraPaths,
+  agentraHome,
+  agentraPaths,
+  ensureDirs,
+  MAX_SOCKET_PATH_BYTES,
+} from './paths'

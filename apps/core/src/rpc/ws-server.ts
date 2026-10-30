@@ -1,8 +1,8 @@
-import http from 'node:http'
 import fs from 'node:fs'
-import { WebSocketServer, type WebSocket } from 'ws'
-import { createDispatcher, type MethodTable } from './dispatcher'
+import http from 'node:http'
 import { rpcFailure } from '@agentra/protocol'
+import { type WebSocket, WebSocketServer } from 'ws'
+import { createDispatcher, type MethodTable } from './dispatcher'
 
 export type WsServer = { close: () => void; socketPath: string }
 

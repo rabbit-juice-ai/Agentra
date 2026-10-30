@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import net from 'node:net'
-import { createDispatcher, type MethodTable } from './rpc/dispatcher'
 import { rpcFailure } from '@agentra/protocol'
+import { createDispatcher, type MethodTable } from './dispatcher'
 
 export type NdjsonServer = { close: () => void; socketPath: string }
 
@@ -9,7 +9,11 @@ export type NdjsonServer = { close: () => void; socketPath: string }
  * 在 Unix Domain Socket 上起 NDJSON RPC 服务。
  * 每行一个 JSON 信封，响应同样按行回写。仅绑定本机 UDS，无 TCP 端口。
  */
-export function startNdjsonServer(socketPath: string, methods: MethodTable, onError?: (error: Error) => void): Promise<NdjsonServer> {
+export function startNdjsonServer(
+  socketPath: string,
+  methods: MethodTable,
+  onError?: (error: Error) => void,
+): Promise<NdjsonServer> {
   const dispatch = createDispatcher(methods)
   const server = net.createServer((socket) => {
     let buffer = ''

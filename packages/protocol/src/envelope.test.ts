@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   CORE_HEALTH_METHOD,
+  HealthResult,
   PROTOCOL_VERSION,
   RpcRequest,
-  HealthResult,
+  RpcResponse,
   rpcFailure,
   rpcSuccess,
-  RpcResponse,
 } from './index'
 
 describe('protocol version', () => {
