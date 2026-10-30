@@ -1,6 +1,6 @@
 # 技术架构设计
 
-版本：V1.1（修订版，基线冻结前）  
+版本：V1.2（基于 v1.0.0 Development Baseline 的 D-016 修订）  
 目标：macOS 本地桌面应用
 
 ## 1. 架构原则
@@ -27,7 +27,7 @@
 | Core | Node.js + TypeScript | 业务服务 |
 | Daemon | Node.js + TypeScript | 进程宿主 |
 | Database | SQLite | 本地持久化 |
-| ORM | Drizzle | Schema/Migration |
+| 数据访问 | node:sqlite（Node 内置）+ Repository/DAL | 无 ORM；迁移用 PRAGMA user_version；Core 统一访问（D-016） |
 | Validation | Zod | DTO、事件、配置校验 |
 | Desktop-Core | WebSocket + JSON-RPC（或等价版本化 RPC） | 统一协议 |
 | Core-Daemon | Unix Domain Socket + NDJSON/RPC | macOS 本地 IPC |
@@ -37,6 +37,8 @@
 | Package Manager | pnpm | Monorepo |
 
 具体版本在初始化时选择当前稳定且相互兼容的版本，并锁定 lockfile；不要在文档中硬编码未经验证的版本号。
+
+**运行时基线（Agentra 实测，2026-10-30）**：Electron 45.1.0 内置 Node 24.22.1；`ELECTRON_RUN_AS_NODE=1` 模式下 node:sqlite 建表、参数化写入、WAL、`VACUUM INTO` 备份、`PRAGMA integrity_check` 全部通过；开发环境 Node 22.23.2 同样通过。最低要求：Node ≥ 22.13，Electron ≥ 45。node:sqlite 在 Node 22 为 experimental（有警告），Electron 45 内置 Node 24 下无实验警告。打包态与开发态使用同一 Electron 二进制，运行时一致性在打包阶段（阶段 6）复验。
 
 ## 3. 三层进程职责
 
@@ -64,6 +66,7 @@
 - 权限校验、审计日志。
 - 与 Daemon 通信并消费执行事件。
 - 对 Desktop 提供版本化 RPC/API。
+- 统一 Repository/Data Access Layer：所有业务数据库读写经 Core；Daemon 不访问业务数据库（决策 D-016）。
 
 Core 是工作流运行状态的唯一权威写入者。
 

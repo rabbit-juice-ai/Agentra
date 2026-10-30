@@ -1,6 +1,6 @@
 # 开发计划与任务清单
 
-版本：V1.1（修订版，基线冻结前）  
+版本：V1.2（基于 v1.0.0 Development Baseline 的 D-016 修订）  
 开发策略：小步迭代、每阶段可运行、每阶段可验收  
 前置：阶段「产品文档修订与基线冻结」完成并经用户批准后，才进入阶段 0 及后续业务开发。
 
@@ -29,7 +29,7 @@
 ## 阶段 1：数据库和 Agent Runtime
 
 ### 任务
-- [ ] SQLite 初始化和 Migration 机制。
+- [ ] SQLite 初始化和 Migration 机制（node:sqlite + `PRAGMA user_version` 版本化迁移 + Core 统一 Repository/DAL，决策 D-016）。
 - [ ] 实现 AgentProfile CRUD。
 - [ ] 实现 RuntimeProvider Registry。
 - [ ] CLI 自动发现（先实现 Claude Code Provider，验证后再扩展 Codex）。

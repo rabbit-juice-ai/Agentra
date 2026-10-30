@@ -92,6 +92,25 @@
 - request_changes 返工完成后，重新进入原 Human Approval 节点，形成新一轮审批记录；所有 request_changes 返工遵守 D-011 的最多 2 轮限制，超限暂停分支等待人工处理。
 - QA 必须验证 11 项场景（approve 继续 / reject 暂停且不自动返工 / request_changes 必填意见 / 必须关联返工任务 / 仅指定任务返工无关分支不受影响 / 返工后重新进入原审批节点 / 每轮审批独立记录不可覆盖 / 遵守 2 轮限制 / 超限暂停分支 / 重启恢复待审批及返工状态 / 重复提交审批不重复返工），落于 DEVELOPMENT_PLAN 阶段 5。
 
+### D-016：数据库访问方案 = node:sqlite（冻结后正式变更，2026-10-30）
+- 决策：Agentra v1.0 MVP 数据库访问方案确定为 SQLite + Node.js 内置 `node:sqlite`；**不引入 Drizzle ORM**。
+- 约束：
+  - Core 统一管理数据库访问，Daemon 不直接访问业务数据库。
+  - 建立统一 Repository/Data Access Layer。
+  - 自行实现版本化迁移机制（`PRAGMA user_version` 递增，MIGRATIONS 数组，可重复执行）。
+  - 使用参数化 SQL、事务和 WAL；迁移、备份、恢复、并发与异常恢复必须可测试。
+- Agentra 自身兼容性验证（2026-10-30 实测，非引用 Antumi 结论）：
+  | 验证项 | 结果 |
+  |---|---|
+  | 纯 Node 22.23.2 | node:sqlite 建表/参数化写入/WAL/`VACUUM INTO`/`integrity_check` 全部通过（有 experimental 警告） |
+  | Electron 45.1.0 + `ELECTRON_RUN_AS_NODE=1` | 内置 Node 24.22.1，同一脚本全部通过，无实验警告 |
+  | WAL 并发备份 | 写入进程 3 秒写 54,914 行期间 `VACUUM INTO` 快照一致（12,600 行），备份 integrity ok |
+  | 最低版本 | Node ≥ 22.13（开发/测试）；Electron ≥ 45（生产 Core，内置 Node 24.22.1） |
+  | 打包态一致性 | 打包与开发使用同一 Electron 二进制；`ELECTRON_RUN_AS_NODE` 已实测；打包阶段（阶段 6）复验 |
+- 文档同步（本轮已完成）：DATABASE.md V1.2（头部与设计原则）、ARCHITECTURE.md V1.2（技术栈表、运行时基线、Core 职责）、DEVELOPMENT_PLAN.md V1.2（阶段 1 任务注明 node:sqlite）；DEVELOPMENT_PLAN 中无 Drizzle 安装步骤（已检查）。
+- 变更性质：冻结后经用户批准的正式变更（变更申请记录于本条）；v1.0.0 基线继续有效，不做重新冻结。
+- 遗留风险：node:sqlite 在 Node 22 标记 experimental（API 可能变化）——通过固定 Electron/Node 版本与 Repository 层隔离缓解；备份/恢复的完整验收在阶段 5.5 执行。
+
 ## 暂定事项（实施前需验证，不可当作已确认事实）
 
 1. ~~Antumi 当前仓库的准确技术栈、模块边界、可复用代码和许可证适用范围。~~ **已核实（2026-10-30）**：Apache-2.0，pnpm monorepo（core/daemon/desktop/protocol 等），core 用 node:sqlite+zod，daemon 用 node-pty，desktop 用 electron-vite；无工作流引擎。
@@ -124,3 +143,5 @@
   - 跨文档口径一致：审批决策集三值 9 处、7 节点白名单 6 处、幂等键定义、阶段归属（A-G→阶段 4、11 项→阶段 5、B1-B8→阶段 5.5）均一致
   - 无未经用户批准的 MVP 范围扩张
 - 冻结后规则：修改本基线内 MVP 需求须走正式变更申请（更新 DECISIONS.md 并经用户批准）。冻结后首个文档修订批次统一处理 QA 残留 Minor 清单（复验报告所列 9 项，均为措辞/注释级）。
+- 冻结后变更记录：
+  - D-016（2026-10-30 经用户批准）：数据库访问方案定为 node:sqlite（无 ORM）——DATABASE.md / ARCHITECTURE.md / DEVELOPMENT_PLAN.md 升级为 V1.2；v1.0.0 基线其余内容不变，未重新冻结（待用户审核修订内容）。

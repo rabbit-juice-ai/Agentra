@@ -1,8 +1,8 @@
 # 数据库设计
 
-版本：V1.1（修订版，基线冻结前）  
-数据库：SQLite（建议 WAL 模式）  
-ORM：Drizzle（推荐）
+版本：V1.2（基于 v1.0.0 Development Baseline 的 D-016 修订）  
+数据库：SQLite（WAL 模式）  
+数据访问：Node.js 内置 `node:sqlite` + Core 统一 Repository/Data Access Layer（无 ORM；决策 D-016）
 
 ## 1. 设计原则
 
@@ -15,6 +15,10 @@ ORM：Drizzle（推荐）
 - Artifact 版本不可覆盖。
 - Work、Assignment、Session 和工作目录分离。
 - 数据库状态是 Core 的权威状态，不以 UI 缓存为准。
+- **数据库访问统一经 Core 的 Repository/Data Access Layer；Daemon 不直接访问业务数据库。**
+- **使用参数化 SQL（禁止字符串拼接）；写操作使用事务；启用 WAL 与 busy_timeout。**
+- **迁移自管：`PRAGMA user_version` 递增的版本化迁移（MIGRATIONS 数组），可重复执行、可测试；不引入 ORM。**
+- **运行时最低版本（Agentra 实测，2026-10-30）**：开发/测试 Node ≥ 22.13（实测 22.23.2）；生产 Core 经 `ELECTRON_RUN_AS_NODE` 运行于 Electron ≥ 45（内置 Node 24.22.1，实测 node:sqlite 可用）。node:sqlite 在 Node 22 标记 experimental（有警告），Electron 45 内置 Node 24 下无实验警告。
 
 ## 2. 核心表
 
@@ -392,7 +396,7 @@ Workflow definition 建议包含：
 ```
 <backup-dir>/<backup-id>/
 ├── manifest.json        # { manifestVersion, createdAt, type, database: {file, sha256, bytes}, artifacts: [{path, sha256, bytes}], counts }
-├── database.db          # SQLite 一致性备份（WAL 兼容：VACUUM INTO 或 backup API 产物）
+├── database.db          # SQLite 一致性备份（WAL 兼容：VACUUM INTO 产物；已实测 WAL 并发写入下快照一致）
 └── artifacts/           # Agentra 托管的 Artifact 文件（按原相对路径存放）
 ```
 
