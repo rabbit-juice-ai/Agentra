@@ -8,9 +8,13 @@ import {
   AgentCreateParams,
   AgentGetParams,
   AgentListParams,
+  AgentListResult,
+  AgentResult,
   AgentUpdateParams,
+  defineMethod,
   EVENTS_SUBSCRIBE_METHOD,
   EventsSubscribeParams,
+  EventsSubscribeResult,
   EXECUTION_CANCEL_METHOD,
   EXECUTION_GET_METHOD,
   EXECUTION_INTERRUPT_METHOD,
@@ -21,15 +25,22 @@ import {
   EXECUTION_STATUS_METHOD,
   ExecutionCancelParams,
   ExecutionGetParams,
+  ExecutionGetResult,
   ExecutionInterruptParams,
+  ExecutionInterruptResult,
   ExecutionListParams,
+  ExecutionListResult,
   ExecutionLogsParams,
+  ExecutionLogsResult,
+  ExecutionResult,
   ExecutionSendMessageParams,
+  ExecutionSendMessageResult,
   ExecutionStartParams,
   ExecutionStatusParams,
   RUNTIME_PROVIDER_LIST_METHOD,
   RUNTIME_PROVIDER_REFRESH_METHOD,
   RuntimeProviderListParams,
+  RuntimeProviderListResult,
   RuntimeProviderRefreshParams,
 } from '@agentra/protocol'
 import type { AgentService } from '../services/agent-service'
@@ -55,96 +66,75 @@ export function coreMethods(
   return {
     ...coreHealthMethods(version, daemonSocketPath),
 
-    [AGENT_LIST_METHOD]: {
-      paramsSchema: AgentListParams,
-      handler: (params) => ({
-        agents: services.agents.list(
-          (params as { includeArchived?: boolean }).includeArchived ?? false,
-        ),
-      }),
-    },
-    [AGENT_GET_METHOD]: {
-      paramsSchema: AgentGetParams,
-      handler: (params) => ({ agent: services.agents.get((params as { id: string }).id) }),
-    },
-    [AGENT_CREATE_METHOD]: {
-      paramsSchema: AgentCreateParams,
-      handler: (params) => ({ agent: services.agents.create(params as AgentCreateParams) }),
-    },
-    [AGENT_UPDATE_METHOD]: {
-      paramsSchema: AgentUpdateParams,
-      handler: (params) => ({ agent: services.agents.update(params as AgentUpdateParams) }),
-    },
-    [AGENT_ARCHIVE_METHOD]: {
-      paramsSchema: AgentArchiveParams,
-      handler: (params) => ({ agent: services.agents.archive((params as { id: string }).id) }),
-    },
+    [AGENT_LIST_METHOD]: defineMethod(AgentListParams, AgentListResult, (params) => ({
+      agents: services.agents.list(params.includeArchived ?? false),
+    })),
+    [AGENT_GET_METHOD]: defineMethod(AgentGetParams, AgentResult, (params) => ({
+      agent: services.agents.get(params.id),
+    })),
+    [AGENT_CREATE_METHOD]: defineMethod(AgentCreateParams, AgentResult, (params) => ({
+      agent: services.agents.create(params),
+    })),
+    [AGENT_UPDATE_METHOD]: defineMethod(AgentUpdateParams, AgentResult, (params) => ({
+      agent: services.agents.update(params),
+    })),
+    [AGENT_ARCHIVE_METHOD]: defineMethod(AgentArchiveParams, AgentResult, (params) => ({
+      agent: services.agents.archive(params.id),
+    })),
 
-    [RUNTIME_PROVIDER_LIST_METHOD]: {
-      paramsSchema: RuntimeProviderListParams,
-      handler: () => ({ providers: services.registry.list() }),
-    },
-    [RUNTIME_PROVIDER_REFRESH_METHOD]: {
-      paramsSchema: RuntimeProviderRefreshParams,
-      handler: async () => ({ providers: await services.registry.refresh() }),
-    },
+    [RUNTIME_PROVIDER_LIST_METHOD]: defineMethod(
+      RuntimeProviderListParams,
+      RuntimeProviderListResult,
+      () => ({ providers: services.registry.list() }),
+    ),
+    [RUNTIME_PROVIDER_REFRESH_METHOD]: defineMethod(
+      RuntimeProviderRefreshParams,
+      RuntimeProviderListResult,
+      async () => ({ providers: await services.registry.refresh() }),
+    ),
 
-    [EXECUTION_START_METHOD]: {
-      paramsSchema: ExecutionStartParams,
-      handler: async (params) => ({
-        execution: await services.executions.start(params as ExecutionStartParams),
-      }),
-    },
-    [EXECUTION_GET_METHOD]: {
-      paramsSchema: ExecutionGetParams,
-      handler: (params) => {
-        const executionId = (params as { executionId: string }).executionId
-        return {
-          execution: services.executions.get(executionId),
-          logs: services.executions.logsFor({ executionId }),
-        }
-      },
-    },
-    [EXECUTION_LIST_METHOD]: {
-      paramsSchema: ExecutionListParams,
-      handler: (params) => ({
-        executions: services.executions.list((params as { limit?: number }).limit ?? 50),
-      }),
-    },
-    [EXECUTION_LOGS_METHOD]: {
-      paramsSchema: ExecutionLogsParams,
-      handler: (params) => ({
-        logs: services.executions.logsFor(params as ExecutionLogsParams),
-      }),
-    },
-    [EXECUTION_SEND_MESSAGE_METHOD]: {
-      paramsSchema: ExecutionSendMessageParams,
-      handler: (params) => services.executions.sendMessage(params as ExecutionSendMessageParams),
-    },
-    [EXECUTION_INTERRUPT_METHOD]: {
-      paramsSchema: ExecutionInterruptParams,
-      handler: (params) => services.executions.interrupt(params as ExecutionInterruptParams),
-    },
-    [EXECUTION_CANCEL_METHOD]: {
-      paramsSchema: ExecutionCancelParams,
-      handler: async (params) => ({
-        execution: await services.executions.cancel(params as ExecutionCancelParams),
-      }),
-    },
-    [EXECUTION_STATUS_METHOD]: {
-      paramsSchema: ExecutionStatusParams,
-      handler: (params) => ({
-        execution: services.executions.get((params as { executionId: string }).executionId),
-      }),
-    },
+    [EXECUTION_START_METHOD]: defineMethod(
+      ExecutionStartParams,
+      ExecutionResult,
+      async (params) => ({ execution: await services.executions.start(params) }),
+    ),
+    [EXECUTION_GET_METHOD]: defineMethod(ExecutionGetParams, ExecutionGetResult, (params) => ({
+      execution: services.executions.get(params.executionId),
+      logs: services.executions.logsFor({ executionId: params.executionId }),
+    })),
+    [EXECUTION_LIST_METHOD]: defineMethod(ExecutionListParams, ExecutionListResult, (params) => ({
+      executions: services.executions.list(params.limit ?? 50),
+    })),
+    [EXECUTION_LOGS_METHOD]: defineMethod(ExecutionLogsParams, ExecutionLogsResult, (params) => ({
+      logs: services.executions.logsFor(params),
+    })),
+    [EXECUTION_SEND_MESSAGE_METHOD]: defineMethod(
+      ExecutionSendMessageParams,
+      ExecutionSendMessageResult,
+      (params) => services.executions.sendMessage(params),
+    ),
+    [EXECUTION_INTERRUPT_METHOD]: defineMethod(
+      ExecutionInterruptParams,
+      ExecutionInterruptResult,
+      (params) => services.executions.interrupt(params),
+    ),
+    [EXECUTION_CANCEL_METHOD]: defineMethod(
+      ExecutionCancelParams,
+      ExecutionResult,
+      async (params) => ({ execution: await services.executions.cancel(params) }),
+    ),
+    [EXECUTION_STATUS_METHOD]: defineMethod(ExecutionStatusParams, ExecutionResult, (params) => ({
+      execution: services.executions.get(params.executionId),
+    })),
 
-    [EVENTS_SUBSCRIBE_METHOD]: {
-      paramsSchema: EventsSubscribeParams,
-      handler: (_params, ctx) => {
+    [EVENTS_SUBSCRIBE_METHOD]: defineMethod(
+      EventsSubscribeParams,
+      EventsSubscribeResult,
+      (_params, ctx) => {
         const unsubscribe = services.hub.subscribe((event) => ctx.push({ type: 'event', event }))
         ctx.onClose(unsubscribe)
         return { subscribed: true }
       },
-    },
+    ),
   }
 }

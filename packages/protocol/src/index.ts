@@ -1,4 +1,11 @@
 export {
+  createDispatcher,
+  defineMethod,
+  type MethodTable,
+  type RpcContext,
+  type RpcMethodDef,
+} from './dispatcher'
+export {
   AgentProfile,
   AgentStatus,
   Execution,

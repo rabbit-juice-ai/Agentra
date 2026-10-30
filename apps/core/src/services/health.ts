@@ -2,7 +2,9 @@ import net from 'node:net'
 import {
   CORE_HEALTH_METHOD,
   DAEMON_HEALTH_METHOD,
+  defineMethod,
   HealthParams,
+  HealthResult,
   PROTOCOL_VERSION,
   type RpcResponse,
 } from '@agentra/protocol'
@@ -18,26 +20,22 @@ const startedAt = Date.now()
  */
 export function coreHealthMethods(version: string, daemonSocketPath: string): MethodTable {
   return {
-    [CORE_HEALTH_METHOD]: {
-      paramsSchema: HealthParams,
-      handler: () => ({
-        status: 'ok',
-        service: 'core',
-        protocolVersion: PROTOCOL_VERSION,
-        pid: process.pid,
-        uptimeSeconds: (Date.now() - startedAt) / 1000,
-        version,
-      }),
-    },
-    [DAEMON_HEALTH_METHOD]: {
-      paramsSchema: HealthParams,
-      handler: () => proxyDaemonHealth(daemonSocketPath),
-    },
+    [CORE_HEALTH_METHOD]: defineMethod(HealthParams, HealthResult, () => ({
+      status: 'ok' as const,
+      service: 'core' as const,
+      protocolVersion: PROTOCOL_VERSION,
+      pid: process.pid,
+      uptimeSeconds: (Date.now() - startedAt) / 1000,
+      version,
+    })),
+    [DAEMON_HEALTH_METHOD]: defineMethod(HealthParams, HealthResult, () =>
+      proxyDaemonHealth(daemonSocketPath),
+    ),
   }
 }
 
-/** 把 daemon.health 请求经 UDS 转发给 Daemon 并回传响应。 */
-export function proxyDaemonHealth(daemonSocketPath: string): Promise<unknown> {
+/** 把 daemon.health 请求经 UDS 转发给 Daemon 并回传响应（响应经 HealthResult 校验）。 */
+export function proxyDaemonHealth(daemonSocketPath: string): Promise<HealthResult> {
   return new Promise((resolve, reject) => {
     const socket = net.connect(daemonSocketPath)
     let buffer = ''
@@ -62,7 +60,7 @@ export function proxyDaemonHealth(daemonSocketPath: string): Promise<unknown> {
         socket.destroy()
         try {
           const response = JSON.parse(buffer.slice(0, newlineIndex)) as RpcResponse
-          if (response.ok) resolve(response.result)
+          if (response.ok) resolve(HealthResult.parse(response.result))
           else
             reject(
               new Error(`daemon.health failed: ${response.error.code} ${response.error.message}`),
