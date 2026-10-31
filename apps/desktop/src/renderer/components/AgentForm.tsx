@@ -167,7 +167,7 @@ export function AgentForm({ providers, initial, busy, onSubmit, onCancel }: Prop
           </select>
         </label>
         <label>
-          <span style={labelStyle}>最大并发（阶段 2 生效）</span>
+          <span style={labelStyle}>最大并发</span>
           <input
             style={inputStyle}
             type="number"

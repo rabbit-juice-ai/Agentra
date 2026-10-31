@@ -94,7 +94,7 @@ export function AgentsPage({
                   <th style={{ padding: '6px 4px' }}>Provider</th>
                   <th style={{ padding: '6px 4px' }}>状态</th>
                   <th style={{ padding: '6px 4px' }}>工具权限</th>
-                  <th style={{ padding: '6px 4px' }}>并发（阶段 2 生效）</th>
+                  <th style={{ padding: '6px 4px' }}>最大并发</th>
                   <th style={{ padding: '6px 4px' }} />
                 </tr>
               </thead>

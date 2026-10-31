@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 import { RpcMethodError } from '@agentra/protocol'
 import type { Database } from '../db/database'
@@ -7,6 +8,7 @@ export type WorkdirLockRecord = {
   executionId: string
   workId: string | null
   holderPid: number
+  bootId: number | null
   acquiredAt: string
 }
 
@@ -15,7 +17,17 @@ type LockRow = {
   execution_id: string
   work_id: string | null
   holder_pid: number
+  boot_id: number | null
   acquired_at: string
+}
+
+/**
+ * 开机身份：当前时刻减去系统运行时长，取整到秒。
+ * 跨重启一定不同（重启后 uptime 归零），用来识别「上一次开机的锁」——
+ * 只靠 pid 判活会被 pid 复用骗过，导致目录永久锁死。
+ */
+export function currentBootId(nowMs: number = Date.now(), uptimeSeconds = os.uptime()): number {
+  return Math.round((nowMs - uptimeSeconds * 1000) / 1000)
 }
 
 function toRecord(row: LockRow): WorkdirLockRecord {
@@ -24,6 +36,7 @@ function toRecord(row: LockRow): WorkdirLockRecord {
     executionId: row.execution_id,
     workId: row.work_id,
     holderPid: row.holder_pid,
+    bootId: row.boot_id,
     acquiredAt: row.acquired_at,
   }
 }
@@ -50,16 +63,21 @@ export function isProcessAlive(pid: number): boolean {
  * - 异常路径：Core 被 kill -9 后行还在，但 holder_pid 已死 → 下一次 acquire 或启动时 purgeStale 回收。
  */
 export class WorkdirLockService {
+  private readonly bootId: number
+
   constructor(
     private readonly db: Database,
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly holderPid: number = process.pid,
-  ) {}
+    bootId: number = currentBootId(),
+  ) {
+    this.bootId = bootId
+  }
 
   acquire(workdirInput: string, executionId: string, workId: string | null): WorkdirLockRecord {
     const workdir = path.resolve(workdirInput)
 
-    demoteStale(this.db, workdir)
+    demoteStale(this.db, workdir, this.bootId)
 
     const existing = this.get(workdir)
     if (existing) {
@@ -74,10 +92,10 @@ export class WorkdirLockService {
     try {
       this.db
         .prepare(
-          `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, acquired_at)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_id, acquired_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(workdir, executionId, workId, this.holderPid, this.now())
+        .run(workdir, executionId, workId, this.holderPid, this.bootId, this.now())
     } catch (error) {
       // 并发写入撞主键：按「已被占用」处理，不静默覆盖。
       const code = (error as { code?: string }).code
@@ -107,16 +125,26 @@ export class WorkdirLockService {
     return Number(result.changes) > 0
   }
 
-  /** 回收 holder_pid 已死的锁；返回回收条数。Core 启动时调用一次。 */
+  /** 回收陈旧锁；返回回收条数。Core 启动时调用一次。 */
   purgeStale(): number {
     const rows = this.db.prepare('SELECT * FROM workdir_locks').all() as LockRow[]
-    const stale = rows.filter((row) => !isProcessAlive(row.holder_pid))
-    const del = this.db.prepare('DELETE FROM workdir_locks WHERE workdir = ? AND holder_pid = ?')
+    const stale = rows.filter((row) => this.isStale(row))
+    const del = this.db.prepare('DELETE FROM workdir_locks WHERE workdir = ? AND execution_id = ?')
     let removed = 0
     for (const row of stale) {
-      removed += Number(del.run(row.workdir, row.holder_pid).changes)
+      removed += Number(del.run(row.workdir, row.execution_id).changes)
     }
     return removed
+  }
+
+  /**
+   * 陈旧判定：
+   * 1. 跨开机（boot_id 不同或缺失）→ 无条件回收，**不看 pid**（pid 会被复用）；
+   * 2. 同一次开机内 → 持锁进程已死才算陈旧。
+   */
+  isStale(row: LockRow): boolean {
+    if (row.boot_id === null || row.boot_id !== this.bootId) return true
+    return !isProcessAlive(row.holder_pid)
   }
 
   get(workdirInput: string): WorkdirLockRecord | null {
@@ -135,15 +163,17 @@ export class WorkdirLockService {
   }
 }
 
-/** 单条锁的陈旧判定：持锁者已死则删掉，让本次获取继续。 */
-function demoteStale(db: Database, workdir: string): void {
+/** 单条锁的陈旧判定：跨开机或持锁者已死则删掉，让本次获取继续。 */
+function demoteStale(db: Database, workdir: string, bootId: number): void {
   const row = db.prepare('SELECT * FROM workdir_locks WHERE workdir = ?').get(workdir) as
     | LockRow
     | undefined
-  if (row && !isProcessAlive(row.holder_pid)) {
-    db.prepare('DELETE FROM workdir_locks WHERE workdir = ? AND holder_pid = ?').run(
+  if (!row) return
+  const stale = row.boot_id === null || row.boot_id !== bootId || !isProcessAlive(row.holder_pid)
+  if (stale) {
+    db.prepare('DELETE FROM workdir_locks WHERE workdir = ? AND execution_id = ?').run(
       workdir,
-      row.holder_pid,
+      row.execution_id,
     )
   }
 }

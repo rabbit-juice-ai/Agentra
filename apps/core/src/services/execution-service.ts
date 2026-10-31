@@ -42,6 +42,26 @@ export type ExecutionServiceLogger = {
   error: (message: string, data?: Record<string, unknown>) => void
 }
 
+/**
+ * 排队中的启动任务。只存内存：Core 重启后排队一律丢弃并标记（见 discardQueuedOnStartup），
+ * 所以队列不会变成重启后没人处理的幽灵。
+ */
+type SpawnJob = {
+  executionId: string
+  agentId: string
+  providerId: string
+  executablePath: string | null
+  capabilities: Execution['capabilities']
+  prompt: string
+  workingDirectory: string
+  sessionId: string
+  externalSessionId: string
+  systemPrompt: string | undefined
+  allowedTools: string[]
+  disallowedTools: string[]
+  allowedRoots: string[] | undefined
+}
+
 export type ExecutionServiceDeps = {
   db: Database
   runtime: RuntimeClient
@@ -73,6 +93,9 @@ const WORK_ACCEPTS_EXECUTIONS = new Set(['active', 'paused'])
  */
 export class ExecutionService {
   private readonly seenEventIds = new Set<string>()
+  /** executionId → 待启动任务；与 executions 表里的 queued 标记一一对应。 */
+  private readonly queued = new Map<string, SpawnJob>()
+  private readonly draining = new Set<string>()
   private readonly seenEventOrder: string[] = []
   private readonly db: Database
   private readonly runtime: RuntimeClient
@@ -150,6 +173,10 @@ export class ExecutionService {
       )
     }
 
+    // 并发槽位必须在创建本次执行记录**之前**统计，否则会把自己算进去、全部误判为排队。
+    const activeCount = this.executions.countActiveByAgent(agent.id)
+    const shouldQueue = activeCount >= agent.maxConcurrency
+
     const now = this.now()
     const execution: Execution = {
       id: executionId,
@@ -202,21 +229,61 @@ export class ExecutionService {
       workingDirectory,
     })
 
+    const job: SpawnJob = {
+      executionId,
+      agentId: agent.id,
+      providerId: provider.id,
+      executablePath: provider.executablePath,
+      capabilities: provider.capabilities,
+      prompt,
+      workingDirectory,
+      sessionId,
+      externalSessionId,
+      systemPrompt: agent.systemPrompt.length > 0 ? agent.systemPrompt : undefined,
+      allowedTools: toolPermissions.allow,
+      disallowedTools: toolPermissions.deny,
+      // 阶段 2：绑定 Work 时把允许的目录根一并声明给 Daemon（Daemon 仍做边界校验）。
+      allowedRoots: workId ? [this.scratchRoot, ...allowedRoots] : undefined,
+    }
+
+    // 并发上限：达到 maxConcurrency 时进入排队，**不启动进程**，返回 pending 的执行记录。
+    if (shouldQueue) {
+      this.queued.set(executionId, job)
+      transaction(this.db, () => {
+        this.executions.setRecoveryState(executionId, { queued: true, queuedAt: now }, now)
+        this.appendSystemLog(
+          executionId,
+          'execution.queued',
+          { activeCount, maxConcurrency: agent.maxConcurrency },
+          now,
+        )
+      })
+      this.logger?.info('execution queued', { executionId, agentId: agent.id, activeCount })
+      return this.get(executionId)
+    }
+
+    return this.spawn(job)
+  }
+
+  /**
+   * 真正启动进程。排队任务被调度时复用同一条路径。
+   */
+  private async spawn(job: SpawnJob): Promise<Execution> {
+    const { executionId } = job
     try {
       const handle = await this.runtime.start({
         executionId,
-        providerId: provider.id,
-        executablePath: provider.executablePath,
-        capabilities: provider.capabilities,
-        prompt,
-        workingDirectory,
-        sessionId: externalSessionId,
-        systemPrompt: agent.systemPrompt.length > 0 ? agent.systemPrompt : undefined,
+        providerId: job.providerId,
+        executablePath: job.executablePath,
+        capabilities: job.capabilities,
+        prompt: job.prompt,
+        workingDirectory: job.workingDirectory,
+        sessionId: job.externalSessionId,
+        systemPrompt: job.systemPrompt,
         permissionMode: DEFAULT_PERMISSION_MODE,
-        allowedTools: toolPermissions.allow,
-        disallowedTools: toolPermissions.deny,
-        // 阶段 2：绑定 Work 时把允许的目录根一并声明给 Daemon（Daemon 仍做边界校验）。
-        allowedRoots: workId ? [this.scratchRoot, ...allowedRoots] : undefined,
+        allowedTools: job.allowedTools,
+        disallowedTools: job.disallowedTools,
+        allowedRoots: job.allowedRoots,
       })
       this.executions.markRunning(executionId, {
         processId: handle.processId,
@@ -239,7 +306,7 @@ export class ExecutionService {
         endedAt: failedAt,
         recoveryState: { reason: 'start_failed', message },
       })
-      this.sessions.end(sessionId, failedAt)
+      this.sessions.end(job.sessionId, failedAt)
       this.appendSystemLog(executionId, 'execution.start_failed', { message }, failedAt)
       this.publishState(executionId, 'failed', 'pending', message)
       this.logger?.error('execution start failed', { executionId, error: message })
@@ -301,6 +368,7 @@ export class ExecutionService {
     this.appendSystemLog(execution.id, 'execution.cancel_requested', {}, now)
     this.publishState(execution.id, 'cancelled', previous, 'cancelled by user')
     this.locks.releaseByExecution(execution.id)
+    void this.drainQueue(execution.agentId)
 
     try {
       await this.runtime.cancel(execution.id)
@@ -384,6 +452,10 @@ export class ExecutionService {
           startedAt: execution.startedAt ?? now,
           updatedAt: now,
         })
+        continue
+      }
+      if (execution.status === 'pending' && this.queued.has(execution.id)) {
+        // 排队中的执行本来就没有进程，不能按崩溃处理。
         continue
       }
       if (
@@ -492,6 +564,7 @@ export class ExecutionService {
     })
     this.sessions.end(execution.sessionId, payload.timestamp)
     this.locks.releaseByExecution(payload.executionId)
+    void this.drainQueue(execution.agentId)
     this.appendSystemLog(
       payload.executionId,
       'execution.exited',
@@ -547,6 +620,72 @@ export class ExecutionService {
       workId: work.id,
       allowedRoots: [path.resolve(work.rootPath)],
     }
+  }
+
+  /**
+   * 槽位释放后按入队顺序自动调度。同一 Agent 的调度串行化，避免并发触发重复启动。
+   */
+  private async drainQueue(agentId: string | null): Promise<void> {
+    if (!agentId || this.draining.has(agentId)) return
+    this.draining.add(agentId)
+    try {
+      for (;;) {
+        const agent = this.agents.get(agentId)
+        if (!agent) return
+        const active = this.executions.countActiveByAgent(agentId)
+        if (active >= agent.maxConcurrency) return
+
+        const [next] = this.executions.listQueuedByAgent(agentId, 1)
+        if (!next) return
+        const job = this.queued.get(next.id)
+        this.queued.delete(next.id)
+        const now = this.now()
+        this.executions.setRecoveryState(next.id, { queued: false, dequeuedAt: now }, now)
+        this.appendSystemLog(next.id, 'execution.dequeued', { activeBefore: active }, now)
+        if (!job) {
+          // 进程内队列与库里的标记不一致（理论上不该发生）：按失败终态处理，不静默丢弃。
+          this.executions.finish(next.id, {
+            status: 'failed',
+            endedAt: now,
+            recoveryState: { reason: 'queue_entry_missing' },
+          })
+          this.sessions.end(next.sessionId, now)
+          continue
+        }
+        try {
+          await this.spawn(job)
+        } catch {
+          // spawn 已把执行置为 failed 并记录原因；继续尝试下一条。
+        }
+      }
+    } finally {
+      this.draining.delete(agentId)
+    }
+  }
+
+  /**
+   * Core 启动时处置上次遗留的排队任务：**丢弃并标记**，不自动恢复。
+   * 理由：排队任务从未启动过进程，自动补跑等于在用户不知情时产生副作用。
+   */
+  discardQueuedOnStartup(): number {
+    const queuedRows = this.executions.listQueued()
+    const now = this.now()
+    for (const execution of queuedRows) {
+      this.executions.finish(execution.id, {
+        status: 'failed',
+        endedAt: now,
+        recoveryState: { reason: 'queue_discarded_on_restart', discardedAt: now },
+      })
+      this.sessions.end(execution.sessionId, now)
+      this.locks.releaseByExecution(execution.id)
+      this.appendSystemLog(
+        execution.id,
+        'execution.queue_discarded',
+        { reason: 'core_restart' },
+        now,
+      )
+    }
+    return queuedRows.length
   }
 
   private resolveProvider(agent: AgentProfile): RuntimeProviderRecord {

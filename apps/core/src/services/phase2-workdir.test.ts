@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
 import { WorkRepository } from '../db/repositories/work-repository'
-import { WorkdirLockService } from './workdir-lock-service'
+import { currentBootId, WorkdirLockService } from './workdir-lock-service'
 import { WorktreeService } from './worktree-service'
 
 const NOW = '2026-11-01T00:00:00.000Z'
@@ -80,9 +80,9 @@ describe('WorkdirLockService（键 = 实际工作目录绝对路径）', () => {
     const dir = tempDir()
     // 模拟上一次 Core 被 kill -9 后留下的行：holder_pid 是个必然不存在的进程
     db.prepare(
-      `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, acquired_at)
-       VALUES (?, 'exe-dead', 'work-1', 999999, ?)`,
-    ).run(path.resolve(dir), NOW)
+      `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_id, acquired_at)
+       VALUES (?, 'exe-dead', 'work-1', 999999, ?, ?)`,
+    ).run(path.resolve(dir), currentBootId(), NOW)
 
     const locks = new WorkdirLockService(db, () => NOW, process.pid)
     const record = locks.acquire(dir, 'exe-new', 'work-1')
@@ -91,18 +91,36 @@ describe('WorkdirLockService（键 = 实际工作目录绝对路径）', () => {
     db.close()
   })
 
+  it('reclaims a lock whose boot_id differs even when the pid is still alive (跨重启 pid 复用)', () => {
+    const db = openDb()
+    const dir = tempDir()
+    // 关键构造：holder_pid 是「活着的」当前进程，但 boot_id 属于上一次开机 ——
+    // 只按 pid 判活会误判成有效锁，导致目录永久锁死。
+    db.prepare(
+      `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_id, acquired_at)
+       VALUES (?, 'exe-previous-boot', 'work-1', ?, ?, ?)`,
+    ).run(path.resolve(dir), process.pid, 1, NOW)
+
+    const locks = new WorkdirLockService(db, () => NOW, process.pid)
+    const record = locks.acquire(dir, 'exe-new', 'work-1')
+    expect(record.executionId).toBe('exe-new')
+    expect(locks.get(dir)?.bootId).not.toBe(1)
+    db.close()
+  })
+
   it('purgeStale removes only dead-holder rows', () => {
     const db = openDb()
     const alive = tempDir()
     const dead = tempDir()
+    const bootId = currentBootId()
     db.prepare(
-      `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, acquired_at)
-       VALUES (?, 'exe-alive', NULL, ?, ?)`,
-    ).run(path.resolve(alive), process.pid, NOW)
+      `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_id, acquired_at)
+       VALUES (?, 'exe-alive', NULL, ?, ?, ?)`,
+    ).run(path.resolve(alive), process.pid, bootId, NOW)
     db.prepare(
-      `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, acquired_at)
-       VALUES (?, 'exe-dead', NULL, 999999, ?)`,
-    ).run(path.resolve(dead), NOW)
+      `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_id, acquired_at)
+       VALUES (?, 'exe-dead', NULL, 999999, ?, ?)`,
+    ).run(path.resolve(dead), bootId, NOW)
 
     const locks = new WorkdirLockService(db, () => NOW, process.pid)
     expect(locks.purgeStale()).toBe(1)

@@ -340,6 +340,15 @@ export const MIGRATIONS: Migration[] = [
       db.exec(PHASE_2_WORKDIR_SCHEMA)
     },
   },
+  {
+    version: 5,
+    name: 'phase2_workdir_lock_boot_id',
+    up: (db) => {
+      // 开机身份：用于跨重启回收锁，避免 pid 被无关进程复用时锁永久不回收。
+      // 旧行 boot_id 为 NULL，视为无法判定 → 按陈旧回收（升级发生在 Core 启动时，不会有活锁）。
+      db.exec('ALTER TABLE workdir_locks ADD COLUMN boot_id INTEGER')
+    },
+  },
 ]
 
 export function currentUserVersion(db: Database): number {

@@ -28,6 +28,26 @@ const TERMINAL_STATES: ReadonlySet<ExecutionState> = new Set([
   'crashed',
 ])
 
+/**
+ * 对尚不存在的路径求真实路径：向上找到最近的已存在祖先做 realpath，再把剩余段接回去。
+ * 这样「创建之前」就能判断最终落点是否逃逸。
+ */
+function realpathOfNearestExisting(target: string): string {
+  const segments: string[] = []
+  let current = target
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current)
+      return segments.length === 0 ? real : path.join(real, ...segments.reverse())
+    } catch {
+      const parent = path.dirname(current)
+      if (parent === current) return target
+      segments.push(path.basename(current))
+      current = parent
+    }
+  }
+}
+
 export type ExecutionLogger = {
   info: (message: string, data?: Record<string, unknown>) => void
   warn: (message: string, data?: Record<string, unknown>) => void
@@ -288,8 +308,6 @@ export class ExecutionManager {
         `working directory is outside the allowed roots: ${input}`,
       )
     }
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-    const realDir = fs.realpathSync(dir)
     const realRoots = roots.map((root) => {
       try {
         return fs.realpathSync(root)
@@ -297,6 +315,17 @@ export class ExecutionManager {
         return root
       }
     })
+    // 先 realpath 再 mkdir：目录还不存在时，用最近的已存在祖先做判定，
+    // 避免「根内有指向外部的符号链接」时先把目录创建到根外、再拒绝。
+    const resolvedBefore = realpathOfNearestExisting(dir)
+    if (!realRoots.some((root) => within(resolvedBefore, root))) {
+      throw new RpcMethodError(
+        'INVALID_PARAMS',
+        `working directory escapes allowed roots via symlink: ${input}`,
+      )
+    }
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const realDir = fs.realpathSync(dir)
     if (!realRoots.some((root) => within(realDir, root))) {
       throw new RpcMethodError(
         'INVALID_PARAMS',

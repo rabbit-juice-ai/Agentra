@@ -769,3 +769,84 @@ describe('阶段 2 B3：工作目录锁与 Worktree 隔离', () => {
     expect(second.id).not.toBe(first.id)
   })
 })
+
+describe('阶段 2 B4：Agent 并发限制与排队', () => {
+  function exitEvent(executionId: string) {
+    return {
+      eventId: newId('evt'),
+      protocolVersion: PROTOCOL_VERSION,
+      eventType: 'execution.exited' as const,
+      occurredAt: NOW,
+      aggregateType: 'execution' as const,
+      aggregateId: executionId,
+      payload: {
+        executionId,
+        sequenceNo: 9,
+        exitCode: 0,
+        signal: null,
+        reason: 'exited' as const,
+        timestamp: NOW,
+      },
+      correlationId: executionId,
+    }
+  }
+
+  it('达到 maxConcurrency 时第二个任务进入排队且不启动进程', async () => {
+    const h = await harness()
+    expect(h.agents.get(h.agentId).maxConcurrency).toBe(1)
+
+    const first = await h.executions.start({ agentId: h.agentId, prompt: 'first' })
+    expect(first.status).toBe('running')
+    expect(h.runtime.starts).toHaveLength(1)
+
+    const second = await h.executions.start({ agentId: h.agentId, prompt: 'second' })
+    expect(second.status).toBe('pending')
+    expect(second.processId).toBeNull()
+    // 关键证据：没有向 Daemon 发起第二次启动
+    expect(h.runtime.starts).toHaveLength(1)
+
+    const logs = h.logs.list(second.id).map((log) => log.content)
+    expect(logs.some((content) => content.includes('execution.queued'))).toBe(true)
+  })
+
+  it('槽位释放后自动调度排队任务（新进程被创建）', async () => {
+    const h = await harness()
+    const first = await h.executions.start({ agentId: h.agentId, prompt: 'first' })
+    const second = await h.executions.start({ agentId: h.agentId, prompt: 'second' })
+    expect(second.status).toBe('pending')
+
+    h.executions.handleRuntimeEvent(exitEvent(first.id))
+    // drainQueue 是异步的，等它跑完
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(h.runtime.starts).toHaveLength(2)
+    expect(h.executions.get(second.id)?.status).toBe('running')
+    expect(h.executions.get(first.id)?.status).toBe('succeeded')
+  })
+
+  it('Core 重启后遗留的排队任务被丢弃并标记，锁随之释放', async () => {
+    const h = await harness()
+    // 两个 Work 用不同目录：这样第二个会卡在并发上限（而不是工作目录锁）
+    const workA = h.works.create({ name: 'A', rootPath: path.join(h.dir, 'queued-a') })
+    h.works.activate(workA.id)
+    const workB = h.works.create({ name: 'B', rootPath: path.join(h.dir, 'queued-b') })
+    h.works.activate(workB.id)
+
+    await h.executions.start({ agentId: h.agentId, prompt: 'first', workId: workA.id })
+    const queued = await h.executions.start({
+      agentId: h.agentId,
+      prompt: 'second',
+      workId: workB.id,
+    })
+    expect(queued.status).toBe('pending')
+    expect(h.locks.get(path.join(h.dir, 'queued-b'))).not.toBeNull()
+
+    expect(h.executions.discardQueuedOnStartup()).toBe(1)
+    const discarded = h.executions.get(queued.id)
+    expect(discarded?.status).toBe('failed')
+    const logs = h.logs.list(queued.id).map((log) => log.content)
+    expect(logs.some((content) => content.includes('execution.queue_discarded'))).toBe(true)
+    // 丢弃后排队的锁不再占着目录
+    expect(h.locks.get(path.join(h.dir, 'queued-b'))).toBeNull()
+  })
+})

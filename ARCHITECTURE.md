@@ -265,6 +265,17 @@ Provider 应声明 capabilities：
 
 每个 Work 使用独立目录。并行代码任务优先使用 Git Worktree；非 Git 项目使用独立子目录或显式互斥锁。
 
+**Git Worktree（阶段 2 落地）**
+- 创建：在 `works.repository_path` 上执行 `git worktree add -b <branch> <path>`，工作树落在 Agentra 数据目录的 `worktrees/<workId>/<branch>`，不往用户仓库里写文件。
+- 记录：`worktrees` 表保留 work、assignment、分支、`base_commit` 与状态；清理后置 `removed` + `removed_at`，不物理删行。
+- 清理必须显式确认：API 要求 `confirm=true`，未确认直接拒绝且无副作用；UI 提供二次确认。
+
+**工作目录锁（阶段 2 落地）**
+- 键是**实际工作目录的绝对路径**（`path.resolve` 后），不是 Work id —— 两个 Work 指向同一非 Worktree 目录时必须冲突，Worktree 各自独立目录则天然不冲突。
+- 运行态存于 `workdir_locks` 表；执行启动前获取，执行进入终态（exited / cancel / 对账判 crashed / 启动失败）时按 execution_id 释放。
+- 冲突返回 `WORKDIR_LOCKED`，且**不创建 Execution**。
+- 回收：行内记 `holder_pid` 与 `boot_id`（开机身份）。跨开机无条件回收（pid 会被复用，只判 pid 存活会永久锁死目录）；同一次开机内按 pid 存活判定。
+
 ## 11. 安全模型
 
 - Electron renderer 开启 contextIsolation，禁用不必要的 Node 集成。
@@ -277,6 +288,7 @@ Provider 应声明 capabilities：
 - Agent 输出是非可信数据，不得作为系统指令执行。
 - 所有文件路径规范化并检查是否越过允许目录。
 - 审计权限请求、批准、拒绝和执行结果。
+- **执行工作目录的根集合边界（阶段 2）**：Core 在启动执行时声明 `allowedRoots`（scratch 根、worktrees 根、`works.root_path`），Daemon 校验实际工作目录必须落在这些根之内，并在创建目录前先做 `realpath`（含最近已存在祖先）判定，挡住符号链接逃逸；目录创建后再 `realpath` 复核一次。该检查只约束「Core 把执行放到哪个目录」，**不是文件系统沙箱**——Agent 进程本身仍可访问其他目录。
 
 **工具权限最小模型（U3，阶段 1 收尾）**：
 - 权限配置存于 `agent_profiles.tool_permissions_json`（`{version:1, allow[], deny[]}`），不建独立权限表；`deny` 优先于 `allow`，同一工具不得同时出现在两个清单，冲突在写入时拒绝。

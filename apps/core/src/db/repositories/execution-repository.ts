@@ -129,6 +129,48 @@ export class ExecutionRepository {
     return rows.map(toExecution)
   }
 
+  /**
+   * 该 Agent 当前占用的并发槽位（pending + running）。
+   * **排队中的执行不算**：它还没有进程，占位会让自己永远调度不上。
+   */
+  countActiveByAgent(agentId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM executions e
+         JOIN agent_sessions s ON s.id = e.session_id
+         WHERE e.status IN ('pending', 'running')
+           AND (e.recovery_state_json IS NULL OR e.recovery_state_json NOT LIKE '%"queued":true%')
+           AND s.context_ref = ?`,
+      )
+      .get(agentId) as { c: number }
+    return row.c
+  }
+
+  /** 排队中的执行：pending + recovery_state 标记 queued，按入队顺序。 */
+  listQueuedByAgent(agentId: string, limit = 10): Execution[] {
+    const rows = this.db
+      .prepare(
+        `${SELECT_EXECUTION}
+         WHERE e.status = 'pending' AND e.recovery_state_json LIKE '%"queued":true%'
+           AND s.context_ref = ?
+         ORDER BY e.created_at ASC, e.id ASC LIMIT ?`,
+      )
+      .all(agentId, limit) as ExecutionRow[]
+    return rows.map(toExecution)
+  }
+
+  /** 全部排队中的执行（Core 启动时统一丢弃并标记）。 */
+  listQueued(): Execution[] {
+    const rows = this.db
+      .prepare(
+        `${SELECT_EXECUTION}
+         WHERE e.status = 'pending' AND e.recovery_state_json LIKE '%"queued":true%'
+         ORDER BY e.created_at ASC, e.id ASC`,
+      )
+      .all() as ExecutionRow[]
+    return rows.map(toExecution)
+  }
+
   /** pending/running → running；返回是否真的发生了迁移。 */
   markRunning(
     id: string,

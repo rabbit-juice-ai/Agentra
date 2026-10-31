@@ -96,6 +96,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     logger,
   })
 
+  // 上次运行遗留的排队任务：丢弃并标记，不自动恢复（从未启动过进程，补跑等于静默产生副作用）。
+  const discardedQueued = executionService.discardQueuedOnStartup()
+  if (discardedQueued > 0) {
+    logger.info('discarded queued executions on startup', { count: discardedQueued })
+  }
+
   // 先订阅再对外提供 RPC：避免漏掉启动瞬间的执行事件。
   runtime.subscribe(
     (event) => executionService.handleRuntimeEvent(event),
