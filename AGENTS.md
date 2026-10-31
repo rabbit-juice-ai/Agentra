@@ -2,7 +2,7 @@
 
 本文件适用于所有在本仓库工作的 AI 编程 Agent（Codex、Claude Code、其他 CLI）。
 
-版本：V1.3（基于 v1.0.0 Development Baseline 的修订）
+版本：V1.4（基于 v1.0.0 Development Baseline 的修订）
 
 ## 1. 开始工作前
 - 先阅读 README.md 和仓库根目录下的全部设计文档。

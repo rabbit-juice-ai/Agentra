@@ -1,6 +1,6 @@
 # 工作流定义与执行语义
 
-版本：V1.3（基于 v1.0.0 Development Baseline 的 D-017 修订）  
+版本：V1.4（基于 v1.0.0 Development Baseline 的 D-017 修订）\
 本文件是 Workflow Engine 的规范性要求。
 
 ## 1. 核心模型

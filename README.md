@@ -1,6 +1,6 @@
 # Agent Team Workspace — 开发文档包
 
-版本：V1.3（基于 v1.0.0 Development Baseline 的修订）  
+版本：V1.4（基于 v1.0.0 Development Baseline 的修订）\
 目标平台：macOS 本地桌面应用  
 产品形态：本地 AI Agent 团队协作与工作流管理平台  
 UI/UX 参考：Antumi（参考交互与布局；源码 Apache-2.0，复用需保留版权与许可声明；其无工作流引擎，本产品 Workflow Engine 自研）

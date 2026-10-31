@@ -1,6 +1,6 @@
 # 数据库设计
 
-版本：V1.3（基于 v1.0.0 Development Baseline 的 D-016～D-023 修订）  
+版本：V1.4（基于 v1.0.0 Development Baseline 的 D-016～D-023 修订）\
 数据库：SQLite（WAL 模式）  
 数据访问：Node.js 内置 `node:sqlite` + Core 统一 Repository/Data Access Layer（无 ORM；决策 D-016）
 
@@ -141,7 +141,7 @@ Provider 是运行时实现，AgentProfile 是员工身份。不得把两者合�
 
 #### agent_sessions
 - id PK
-- assignment_id FK
+- assignment_id FK（迁移 v3 起指向 `assignments(id)`，`ON DELETE SET NULL`）
 - provider_id FK
 - external_session_id nullable
 - context_ref nullable
@@ -149,6 +149,9 @@ Provider 是运行时实现，AgentProfile 是员工身份。不得把两者合�
 - created_at
 - updated_at
 - last_active_at nullable
+
+**关系与迁移约束**：Session 通过 `assignment_id` 归属 Assignment，Assignment 归属 Work，因此「执行属于哪个 Work」的可追溯路径是 `executions → agent_sessions → assignments → works`——**`executions` 表不设 `work_id` 列**（避免同一事实两处存储）。
+v3 加外键前，指向不存在 Assignment 的孤儿引用统一置 NULL 并写入 `audit_logs`（`action = agent_session.assignment_orphaned`），不静默丢弃。
 
 #### executions
 - id PK
@@ -347,9 +350,30 @@ Workflow definition 建议包含：
 - worktree_path
 - branch_name
 - base_commit nullable
-- status
+- status: active | removed
 - created_at
 - removed_at nullable
+- unique(worktree_path)
+
+#### 工作目录锁 workdir_locks（运行态，非业务数据）
+
+本表记录「哪个执行正在使用哪个目录」，是运行态数据，不是用户业务数据。备份（D-013）按数据库文件整体快照，但恢复后这些行不代表当前运行态——Core 启动时会扫描全表、**只回收陈旧行**：`boot_id` 缺失、与当前开机身份不同，或同一次开机内 `holder_pid` 已死；**同一次开机内持有进程仍存活的锁行不会被回收**。因此不应把它当作需要保留的用户内容。
+
+| 列 | 类型 | 可空性 | 说明 |
+|---|---|---|---|
+| workdir | TEXT | PRIMARY KEY | 实际工作目录的**绝对路径**（`path.resolve` 后），**不是 Work id** |
+| execution_id | TEXT | NOT NULL | 持锁执行 |
+| work_id | TEXT | nullable | 关联 Work，仅用于排障（Worktree 执行时为所属 Work） |
+| holder_pid | INTEGER | NOT NULL | 持锁进程（Core）的 pid |
+| acquired_at | TEXT | NOT NULL | 获取时刻（ISO-8601） |
+| boot_id | INTEGER | nullable | 开机身份（`now - uptime`，取整到秒）；迁移 v5 追加，v5 之前的旧行为 NULL |
+
+索引：`idx_workdir_locks_execution(execution_id)`。
+
+语义：
+- **主键是工作目录的绝对路径**，不是 Work id —— 「两个 Work 指向同一非 Worktree 目录」必须冲突（返回 `WORKDIR_LOCKED`），按 Work 上锁测不出这条；Worktree 是独立目录，路径不同即不冲突。
+- 获取时机早于创建 Session/Execution，命中锁时不创建任何记录、不持目录；执行进入终态（exited / cancel / 对账判 crashed / 启动失败）时按 `execution_id` 释放。
+- **跨重启回收**：`boot_id` 与当前开机身份不同（或为 NULL）时无条件回收，**不看 pid**（重启后 pid 会被无关进程复用）；同一次开机内才按 `holder_pid` 存活判定。Core 启动时执行一次全表扫描，并依据上述规则逐行判断、仅回收陈旧锁行。
 
 ### 2.9 Event、日志和审计
 
@@ -429,6 +453,7 @@ Workflow definition 建议包含：
 - rework_requests(workflow_run_id, status)
 - artifacts(work_id, created_at)
 - executions(status, updated_at)
+- workdir_locks(execution_id)
 - workflow_events(workflow_run_id, occurred_at)
 - execution_logs(execution_id, sequence_no)
 
