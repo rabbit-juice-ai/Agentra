@@ -29,6 +29,20 @@ import type {
   TeamMemberResult,
   TeamResult,
   WorkCreateParams,
+  WorkflowTemplateCreateParams,
+  WorkflowTemplateGetParams,
+  WorkflowTemplateIdParams,
+  WorkflowTemplateListResult,
+  WorkflowTemplateResult,
+  WorkflowTemplateUpdateParams,
+  WorkflowVersionCreateDraftParams,
+  WorkflowVersionGetParams,
+  WorkflowVersionListParams,
+  WorkflowVersionListResult,
+  WorkflowVersionPublishParams,
+  WorkflowVersionResult,
+  WorkflowVersionValidateParams,
+  WorkflowVersionValidateResult,
   WorkIdParams,
   WorkLinkTeamParams,
   WorkListResult,
@@ -43,7 +57,7 @@ import type {
 /** Desktop 主进程 ↔ renderer 的唯一结果形态（错误码原样透传 Core）。 */
 export type RpcResult<T> =
   | { ok: true; result: T }
-  | { ok: false; error: { code: string; message: string } }
+  | { ok: false; error: { code: string; message: string; detail?: unknown } }
 
 /**
  * Preload 暴露给 renderer 的最小 API 白名单。
@@ -99,6 +113,34 @@ export type AgentraApi = {
   pauseAssignment(params: AssignmentIdParams): Promise<RpcResult<AssignmentResult>>
   resumeAssignment(params: AssignmentIdParams): Promise<RpcResult<AssignmentResult>>
   completeAssignment(params: AssignmentIdParams): Promise<RpcResult<AssignmentResult>>
+
+  // ---- 阶段 3：工作流定义（只做定义层，无执行入口） ----
+  listWorkflowTemplates(params?: {
+    includeArchived?: boolean
+  }): Promise<RpcResult<WorkflowTemplateListResult>>
+  getWorkflowTemplate(params: WorkflowTemplateGetParams): Promise<RpcResult<WorkflowTemplateResult>>
+  createWorkflowTemplate(
+    params: WorkflowTemplateCreateParams,
+  ): Promise<RpcResult<WorkflowTemplateResult>>
+  updateWorkflowTemplate(
+    params: WorkflowTemplateUpdateParams,
+  ): Promise<RpcResult<WorkflowTemplateResult>>
+  archiveWorkflowTemplate(
+    params: WorkflowTemplateIdParams,
+  ): Promise<RpcResult<WorkflowTemplateResult>>
+  listWorkflowVersions(
+    params: WorkflowVersionListParams,
+  ): Promise<RpcResult<WorkflowVersionListResult>>
+  getWorkflowVersion(params: WorkflowVersionGetParams): Promise<RpcResult<WorkflowVersionResult>>
+  createWorkflowDraft(
+    params: WorkflowVersionCreateDraftParams,
+  ): Promise<RpcResult<WorkflowVersionResult>>
+  publishWorkflowVersion(
+    params: WorkflowVersionPublishParams,
+  ): Promise<RpcResult<WorkflowVersionResult>>
+  validateWorkflowDefinition(
+    params: WorkflowVersionValidateParams,
+  ): Promise<RpcResult<WorkflowVersionValidateResult>>
 
   /** 订阅 Core 推送的执行事件；返回取消订阅函数。 */
   onEvent(listener: (event: RuntimeEvent) => void): () => void

@@ -3,6 +3,9 @@ import {
   CORE_HEALTH_METHOD,
   HealthResult,
   PROTOCOL_VERSION,
+  RpcError,
+  RpcErrorCode,
+  RpcMethodError,
   RpcRequest,
   RpcResponse,
   rpcFailure,
@@ -13,6 +16,35 @@ describe('protocol version', () => {
   it('exports a string version', () => {
     expect(typeof PROTOCOL_VERSION).toBe('string')
     expect(PROTOCOL_VERSION.length).toBeGreaterThan(0)
+  })
+})
+
+describe('RpcError 与 15 个错误码', () => {
+  it('exposes exactly 15 codes including UNKNOWN_NODE_TYPE', () => {
+    expect(RpcErrorCode.options).toHaveLength(15)
+    expect(RpcErrorCode.options).toContain('UNKNOWN_NODE_TYPE')
+  })
+
+  it('keeps the envelope without detail backward compatible', () => {
+    expect(RpcError.parse({ code: 'INVALID_PARAMS', message: 'bad' })).toEqual({
+      code: 'INVALID_PARAMS',
+      message: 'bad',
+    })
+  })
+
+  it('carries structured detail when provided', () => {
+    const failure = rpcFailure('req-12345678', 'INVALID_PARAMS', 'bad definition', {
+      violations: [{ violation: 'cycle', message: 'has a cycle' }],
+    })
+    expect(failure.error.detail).toEqual({
+      violations: [{ violation: 'cycle', message: 'has a cycle' }],
+    })
+  })
+
+  it('RpcMethodError keeps code, message and detail', () => {
+    const error = new RpcMethodError('UNKNOWN_NODE_TYPE', 'bad type', { nodeKey: 'x' })
+    expect(error.code).toBe('UNKNOWN_NODE_TYPE')
+    expect(error.detail).toEqual({ nodeKey: 'x' })
   })
 })
 

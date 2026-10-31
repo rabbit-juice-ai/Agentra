@@ -50,6 +50,7 @@ import {
   ExecutionSendMessageResult,
   ExecutionStartParams,
   ExecutionStatusParams,
+  RpcMethodError,
   RUNTIME_PROVIDER_LIST_METHOD,
   RUNTIME_PROVIDER_REFRESH_METHOD,
   RuntimeProviderListParams,
@@ -84,11 +85,36 @@ import {
   WORK_PAUSE_METHOD,
   WORK_RESUME_METHOD,
   WORK_TERMINATE_METHOD,
+  WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
+  WORKFLOW_TEMPLATE_CREATE_METHOD,
+  WORKFLOW_TEMPLATE_GET_METHOD,
+  WORKFLOW_TEMPLATE_LIST_METHOD,
+  WORKFLOW_TEMPLATE_UPDATE_METHOD,
+  WORKFLOW_VERSION_CREATE_DRAFT_METHOD,
+  WORKFLOW_VERSION_GET_METHOD,
+  WORKFLOW_VERSION_LIST_METHOD,
+  WORKFLOW_VERSION_PUBLISH_METHOD,
+  WORKFLOW_VERSION_VALIDATE_METHOD,
   WORKTREE_CREATE_METHOD,
   WORKTREE_LIST_METHOD,
   WORKTREE_REMOVE_METHOD,
   WorkCreateParams,
   type Work as WorkDto,
+  WorkflowTemplateCreateParams,
+  WorkflowTemplateGetParams,
+  WorkflowTemplateIdParams,
+  WorkflowTemplateListParams,
+  WorkflowTemplateListResult,
+  WorkflowTemplateResult,
+  WorkflowTemplateUpdateParams,
+  WorkflowVersionCreateDraftParams,
+  WorkflowVersionGetParams,
+  WorkflowVersionListParams,
+  WorkflowVersionListResult,
+  WorkflowVersionPublishParams,
+  WorkflowVersionResult,
+  WorkflowVersionValidateParams,
+  WorkflowVersionValidateResult,
   WorkGetParams,
   WorkIdParams,
   WorkLinkTeamParams,
@@ -102,6 +128,7 @@ import {
   WorktreeRemoveParams,
   WorktreeRemoveResult,
 } from '@agentra/protocol'
+import { validateWorkflowDefinition } from '@agentra/workflow-schema'
 import type { AgentService } from '../services/agent-service'
 import type { AssignmentService } from '../services/assignment-service'
 import type { CoreEventHub } from '../services/event-hub'
@@ -110,6 +137,10 @@ import { coreHealthMethods } from '../services/health'
 import type { ProviderRegistry } from '../services/provider-registry'
 import type { TeamService } from '../services/team-service'
 import type { WorkService } from '../services/work-service'
+import {
+  WorkflowDefinitionError,
+  type WorkflowDefinitionService,
+} from '../services/workflow-definition-service'
 import type { WorktreeService } from '../services/worktree-service'
 import type { MethodTable } from './dispatcher'
 
@@ -122,6 +153,7 @@ export type CoreMethodServices = {
   works: WorkService
   assignments: AssignmentService
   worktrees: WorktreeService
+  workflows: WorkflowDefinitionService
 }
 
 /**
@@ -140,6 +172,26 @@ function toWorkDtoAfter(
 ): WorkDto {
   services.works[action](id)
   return toWorkDto(services, id)
+}
+
+/**
+ * 定义层错误 → RPC 错误码：
+ * - UNKNOWN_NODE_TYPE 是错误码，不是 violation；
+ * - 其余定义/版本错误统一 INVALID_PARAMS，violations 放 detail（与 validate 返回结构一致）。
+ */
+function runWorkflow<T>(action: () => T): T {
+  try {
+    return action()
+  } catch (error) {
+    if (error instanceof WorkflowDefinitionError) {
+      const detail = error.violations.length > 0 ? { violations: error.violations } : undefined
+      if (error.code === 'UNKNOWN_NODE_TYPE') {
+        throw new RpcMethodError('UNKNOWN_NODE_TYPE', error.message, detail)
+      }
+      throw new RpcMethodError('INVALID_PARAMS', error.message, detail)
+    }
+    throw error
+  }
 }
 
 /** Desktop 可见的全部 RPC 方法（Core 是唯一业务入口）。 */
@@ -322,6 +374,83 @@ export function coreMethods(
     [ASSIGNMENT_REMOVE_METHOD]: defineMethod(AssignmentIdParams, AssignmentResult, (params) => ({
       assignment: services.assignments.remove(params.id),
     })),
+
+    [WORKFLOW_TEMPLATE_LIST_METHOD]: defineMethod(
+      WorkflowTemplateListParams,
+      WorkflowTemplateListResult,
+      (params) => ({
+        templates: services.workflows
+          .listTemplates()
+          .filter((template) => params.includeArchived === true || template.archivedAt === null),
+      }),
+    ),
+    [WORKFLOW_TEMPLATE_GET_METHOD]: defineMethod(
+      WorkflowTemplateGetParams,
+      WorkflowTemplateResult,
+      (params) => runWorkflow(() => ({ template: services.workflows.getTemplate(params.id) })),
+    ),
+    [WORKFLOW_TEMPLATE_CREATE_METHOD]: defineMethod(
+      WorkflowTemplateCreateParams,
+      WorkflowTemplateResult,
+      (params) => ({ template: services.workflows.createTemplate(params) }),
+    ),
+    [WORKFLOW_TEMPLATE_UPDATE_METHOD]: defineMethod(
+      WorkflowTemplateUpdateParams,
+      WorkflowTemplateResult,
+      (params) =>
+        runWorkflow(() => ({
+          template: services.workflows.updateTemplate(params.id, {
+            name: params.name,
+            description: params.description,
+            category: params.category,
+          }),
+        })),
+    ),
+    [WORKFLOW_TEMPLATE_ARCHIVE_METHOD]: defineMethod(
+      WorkflowTemplateIdParams,
+      WorkflowTemplateResult,
+      (params) =>
+        runWorkflow(() => {
+          services.workflows.archiveTemplate(params.id)
+          return { template: services.workflows.getTemplate(params.id) }
+        }),
+    ),
+
+    [WORKFLOW_VERSION_LIST_METHOD]: defineMethod(
+      WorkflowVersionListParams,
+      WorkflowVersionListResult,
+      (params) => ({ versions: services.workflows.listVersions(params.templateId) }),
+    ),
+    [WORKFLOW_VERSION_GET_METHOD]: defineMethod(
+      WorkflowVersionGetParams,
+      WorkflowVersionResult,
+      (params) => runWorkflow(() => ({ version: services.workflows.getVersion(params.versionId) })),
+    ),
+    [WORKFLOW_VERSION_CREATE_DRAFT_METHOD]: defineMethod(
+      WorkflowVersionCreateDraftParams,
+      WorkflowVersionResult,
+      (params) =>
+        runWorkflow(() => ({
+          version: services.workflows.createDraft(params.templateId, params.definition),
+        })),
+    ),
+    [WORKFLOW_VERSION_PUBLISH_METHOD]: defineMethod(
+      WorkflowVersionPublishParams,
+      WorkflowVersionResult,
+      (params) => runWorkflow(() => ({ version: services.workflows.publish(params.versionId) })),
+    ),
+    [WORKFLOW_VERSION_VALIDATE_METHOD]: defineMethod(
+      WorkflowVersionValidateParams,
+      WorkflowVersionValidateResult,
+      (params) => {
+        const outcome = validateWorkflowDefinition(params.definition)
+        if (outcome.ok) return { valid: true, violations: [] }
+        if (outcome.kind === 'error') {
+          throw new RpcMethodError('UNKNOWN_NODE_TYPE', outcome.message)
+        }
+        return { valid: false, violations: outcome.violations }
+      },
+    ),
 
     [EVENTS_SUBSCRIBE_METHOD]: defineMethod(
       EventsSubscribeParams,

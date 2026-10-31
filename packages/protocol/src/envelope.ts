@@ -22,12 +22,20 @@ export const RpcErrorCode = z.enum([
   // 阶段 2（PRD A-19 / DEVELOPMENT_PLAN 阶段 2 验收）：两个 Work 争用同一非 Worktree 目录时返回。
   // B2 只加枚举与文档，行为在 B3（工作目录锁）生效。
   'WORKDIR_LOCKED',
+  // 阶段 3 B2（第 15 个）：工作流定义里出现 7 种节点白名单之外的 type。
+  // 这是错误码，不是 violation —— 校验器不把它放进 violations 数组。
+  'UNKNOWN_NODE_TYPE',
 ])
 export type RpcErrorCode = z.infer<typeof RpcErrorCode>
 
 export const RpcError = z.object({
   code: RpcErrorCode,
   message: z.string().min(1),
+  /**
+   * 结构化补充信息（可选）。形状由具体方法定义；工作流定义校验失败时是
+   * `{ violations: [...] }`。纯增量字段，未加 .strict()，不改变 PROTOCOL_VERSION。
+   */
+  detail: z.unknown().optional(),
 })
 export type RpcError = z.infer<typeof RpcError>
 
@@ -58,8 +66,15 @@ export const RpcResponse = z.union([RpcSuccess, RpcFailure])
 export type RpcResponse = z.infer<typeof RpcResponse>
 
 /** 构造失败响应的便捷函数。error 经 Zod 校验，未知 code / 空 message 立即抛错。 */
-export function rpcFailure(requestId: string, code: RpcErrorCode, message: string): RpcFailure {
-  return { requestId, ok: false, error: RpcError.parse({ code, message }) }
+export function rpcFailure(
+  requestId: string,
+  code: RpcErrorCode,
+  message: string,
+  detail?: unknown,
+): RpcFailure {
+  const error: Record<string, unknown> = { code, message }
+  if (detail !== undefined) error.detail = detail
+  return { requestId, ok: false, error: RpcError.parse(error) }
 }
 
 /** 构造成功响应的便捷函数。 */
@@ -75,6 +90,7 @@ export class RpcMethodError extends Error {
   constructor(
     readonly code: RpcErrorCode,
     message: string,
+    readonly detail?: unknown,
   ) {
     super(message)
     this.name = 'RpcMethodError'

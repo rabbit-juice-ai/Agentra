@@ -1,0 +1,16 @@
+{
+  "name": "@agentra/workflow-schema",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:zod"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  }
+}

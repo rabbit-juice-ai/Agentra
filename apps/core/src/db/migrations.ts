@@ -312,6 +312,71 @@ CREATE INDEX IF NOT EXISTS idx_worktrees_work ON worktrees(work_id);
 CREATE INDEX IF NOT EXISTS idx_workdir_locks_execution ON workdir_locks(execution_id);
 `
 
+const PHASE_3_WORKFLOW_SCHEMA = `
+-- 阶段 3 B1：工作流模板与不可变版本（DATABASE §2.5）
+CREATE TABLE IF NOT EXISTS workflow_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  archived_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS workflow_versions (
+  id TEXT PRIMARY KEY,
+  template_id TEXT NOT NULL REFERENCES workflow_templates(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL CHECK (version >= 1),
+  schema_version INTEGER NOT NULL,
+  definition_json TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'deprecated')),
+  created_at TEXT NOT NULL,
+  published_at TEXT,
+  UNIQUE (template_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_versions_template_status
+  ON workflow_versions(template_id, status);
+CREATE INDEX IF NOT EXISTS idx_workflow_versions_checksum
+  ON workflow_versions(template_id, checksum);
+
+-- 发布不可变：definition_json / checksum / schema_version 任一变化即拒绝。
+-- published 与 deprecated 同等保护——deprecated 不等于删除，历史引用仍指向那一份定义。
+-- 只保护这三列，status（published → deprecated）与 published_at 的演进不受影响。
+CREATE TRIGGER IF NOT EXISTS trg_workflow_versions_immutable
+BEFORE UPDATE ON workflow_versions
+FOR EACH ROW
+WHEN OLD.status IN ('published', 'deprecated')
+  AND (
+    NEW.definition_json IS NOT OLD.definition_json
+    OR NEW.checksum IS NOT OLD.checksum
+    OR NEW.schema_version IS NOT OLD.schema_version
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'published or deprecated workflow version is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_workflow_versions_no_delete
+BEFORE DELETE ON workflow_versions
+FOR EACH ROW
+WHEN OLD.status IN ('published', 'deprecated')
+BEGIN
+  SELECT RAISE(ABORT, 'published or deprecated workflow version cannot be deleted');
+END;
+`
+
+const PHASE_3_QUEUE_INDEX = `
+-- 阶段 3 B1：D-3 队列判定修复的索引支撑（不新增列）。
+-- 查询改为 json_extract(recovery_state_json, '$.queued') = 1；部分索引只覆盖 pending 集合。
+-- 首列 status 与部分索引谓词重复，但显式带上它，查询规划器才会优先选中该索引
+-- （只有 (created_at, id) 时规划器会改用 idx_executions_status_updated_at 并额外排序）。
+CREATE INDEX IF NOT EXISTS idx_executions_pending_created
+  ON executions(status, created_at, id)
+  WHERE status = 'pending';
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -347,6 +412,20 @@ export const MIGRATIONS: Migration[] = [
       // 开机身份：用于跨重启回收锁，避免 pid 被无关进程复用时锁永久不回收。
       // 旧行 boot_id 为 NULL，视为无法判定 → 按陈旧回收（升级发生在 Core 启动时，不会有活锁）。
       db.exec('ALTER TABLE workdir_locks ADD COLUMN boot_id INTEGER')
+    },
+  },
+  {
+    version: 6,
+    name: 'phase3_workflow_templates_and_versions',
+    up: (db) => {
+      db.exec(PHASE_3_WORKFLOW_SCHEMA)
+    },
+  },
+  {
+    version: 7,
+    name: 'phase3_execution_queue_index',
+    up: (db) => {
+      db.exec(PHASE_3_QUEUE_INDEX)
     },
   },
 ]

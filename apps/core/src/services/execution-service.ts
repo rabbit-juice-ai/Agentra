@@ -712,7 +712,7 @@ export class ExecutionService {
   ): { id: string } | null {
     if (!workId) return null
     const assignment = this.assignments.findByWorkAndAgent(workId, agentId)
-    if (!assignment || assignment.status !== 'active') {
+    if (assignment?.status !== 'active') {
       throw new RpcMethodError(
         'INVALID_PARAMS',
         `work ${workId} has no active assignment for agent ${agentId}; create one before starting an execution`,

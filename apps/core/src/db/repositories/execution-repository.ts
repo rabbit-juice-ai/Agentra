@@ -40,6 +40,17 @@ const SELECT_EXECUTION = `
   JOIN agent_sessions s ON s.id = e.session_id
 `
 
+/**
+ * D-3：排队标记必须按 JSON 语义判定。
+ * LIKE '%"queued":true%' 漏判带空格的 `{"queued": true}`，且可能命中嵌套键；
+ * json_extract + json_valid 对 NULL / 损坏值返回 0（不抛错），查询始终可用。
+ */
+const QUEUED_EXPR = `(CASE
+    WHEN e.recovery_state_json IS NULL THEN 0
+    WHEN json_valid(e.recovery_state_json) = 0 THEN 0
+    WHEN json_extract(e.recovery_state_json, '$.queued') = 1 THEN 1
+    ELSE 0 END)`
+
 function toExecution(row: ExecutionRow): Execution {
   return ExecutionSchema.parse({
     id: row.id,
@@ -158,7 +169,7 @@ export class ExecutionRepository {
         `SELECT COUNT(*) AS c FROM executions e
          JOIN agent_sessions s ON s.id = e.session_id
          WHERE e.status IN ('pending', 'running')
-           AND (e.recovery_state_json IS NULL OR e.recovery_state_json NOT LIKE '%"queued":true%')
+           AND ${QUEUED_EXPR} = 0
            AND s.context_ref = ?`,
       )
       .get(agentId) as { c: number }
@@ -170,7 +181,7 @@ export class ExecutionRepository {
     const rows = this.db
       .prepare(
         `${SELECT_EXECUTION}
-         WHERE e.status = 'pending' AND e.recovery_state_json LIKE '%"queued":true%'
+         WHERE e.status = 'pending' AND ${QUEUED_EXPR} = 1
            AND s.context_ref = ?
          ORDER BY e.created_at ASC, e.id ASC LIMIT ?`,
       )
@@ -183,7 +194,7 @@ export class ExecutionRepository {
     const rows = this.db
       .prepare(
         `${SELECT_EXECUTION}
-         WHERE e.status = 'pending' AND e.recovery_state_json LIKE '%"queued":true%'
+         WHERE e.status = 'pending' AND ${QUEUED_EXPR} = 1
          ORDER BY e.created_at ASC, e.id ASC`,
       )
       .all() as ExecutionRow[]

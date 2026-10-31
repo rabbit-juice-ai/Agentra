@@ -196,6 +196,9 @@ importers:
       '@agentra/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@agentra/workflow-schema':
+        specifier: workspace:*
+        version: link:../../packages/workflow-schema
       ws:
         specifier: 8.22.0
         version: 8.22.0
@@ -293,6 +296,12 @@ importers:
         version: 4.6.7
 
   packages/shared: {}
+
+  packages/workflow-schema:
+    dependencies:
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
 packages:
 

@@ -14,6 +14,7 @@ import { ProviderRepository } from './db/repositories/provider-repository'
 import { SessionRepository } from './db/repositories/session-repository'
 import { TeamRepository } from './db/repositories/team-repository'
 import { WorkRepository } from './db/repositories/work-repository'
+import { WorkflowRepository } from './db/repositories/workflow-repository'
 import { coreMethods } from './rpc/methods'
 import { startWsServer } from './rpc/ws-server'
 import { AgentService } from './services/agent-service'
@@ -24,6 +25,7 @@ import { ProviderRegistry } from './services/provider-registry'
 import { TeamService } from './services/team-service'
 import { WorkService } from './services/work-service'
 import { WorkdirLockService } from './services/workdir-lock-service'
+import { WorkflowDefinitionService } from './services/workflow-definition-service'
 import { WorktreeService } from './services/worktree-service'
 
 const VERSION = '0.1.0'
@@ -57,6 +59,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const sessionRepository = new SessionRepository(db)
   const executionRepository = new ExecutionRepository(db)
   const executionLogRepository = new ExecutionLogRepository(db)
+  const workflowRepository = new WorkflowRepository(db)
 
   const hub = new CoreEventHub()
   const runtime = new DaemonClient(paths.daemonSocket, logger)
@@ -85,6 +88,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     teamRepository,
     sessionRepository,
   )
+  const workflowService = new WorkflowDefinitionService(db, workflowRepository)
   const executionService = new ExecutionService({
     db,
     runtime,
@@ -142,6 +146,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       works: workService,
       assignments: assignmentService,
       worktrees,
+      workflows: workflowService,
     }),
   )
   logger.info('core started', {

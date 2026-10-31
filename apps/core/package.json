@@ -16,6 +16,7 @@
     "@agentra/protocol": "workspace:*",
     "@agentra/runtime-sdk": "workspace:*",
     "@agentra/shared": "workspace:*",
+    "@agentra/workflow-schema": "workspace:*",
     "ws": "8.22.0",
     "zod": "4.6.7"
   },

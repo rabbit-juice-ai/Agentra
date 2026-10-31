@@ -224,7 +224,7 @@ Provider 应声明 capabilities：
 
 ### 7.1 错误码与协议版本（阶段 1 修订）
 
-- **错误码唯一来源**为 `packages/protocol/src/envelope.ts` 的 `RpcErrorCode`，共 14 个：`PARSE_ERROR`、`INVALID_PARAMS`、`METHOD_NOT_FOUND`、`VERSION_MISMATCH`、`NOT_READY`、`INTERNAL`、`CLI_UNAVAILABLE`、`CLI_NOT_AUTHENTICATED`、`CAPABILITY_UNSUPPORTED`、`EXECUTION_NOT_FOUND`、`AGENT_NOT_FOUND`、`PROVIDER_NOT_FOUND`、`AGENT_TOOLS_NOT_CONFIGURED`（U3：Agent 的 allow 为空时启动执行返回该码且不创建 Execution）、`WORKDIR_LOCKED`（阶段 2：两个 Work 争用同一非 Worktree 目录时返回；B2 声明、B3 起生效）。
+- **错误码唯一来源**为 `packages/protocol/src/envelope.ts` 的 `RpcErrorCode`，共 15 个：`PARSE_ERROR`、`INVALID_PARAMS`、`METHOD_NOT_FOUND`、`VERSION_MISMATCH`、`NOT_READY`、`INTERNAL`、`CLI_UNAVAILABLE`、`CLI_NOT_AUTHENTICATED`、`CAPABILITY_UNSUPPORTED`、`EXECUTION_NOT_FOUND`、`AGENT_NOT_FOUND`、`PROVIDER_NOT_FOUND`、`AGENT_TOOLS_NOT_CONFIGURED`（U3：Agent 的 allow 为空时启动执行返回该码且不创建 Execution）、`WORKDIR_LOCKED`（阶段 2：两个 Work 争用同一非 Worktree 目录时返回；B2 声明、B3 起生效）、`UNKNOWN_NODE_TYPE`（阶段 3 第 15 个：工作流定义出现 7 种节点白名单之外的 `type`；**错误码，不是 violation**，校验器不把它放进 `violations` 数组）。
 - **适配器错误码必须先映射再跨进程**：Runtime SDK 的 `RuntimeErrorCode` 与协议错误码同名，但 SDK 多出的 `RUNTIME_ERROR` 在协议层没有对应值，统一映射为 `INTERNAL` 并保留原始 message；不为此扩展协议枚举。
 - **协议版本号唯一来源**为 `PROTOCOL_VERSION`（`packages/protocol/src/version.ts`），禁止字面量。RPC 信封、健康响应与 Core/Daemon 的 pid 文件均引用该常量；健康响应的 `protocolVersion` 以字面量类型校验，版本不匹配的响应必须被拒绝而不是宽松接受。
 - **`detail` 的形状**：`detail` 是开放对象（`unknown`），其结构由具体方法定义，协议层不做联合校验。工作流定义校验的 `detail.violations` 是一个数组，每项为 `{ violation, nodeKey?, edgeKey?, message }`；**`violation` 的 16 项闭集与「校验规则 → violation」映射只写在 WORKFLOW §2**，本节不重复列，避免同一枚举两处维护。`workflow.version.validate` 的成功返回值同样含 `violations`，与失败信封里的数组结构一致。

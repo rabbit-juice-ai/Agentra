@@ -52,6 +52,24 @@ const api: AgentraApi = {
   interruptExecution: (params) => ipcRenderer.invoke('agentra:execution-interrupt', params),
   sendExecutionMessage: (params) => ipcRenderer.invoke('agentra:execution-send-message', params),
 
+  listWorkflowTemplates: (params) =>
+    ipcRenderer.invoke('agentra:workflow-template-list', params ?? {}),
+  getWorkflowTemplate: (params) => ipcRenderer.invoke('agentra:workflow-template-get', params),
+  createWorkflowTemplate: (params) =>
+    ipcRenderer.invoke('agentra:workflow-template-create', params),
+  updateWorkflowTemplate: (params) =>
+    ipcRenderer.invoke('agentra:workflow-template-update', params),
+  archiveWorkflowTemplate: (params) =>
+    ipcRenderer.invoke('agentra:workflow-template-archive', params),
+  listWorkflowVersions: (params) => ipcRenderer.invoke('agentra:workflow-version-list', params),
+  getWorkflowVersion: (params) => ipcRenderer.invoke('agentra:workflow-version-get', params),
+  createWorkflowDraft: (params) =>
+    ipcRenderer.invoke('agentra:workflow-version-create-draft', params),
+  publishWorkflowVersion: (params) =>
+    ipcRenderer.invoke('agentra:workflow-version-publish', params),
+  validateWorkflowDefinition: (params) =>
+    ipcRenderer.invoke('agentra:workflow-version-validate', params),
+
   onEvent: (listener) => {
     const handler = (_event: IpcRendererEvent, payload: RuntimeEvent): void => listener(payload)
     ipcRenderer.on('agentra:event', handler)

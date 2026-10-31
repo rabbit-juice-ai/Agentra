@@ -17,6 +17,11 @@ function table(overrides: Partial<MethodTable> = {}): MethodTable {
     'test.boom': defineMethod(EchoParams, EchoResult, () => {
       throw new RpcMethodError('CLI_UNAVAILABLE', 'cli missing')
     }),
+    'test.detail': defineMethod(EchoParams, EchoResult, () => {
+      throw new RpcMethodError('INVALID_PARAMS', 'bad definition', {
+        violations: [{ violation: 'cycle', message: 'graph contains a directed cycle' }],
+      })
+    }),
     ...overrides,
   }
 }
@@ -69,6 +74,18 @@ describe('createDispatcher (B4：params 与 result 双向绑定)', () => {
     if (!response.ok) {
       expect(response.error.code).toBe('CLI_UNAVAILABLE')
       expect(response.error.message).toBe('cli missing')
+    }
+  })
+
+  it('forwards RpcMethodError.detail into the error envelope', async () => {
+    const dispatch = createDispatcher(table())
+    const response = await dispatch(request('test.detail', { text: 'x' }))
+    expect(response.ok).toBe(false)
+    if (!response.ok) {
+      expect(response.error.code).toBe('INVALID_PARAMS')
+      expect(response.error.detail).toEqual({
+        violations: [{ violation: 'cycle', message: 'graph contains a directed cycle' }],
+      })
     }
   })
 

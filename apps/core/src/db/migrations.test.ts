@@ -38,16 +38,18 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 0,
-        to: 5,
+        to: 7,
         applied: [
           'phase1_agent_runtime',
           'phase1_tool_permissions_and_provider_auth',
           'phase2_team_work_assignment',
           'phase2_worktree_and_workdir_locks',
           'phase2_workdir_lock_boot_id',
+          'phase3_workflow_templates_and_versions',
+          'phase3_execution_queue_index',
         ],
       })
-      expect(currentUserVersion(db)).toBe(5)
+      expect(currentUserVersion(db)).toBe(7)
     } finally {
       db.close()
     }
@@ -65,6 +67,8 @@ describe('migrate', () => {
         'teams',
         'work_teams',
         'works',
+        'workflow_templates',
+        'workflow_versions',
       ]),
     )
   })
@@ -75,10 +79,10 @@ describe('migrate', () => {
     try {
       migrate(db)
       const second = migrate(db)
-      expect(second).toEqual({ from: 5, to: 5, applied: [] })
+      expect(second).toEqual({ from: 7, to: 7, applied: [] })
       const third = migrate(db, MIGRATIONS)
       expect(third.applied).toEqual([])
-      expect(currentUserVersion(db)).toBe(5)
+      expect(currentUserVersion(db)).toBe(7)
     } finally {
       db.close()
     }
@@ -92,7 +96,7 @@ describe('migrate', () => {
 
     const second = openDatabase(file)
     try {
-      expect(currentUserVersion(second)).toBe(5)
+      expect(currentUserVersion(second)).toBe(7)
       const journal = second.prepare('PRAGMA journal_mode').get() as { journal_mode: string }
       expect(journal.journal_mode).toBe('wal')
       const fk = second.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }
@@ -160,11 +164,13 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 2,
-        to: 5,
+        to: 7,
         applied: [
           'phase2_team_work_assignment',
           'phase2_worktree_and_workdir_locks',
           'phase2_workdir_lock_boot_id',
+          'phase3_workflow_templates_and_versions',
+          'phase3_execution_queue_index',
         ],
       })
 

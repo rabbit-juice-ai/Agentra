@@ -52,9 +52,24 @@ import {
   WORK_LIST_METHOD,
   WORK_PAUSE_METHOD,
   WORK_RESUME_METHOD,
+  WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
+  WORKFLOW_TEMPLATE_CREATE_METHOD,
+  WORKFLOW_TEMPLATE_GET_METHOD,
+  WORKFLOW_TEMPLATE_LIST_METHOD,
+  WORKFLOW_TEMPLATE_UPDATE_METHOD,
+  WORKFLOW_VERSION_CREATE_DRAFT_METHOD,
+  WORKFLOW_VERSION_GET_METHOD,
+  WORKFLOW_VERSION_LIST_METHOD,
+  WORKFLOW_VERSION_PUBLISH_METHOD,
+  WORKFLOW_VERSION_VALIDATE_METHOD,
   WORKTREE_CREATE_METHOD,
   WORKTREE_LIST_METHOD,
   WORKTREE_REMOVE_METHOD,
+  WorkflowTemplateListResult,
+  WorkflowTemplateResult,
+  WorkflowVersionListResult,
+  WorkflowVersionResult,
+  WorkflowVersionValidateResult,
   WorkListResult,
   WorkResult,
   WorktreeCreateResult,
@@ -229,6 +244,38 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:execution-send-message', (_event, params: unknown) =>
     callCore(EXECUTION_SEND_MESSAGE_METHOD, params, ExecutionSendMessageResult),
+  )
+
+  // 阶段 3：工作流定义层。逐条显式通道，不存在通用 RPC 透传；也没有任何 workflow.run.* 入口。
+  ipcMain.handle('agentra:workflow-template-list', (_event, params: unknown) =>
+    callCore(WORKFLOW_TEMPLATE_LIST_METHOD, params ?? {}, WorkflowTemplateListResult),
+  )
+  ipcMain.handle('agentra:workflow-template-get', (_event, params: unknown) =>
+    callCore(WORKFLOW_TEMPLATE_GET_METHOD, params, WorkflowTemplateResult),
+  )
+  ipcMain.handle('agentra:workflow-template-create', (_event, params: unknown) =>
+    callCore(WORKFLOW_TEMPLATE_CREATE_METHOD, params, WorkflowTemplateResult),
+  )
+  ipcMain.handle('agentra:workflow-template-update', (_event, params: unknown) =>
+    callCore(WORKFLOW_TEMPLATE_UPDATE_METHOD, params, WorkflowTemplateResult),
+  )
+  ipcMain.handle('agentra:workflow-template-archive', (_event, params: unknown) =>
+    callCore(WORKFLOW_TEMPLATE_ARCHIVE_METHOD, params, WorkflowTemplateResult),
+  )
+  ipcMain.handle('agentra:workflow-version-list', (_event, params: unknown) =>
+    callCore(WORKFLOW_VERSION_LIST_METHOD, params, WorkflowVersionListResult),
+  )
+  ipcMain.handle('agentra:workflow-version-get', (_event, params: unknown) =>
+    callCore(WORKFLOW_VERSION_GET_METHOD, params, WorkflowVersionResult),
+  )
+  ipcMain.handle('agentra:workflow-version-create-draft', (_event, params: unknown) =>
+    callCore(WORKFLOW_VERSION_CREATE_DRAFT_METHOD, params, WorkflowVersionResult),
+  )
+  ipcMain.handle('agentra:workflow-version-publish', (_event, params: unknown) =>
+    callCore(WORKFLOW_VERSION_PUBLISH_METHOD, params, WorkflowVersionResult),
+  )
+  ipcMain.handle('agentra:workflow-version-validate', (_event, params: unknown) =>
+    callCore(WORKFLOW_VERSION_VALIDATE_METHOD, params, WorkflowVersionValidateResult),
   )
 }
 

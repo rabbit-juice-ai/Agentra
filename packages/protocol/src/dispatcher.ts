@@ -93,7 +93,7 @@ export function createDispatcher(methods: MethodTable) {
       result = await entry.handler(params, ctx)
     } catch (error) {
       if (error instanceof RpcMethodError) {
-        return rpcFailure(request.requestId, error.code, error.message)
+        return rpcFailure(request.requestId, error.code, error.message, error.detail)
       }
       // 处理器内部失败不是入参问题：回 INTERNAL，避免客户端误判为可重试的入参错误。
       const message = error instanceof Error ? error.message : String(error)

@@ -27,6 +27,7 @@ import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
 import { TeamRepository } from '../db/repositories/team-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
+import { WorkflowRepository } from '../db/repositories/workflow-repository'
 import { AgentService } from '../services/agent-service'
 import { AssignmentService } from '../services/assignment-service'
 import { CoreEventHub } from '../services/event-hub'
@@ -35,6 +36,7 @@ import { ProviderRegistry } from '../services/provider-registry'
 import { TeamService } from '../services/team-service'
 import { WorkService } from '../services/work-service'
 import { WorkdirLockService } from '../services/workdir-lock-service'
+import { WorkflowDefinitionService } from '../services/workflow-definition-service'
 import { WorktreeService } from '../services/worktree-service'
 import { createDispatcher, type MethodTable } from './dispatcher'
 import { coreMethods } from './methods'
@@ -129,6 +131,7 @@ function harness(): {
       path.join(dir, 'worktrees'),
       () => NOW,
     ),
+    workflows: new WorkflowDefinitionService(db, new WorkflowRepository(db), () => NOW),
   })
 
   const dispatch = async (method: string, params: unknown) => {

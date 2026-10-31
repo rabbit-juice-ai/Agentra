@@ -3,6 +3,7 @@
   "references": [
     { "path": "packages/protocol" },
     { "path": "packages/shared" },
+    { "path": "packages/workflow-schema" },
     { "path": "packages/runtime-sdk" },
     { "path": "packages/runtime-cli" },
     { "path": "apps/daemon" },

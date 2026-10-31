@@ -21,15 +21,17 @@ export class ApiError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    /** Core 的结构化补充信息（如 { violations }），UI 据此逐条展示。 */
+    readonly detail?: unknown,
   ) {
     super(message)
     this.name = 'ApiError'
   }
 }
 
-async function unwrap<T>(promise: Promise<RpcResult<T>>): Promise<T> {
+export async function unwrap<T>(promise: Promise<RpcResult<T>>): Promise<T> {
   const result = await promise
-  if (!result.ok) throw new ApiError(result.error.code, result.error.message)
+  if (!result.ok) throw new ApiError(result.error.code, result.error.message, result.error.detail)
   return result.result
 }
 
