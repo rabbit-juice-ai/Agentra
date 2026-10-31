@@ -1,5 +1,5 @@
 import type { HealthResult } from '@agentra/protocol'
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { AgentsPage } from './components/AgentsPage'
 import { ConsolePage } from './components/ConsolePage'
 import { buttonStyle, colors } from './components/styles'
@@ -7,7 +7,10 @@ import { TeamsPage } from './components/TeamsPage'
 import { WorksPage } from './components/WorksPage'
 import { useAgentra } from './hooks/useAgentra'
 
-type Tab = 'console' | 'agents' | 'teams' | 'works'
+type Tab = 'console' | 'agents' | 'teams' | 'works' | 'workflow'
+
+// 画布必须独立成 chunk：WorkflowPage 走 React.lazy + 动态 import()。
+const WorkflowPage = lazy(() => import('./features/workflow/WorkflowPage'))
 
 function HealthDot({ label, health }: { label: string; health: HealthResult | null }) {
   const ok = health !== null
@@ -102,6 +105,9 @@ export function App() {
           <TabButton active={tab === 'works'} onClick={() => setTab('works')}>
             Works
           </TabButton>
+          <TabButton active={tab === 'workflow'} onClick={() => setTab('workflow')}>
+            Workflow
+          </TabButton>
         </nav>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 16 }}>
           <HealthDot label="Core" health={store.coreHealth} />
@@ -143,6 +149,10 @@ export function App() {
             onInterrupt={store.actions.interruptExecution}
             onSendMessage={store.actions.sendMessage}
           />
+        ) : tab === 'workflow' ? (
+          <Suspense fallback={<div style={{ fontSize: 13, color: colors.muted }}>加载画布…</div>}>
+            <WorkflowPage />
+          </Suspense>
         ) : tab === 'teams' ? (
           <TeamsPage
             teams={store.teams}

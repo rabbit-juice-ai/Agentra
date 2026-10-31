@@ -35,6 +35,8 @@ const MARKERS = [
 const REQUIRED_MARKERS = [
   { name: 'Team 页面', value: 'agentra-product-teams' },
   { name: 'Work 页面', value: 'agentra-product-works' },
+  // 阶段 3：画布是产品功能，两种构建都必须包含；与控制台标记互不影响。
+  { name: 'Workflow 页面', value: 'agentra-product-workflow' },
 ]
 
 function modeLabel(devConsole) {
