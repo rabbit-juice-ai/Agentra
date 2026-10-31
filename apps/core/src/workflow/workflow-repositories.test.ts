@@ -8,6 +8,7 @@ import { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
 import { IllegalWorkflowTransitionError } from './state-machine'
+import type { NodeFailure } from './types'
 
 const NOW = '2026-11-01T00:00:00.000Z'
 const dirs: string[] = []
@@ -201,6 +202,54 @@ describe('NodeRunRepository', () => {
           NOW,
         ),
       ).toThrow(IllegalWorkflowTransitionError)
+    } finally {
+      close()
+    }
+  })
+
+  it('rejects a failure without category and leaves the row untouched (F-1)', () => {
+    const { runs, nodes, close } = setup()
+    try {
+      runs.create({ id: 'run-1', workId: 'work-1', workflowVersionId: 'wfv-1' }, NOW)
+      nodes.create({ id: 'node-1', workflowRunId: 'run-1', workflowNodeKey: 'task_1' }, NOW)
+      nodes.transition('node-1', ['blocked'], 'ready', NOW)
+      nodes.transition('node-1', ['ready'], 'running', NOW)
+
+      // 从 JSON 构造的对象绕过了 TypeScript：缺 category
+      const missingCategory = {
+        nodeKey: 'task_1',
+        message: 'no category here',
+      } as unknown as NodeFailure
+      expect(() => nodes.fail('node-1', ['running'], missingCategory, NOW)).toThrow(/category/)
+
+      const after = nodes.get('node-1')
+      expect(after?.status).toBe('running')
+      expect(after?.error).toBeNull()
+      expect(after?.endedAt).toBeNull()
+    } finally {
+      close()
+    }
+  })
+
+  it('rejects an unknown failure category and leaves the row untouched (F-1)', () => {
+    const { runs, nodes, close } = setup()
+    try {
+      runs.create({ id: 'run-1', workId: 'work-1', workflowVersionId: 'wfv-1' }, NOW)
+      nodes.create({ id: 'node-1', workflowRunId: 'run-1', workflowNodeKey: 'task_1' }, NOW)
+      nodes.transition('node-1', ['blocked'], 'ready', NOW)
+      nodes.transition('node-1', ['ready'], 'running', NOW)
+
+      const bogusCategory = {
+        category: 'totally_bogus',
+        nodeKey: 'task_1',
+        message: 'x',
+      } as unknown as NodeFailure
+      expect(() => nodes.fail('node-1', ['running'], bogusCategory, NOW)).toThrow(/category/)
+
+      const after = nodes.get('node-1')
+      expect(after?.status).toBe('running')
+      expect(after?.error).toBeNull()
+      expect(after?.endedAt).toBeNull()
     } finally {
       close()
     }

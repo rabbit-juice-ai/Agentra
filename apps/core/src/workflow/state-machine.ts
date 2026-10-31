@@ -46,6 +46,11 @@ export const NODE_RUN_STATUSES = [
 ] as const
 export type NodeRunStatus = (typeof NODE_RUN_STATUSES)[number]
 
+/**
+ * 注意：`paused` **没有**直达 `completed` 的边，这是有意的——暂停的 Run 必须先恢复
+ * （paused → running）才能完成。引擎不要用 `from: ['running', 'paused'] → completed`
+ * 调 CAS，from 集合校验会直接抛 IllegalWorkflowTransitionError。
+ */
 const RUN_TRANSITIONS: Record<WorkflowRunStatus, readonly WorkflowRunStatus[]> = {
   pending: ['running', 'failed', 'cancelled'],
   running: [

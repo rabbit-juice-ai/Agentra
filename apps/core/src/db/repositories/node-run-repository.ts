@@ -4,7 +4,7 @@ import {
   NODE_RUN_STATUSES,
   type NodeRunStatus,
 } from '../../workflow/state-machine'
-import type { NodeFailure } from '../../workflow/types'
+import { isNodeFailure, NODE_FAILURE_CATEGORIES, type NodeFailure } from '../../workflow/types'
 import type { Database } from '../database'
 
 export type NodeRunRecord = {
@@ -199,8 +199,11 @@ export class NodeRunRepository {
   fail(id: string, from: readonly NodeRunStatus[], failure: NodeFailure, now: string): boolean {
     if (from.length === 0) throw new Error('transition requires at least one expected status')
     for (const status of from) assertNodeTransition(status, 'failed')
-    if (failure.nodeKey.length === 0 || failure.message.length === 0) {
-      throw new Error('node failure requires nodeKey and message')
+    // 运行时契约：TypeScript 挡不住从 JSON 构造的对象，这里必须做真实校验。
+    if (!isNodeFailure(failure)) {
+      throw new Error(
+        `invalid node failure: expected { category: one of [${NODE_FAILURE_CATEGORIES.join(', ')}], nodeKey, message }`,
+      )
     }
 
     const placeholders = from.map(() => '?').join(', ')

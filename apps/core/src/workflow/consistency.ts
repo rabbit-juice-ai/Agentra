@@ -27,7 +27,7 @@ const NON_TERMINAL_EXECUTION_STATUSES = ['pending', 'running']
  *
  * !! **只能在一致性边界调用**：Core 启动完成后，或某个事务 COMMIT 之后。
  * !! 不得在事务中间调用 —— 它看到的是连接当前可见的状态，未提交或半提交的数据
- * !! 会被误报为不一致（测试 `consistency-boundary.test.ts` 里对此有显式用例）。
+ * !! 会被误报为不一致（`db/workflow-runtime-migrations.test.ts` 的「一致性断言只能在一致性边界调用」用例）。
  * !! 需要事务内自检时，请只校验本次写入涉及的行，而不是全量断言。
  */
 export function checkWorkflowConsistency(db: Database): WorkflowConsistencyIssue[] {
