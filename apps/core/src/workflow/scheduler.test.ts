@@ -11,7 +11,12 @@ import { WorkflowRepository } from '../db/repositories/workflow-repository'
 import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
 import { WorkflowDefinitionService } from '../services/workflow-definition-service'
 import { assertWorkflowConsistency } from './consistency'
-import { allowAllResourcePorts, type ResourcePorts } from './dispatch-gates'
+import {
+  allowAllResourcePorts,
+  type DispatchGate,
+  defaultDispatchGates,
+  type ResourcePorts,
+} from './dispatch-gates'
 import { PublishedDefinitionProvider } from './published-definition-provider'
 import { WorkflowScheduler } from './scheduler'
 
@@ -71,6 +76,7 @@ type Harness = {
   runs: WorkflowRunRepository
   branches: BranchRunRepository
   nodes: NodeRunRepository
+  definitions: PublishedDefinitionProvider
   scheduler: WorkflowScheduler
   runId: string
   definition: WorkflowDefinition
@@ -79,7 +85,9 @@ type Harness = {
   now: () => string
   makeScheduler: (
     overrides?: Partial<{
+      gates: DispatchGate[]
       ports: ResourcePorts
+      logger: { warn: (message: string, meta?: Record<string, unknown>) => void }
       onNodeStarted: (context: {
         nodeRun: { id: string }
         node: { key: string }
@@ -137,7 +145,8 @@ function harness(): Harness {
       branches,
       nodes,
       definitions,
-      ports: overrides.ports ?? allowAllResourcePorts(),
+      gates: overrides.gates ?? defaultDispatchGates(overrides.ports ?? allowAllResourcePorts()),
+      logger: overrides.logger,
       onNodeStarted:
         overrides.onNodeStarted ??
         (defaultHandler as unknown as (context: {
@@ -159,6 +168,7 @@ function harness(): Harness {
     branches,
     nodes,
     scheduler,
+    definitions,
     runId: 'run-1',
     definition: definition(),
     started,
@@ -183,13 +193,13 @@ describe('WorkflowScheduler · 基本推进', () => {
     try {
       const result = await h.scheduler.tick(h.runId)
       expect(result.promoted).toEqual(['start'])
-      expect(result.started).toEqual(['start'])
+      expect(result.startedAttempts).toEqual(['start'])
       expect(nodeStatus(h, 'start')).toBe('running')
 
       succeed(h, 'start')
       const next = await h.scheduler.tick(h.runId)
       expect(next.promoted).toEqual(['prd'])
-      expect(next.started).toEqual(['prd'])
+      expect(next.startedAttempts).toEqual(['prd'])
       expect(h.started).toEqual(['start', 'prd'])
     } finally {
       h.close()
@@ -201,7 +211,7 @@ describe('WorkflowScheduler · 基本推进', () => {
     try {
       await h.scheduler.tick(h.runId)
       const second = await h.scheduler.tick(h.runId)
-      expect(second.started).toEqual([])
+      expect(second.startedAttempts).toEqual([])
       expect(h.started).toEqual(['start'])
     } finally {
       h.close()
@@ -223,7 +233,7 @@ describe('WorkflowScheduler · 闸门', () => {
       const denied = h.makeScheduler({ ports: deniedPorts })
       const blocked = await denied.tick(h.runId)
       expect(blocked.promoted).toEqual(['prd'])
-      expect(blocked.started).toEqual([])
+      expect(blocked.startedAttempts).toEqual([])
       expect(blocked.skippedGates).toEqual([
         { nodeKey: 'prd', gate: 'agent_capacity', reason: 'agent concurrency limit reached' },
       ])
@@ -232,7 +242,7 @@ describe('WorkflowScheduler · 闸门', () => {
       // 资源恢复后同一 ready 节点可以被派发
       const allowed = h.makeScheduler()
       const resumed = await allowed.tick(h.runId)
-      expect(resumed.started).toEqual(['prd'])
+      expect(resumed.startedAttempts).toEqual(['prd'])
     } finally {
       h.close()
     }
@@ -296,7 +306,7 @@ describe('WorkflowScheduler · 分支暂停（C-4：60 秒窗口）', () => {
       // 恢复后只派发满足依赖的节点
       expect(h.scheduler.resumeBranch(h.runId, 'split_1/ui')).toBe(true)
       const resumed = await h.scheduler.tick(h.runId)
-      expect(resumed.started).toEqual(['ui'])
+      expect(resumed.startedAttempts).toEqual(['ui'])
     } finally {
       h.close()
     }
@@ -313,12 +323,12 @@ describe('WorkflowScheduler · Work 级暂停', () => {
       expect(h.scheduler.pauseRun(h.runId)).toBe(true)
       const paused = await h.scheduler.tick(h.runId)
       expect(paused.promoted).toEqual([])
-      expect(paused.started).toEqual([])
+      expect(paused.startedAttempts).toEqual([])
       expect(nodeStatus(h, 'prd')).toBe('blocked')
 
       expect(h.scheduler.resumeRun(h.runId)).toBe(true)
       const resumed = await h.scheduler.tick(h.runId)
-      expect(resumed.started).toEqual(['prd'])
+      expect(resumed.startedAttempts).toEqual(['prd'])
     } finally {
       h.close()
     }
@@ -354,6 +364,128 @@ describe('WorkflowScheduler · 一致性边界', () => {
 
       // 只在一致性边界（tick 结束后、事务已提交）调用
       expect(() => assertWorkflowConsistency(h.db)).not.toThrow()
+    } finally {
+      h.close()
+    }
+  })
+})
+
+async function readyParallelBranches(h: Harness): Promise<void> {
+  await h.scheduler.tick(h.runId)
+  succeed(h, 'start')
+  await h.scheduler.tick(h.runId)
+  succeed(h, 'prd')
+  await h.scheduler.tick(h.runId)
+  succeed(h, 'split_1')
+
+  for (const key of ['split_1/ui', 'split_1/backend']) {
+    const branch = h.branches.getByKey(h.runId, key)
+    if (!branch) throw new Error(`missing branch ${key}`)
+    h.branches.transition(branch.id, ['blocked'], 'active', h.now())
+  }
+
+  // 用拒绝派发的端口把两条分支的节点推进到 ready，但不启动
+  const denyPorts: ResourcePorts = {
+    ...allowAllResourcePorts(),
+    agentCapacity: { hasCapacity: () => false },
+  }
+  await h.makeScheduler({ ports: denyPorts }).tick(h.runId)
+  if (nodeStatus(h, 'ui') !== 'ready' || nodeStatus(h, 'backend') !== 'ready') {
+    throw new Error('expected ui/backend to be ready')
+  }
+}
+
+describe('WorkflowScheduler · 同 tick 内暂停（F-3）', () => {
+  it('pausing a branch inside onNodeStarted blocks later nodes of the same tick (S-12)', async () => {
+    const h = harness()
+    try {
+      await readyParallelBranches(h)
+
+      let active: WorkflowScheduler | null = null
+      const scheduler = h.makeScheduler({
+        onNodeStarted: (context) => {
+          if (context.node.key === 'ui') {
+            active?.pauseBranch(h.runId, 'split_1/backend', 'paused during tick')
+          }
+        },
+      })
+      active = scheduler
+
+      const result = await scheduler.tick(h.runId)
+      expect(result.startedAttempts).toEqual(['ui'])
+      expect(nodeStatus(h, 'backend')).toBe('ready')
+      expect(result.skippedGates).toEqual([
+        { nodeKey: 'backend', gate: 'branch_active', reason: 'branch is paused' },
+      ])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('pausing the run inside onNodeStarted stops the rest of the tick (S-16)', async () => {
+    const h = harness()
+    try {
+      await readyParallelBranches(h)
+
+      let active: WorkflowScheduler | null = null
+      const scheduler = h.makeScheduler({
+        onNodeStarted: (context) => {
+          if (context.node.key === 'ui') active?.pauseRun(h.runId)
+        },
+      })
+      active = scheduler
+
+      const result = await scheduler.tick(h.runId)
+      expect(result.startedAttempts).toEqual(['ui'])
+      expect(nodeStatus(h, 'backend')).toBe('ready')
+      expect(result.skippedGates).toEqual([])
+      expect(h.runs.get(h.runId)?.status).toBe('paused')
+    } finally {
+      h.close()
+    }
+  })
+})
+
+describe('WorkflowScheduler · 构造契约（F-4）', () => {
+  it('requires explicit dispatch gates (compile-time + runtime)', () => {
+    const h = harness()
+    try {
+      expect(
+        () =>
+          // @ts-expect-error gates 必填：漏传必须在编译期失败
+          new WorkflowScheduler({
+            runs: h.runs,
+            branches: h.branches,
+            nodes: h.nodes,
+            definitions: h.definitions,
+          }),
+      ).toThrow(/explicit dispatch gates/)
+    } finally {
+      h.close()
+    }
+  })
+})
+
+describe('WorkflowScheduler · 失败兜底可观测性（O-1）', () => {
+  it('warns when the node cannot be marked failed because its state changed concurrently', async () => {
+    const h = harness()
+    try {
+      const warns: { message: string; meta?: Record<string, unknown> }[] = []
+      const scheduler = h.makeScheduler({
+        logger: { warn: (message, meta) => warns.push({ message, meta }) },
+        onNodeStarted: (context) => {
+          // 模拟并发改走：handler 先把节点取消，再抛错 → fail() 的 CAS 落空
+          h.nodes.transition(context.nodeRun.id, ['running'], 'cancelled', h.now())
+          throw new Error('boom')
+        },
+      })
+
+      await scheduler.tick(h.runId)
+      const node = h.nodes.listByRun(h.runId).find((item) => item.workflowNodeKey === 'start')
+      expect(node?.status).toBe('cancelled')
+      expect(warns).toHaveLength(1)
+      expect(warns[0]?.message).toContain('failed to transition to failed')
+      expect(warns[0]?.meta).toEqual({ nodeKey: 'start', nodeRunId: 'nr-start' })
     } finally {
       h.close()
     }

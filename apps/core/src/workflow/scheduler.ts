@@ -6,13 +6,7 @@ import type {
   WorkflowRunRecord,
   WorkflowRunRepository,
 } from '../db/repositories/workflow-run-repository'
-import {
-  allowAllResourcePorts,
-  type DispatchContext,
-  type DispatchGate,
-  defaultDispatchGates,
-  type ResourcePorts,
-} from './dispatch-gates'
+import type { DispatchContext, DispatchGate } from './dispatch-gates'
 import { evaluateReadiness, type NodeStateView, ROOT_BRANCH_KEY, resolveBranchKeys } from './graph'
 import type { PublishedDefinitionProvider } from './published-definition-provider'
 
@@ -21,12 +15,19 @@ export type NodeStartHandler = (context: DispatchContext) => void | Promise<void
 export type TickResult = {
   /** blocked → ready 的节点 key。 */
   promoted: string[]
-  /** ready → running 且已交给 onNodeStarted 的节点 key。 */
-  started: string[]
+  /**
+   * 已**尝试**启动的节点：CAS `ready → running` 成功后立刻记录。
+   * 只代表"调度器把它交给了 onNodeStarted"，不代表执行成功——执行结果由 S4-4 回写。
+   */
+  startedAttempts: string[]
   /** 资源/分支闸门拒绝的节点与原因（保持 ready，不启动）。 */
   skippedGates: { nodeKey: string; gate: string; reason: string }[]
   /** 有失败前驱、无法就绪的节点。 */
   failedPredecessors: Record<string, string[]>
+}
+
+export type SchedulerLogger = {
+  warn(message: string, meta?: Record<string, unknown>): void
 }
 
 export type SchedulerDeps = {
@@ -34,9 +35,15 @@ export type SchedulerDeps = {
   branches: BranchRunRepository
   nodes: NodeRunRepository
   definitions: PublishedDefinitionProvider
-  /** 默认六项检查；测试可注入更少/更多闸门。 */
-  gates?: DispatchGate[]
-  ports?: ResourcePorts
+  /**
+   * **必填**：派发闸门必须由装配方显式提供。
+   * 生产装配用真实端口（S4-4 前可以显式空实现）；测试显式传
+   * `defaultDispatchGates(allowAllResourcePorts())`。
+   * 这里刻意没有默认值：漏传一次就会让资源闸门全部失效，且没有任何运行时信号。
+   */
+  gates: DispatchGate[]
+  /** 失败兜底路径的可观测性（如 nodes.fail() 因状态被并发改走而未生效）。 */
+  logger?: SchedulerLogger
   /**
    * ready → running 之后的启动钩子。S4-3 只提供接缝，真正的 Execution 桥接在 S4-4；
    * 钩子抛错时节点按结构化失败（category=internal）收尾，不会留在 running。
@@ -47,7 +54,7 @@ export type SchedulerDeps = {
 
 const EMPTY_RESULT: TickResult = {
   promoted: [],
-  started: [],
+  startedAttempts: [],
   skippedGates: [],
   failedPredecessors: {},
 }
@@ -76,15 +83,22 @@ export class WorkflowScheduler {
   private readonly definitions: PublishedDefinitionProvider
   private readonly gates: DispatchGate[]
   private readonly onNodeStarted: NodeStartHandler | undefined
+  private readonly logger: SchedulerLogger | undefined
   private readonly now: () => string
 
   constructor(deps: SchedulerDeps) {
+    if (!Array.isArray(deps.gates)) {
+      throw new Error(
+        'workflow scheduler requires explicit dispatch gates; refusing to fall back to allow-all ports',
+      )
+    }
     this.runs = deps.runs
     this.branches = deps.branches
     this.nodes = deps.nodes
     this.definitions = deps.definitions
-    this.gates = deps.gates ?? defaultDispatchGates(deps.ports ?? allowAllResourcePorts())
+    this.gates = deps.gates
     this.onNodeStarted = deps.onNodeStarted
+    this.logger = deps.logger
     this.now = deps.now ?? (() => new Date().toISOString())
   }
 
@@ -96,9 +110,6 @@ export class WorkflowScheduler {
 
     const { definition } = this.definitions.get(run.workflowVersionId)
     const branchKeys = resolveBranchKeys(definition)
-    const branches = new Map(
-      this.branches.listByRun(runId).map((branch) => [branch.branchKey, branch]),
-    )
 
     const before = latestAttempts(this.nodes.listByRun(runId))
     const states = new Map<string, NodeStateView>()
@@ -115,7 +126,7 @@ export class WorkflowScheduler {
     }
 
     const after = latestAttempts(this.nodes.listByRun(runId))
-    const started: string[] = []
+    const startedAttempts: string[] = []
     const skippedGates: TickResult['skippedGates'] = []
 
     for (const definitionNode of definition.nodes) {
@@ -123,8 +134,14 @@ export class WorkflowScheduler {
       if (nodeRun === undefined || nodeRun.status !== 'ready') continue
 
       const branchKey = branchKeys.get(definitionNode.key) ?? ROOT_BRANCH_KEY
-      const branch = branches.get(branchKey)
-      if (!branch) {
+
+      // F-3：每个节点在闸门与 CAS 之前**同步重读** run 与 branch。
+      // 重读 → 闸门 → CAS 全程同步，中间不得插入 await —— 否则 await onNodeStarted
+      // 期间发生的 pauseBranch/pauseRun 仍会跨越到本次 tick 的后续节点。
+      const currentRun = this.runs.get(runId)
+      if (currentRun === null || currentRun.status !== 'running') break
+      const currentBranch = this.branches.getByKey(runId, branchKey)
+      if (currentBranch === null) {
         skippedGates.push({
           nodeKey: definitionNode.key,
           gate: 'branch_record',
@@ -134,10 +151,10 @@ export class WorkflowScheduler {
       }
 
       const context: DispatchContext = {
-        run,
+        run: currentRun,
         nodeRun,
         node: definitionNode,
-        branch,
+        branch: currentBranch,
         branchKey,
         definition,
       }
@@ -155,14 +172,14 @@ export class WorkflowScheduler {
         continue
       }
 
-      // CAS：并发下只有一个调度者能把 ready 推到 running
+      // CAS：并发下只有一个调度者能把 ready 推到 running（与重读同一同步块）
       if (!this.nodes.transition(nodeRun.id, ['ready'], 'running', now)) continue
-      started.push(definitionNode.key)
+      startedAttempts.push(definitionNode.key)
 
       try {
         await this.onNodeStarted?.(context)
       } catch (error) {
-        this.nodes.fail(
+        const marked = this.nodes.fail(
           nodeRun.id,
           ['running'],
           {
@@ -174,24 +191,30 @@ export class WorkflowScheduler {
           },
           this.now(),
         )
+        if (!marked) {
+          this.logger?.warn('node failed to transition to failed; state was changed concurrently', {
+            nodeKey: definitionNode.key,
+            nodeRunId: nodeRun.id,
+          })
+        }
       }
     }
 
     return {
       promoted,
-      started,
+      startedAttempts,
       skippedGates,
       failedPredecessors: Object.fromEntries(readiness.failedPredecessors),
     }
   }
 
-  /** 反复推进直到没有 promoted / started（有上限，避免调度器空转）。 */
+  /** 反复推进直到没有 promoted / startedAttempts（有上限，避免调度器空转）。 */
   async runUntilIdle(runId: string, maxTicks = 100): Promise<TickResult[]> {
     const results: TickResult[] = []
     for (let index = 0; index < maxTicks; index += 1) {
       const result = await this.tick(runId)
       results.push(result)
-      if (result.promoted.length === 0 && result.started.length === 0) break
+      if (result.promoted.length === 0 && result.startedAttempts.length === 0) break
     }
     return results
   }
