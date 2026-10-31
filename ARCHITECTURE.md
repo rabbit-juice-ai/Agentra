@@ -251,6 +251,7 @@ Provider 应声明 capabilities：
 - 能恢复的会话恢复订阅。
 - 无法确认状态的执行标记为 `reconciliation_required`，不要自动重复执行可能有副作用的任务。
 - 由恢复策略或用户决定重试、接管或标记失败。
+- **排队任务不恢复**：Core 重启时，所有排队中（`recovery_state.queued=true`）但尚未启动进程的执行一律丢弃并标记 `failed`，`recovery_state.reason = queue_discarded_on_restart`，同时释放其工作目录锁。理由：它们从未启动过进程，自动补跑等于在用户不知情时产生副作用。
 
 ## 10. 文件与工作区
 

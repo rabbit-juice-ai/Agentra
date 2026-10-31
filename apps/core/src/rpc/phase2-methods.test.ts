@@ -88,7 +88,14 @@ function harness(): {
     runtime: unusedRuntime,
     registry,
     works: workRepository,
-    worktrees: new WorktreeService(db, workRepository, path.join(dir, 'worktrees'), () => NOW),
+    assignments: assignmentRepository,
+    worktrees: new WorktreeService(
+      db,
+      workRepository,
+      new AssignmentRepository(db),
+      path.join(dir, 'worktrees'),
+      () => NOW,
+    ),
     locks: new WorkdirLockService(db, () => NOW),
     agents: agentRepository,
     sessions: sessionRepository,
@@ -115,7 +122,13 @@ function harness(): {
       sessionRepository,
       () => NOW,
     ),
-    worktrees: new WorktreeService(db, workRepository, path.join(dir, 'worktrees'), () => NOW),
+    worktrees: new WorktreeService(
+      db,
+      workRepository,
+      new AssignmentRepository(db),
+      path.join(dir, 'worktrees'),
+      () => NOW,
+    ),
   })
 
   const dispatch = async (method: string, params: unknown) => {

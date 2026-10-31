@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
+import { AssignmentRepository } from '../db/repositories/assignment-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { currentBootId, WorkdirLockService } from './workdir-lock-service'
 import { WorktreeService } from './worktree-service'
@@ -137,7 +138,13 @@ describe('WorktreeService', () => {
     makeGitRepo(repo)
     seedWork(db, 'work-1', tempDir('agentra-root-'), repo)
     const worktreesRoot = tempDir('agentra-wt-')
-    const service = new WorktreeService(db, new WorkRepository(db), worktreesRoot, () => NOW)
+    const service = new WorktreeService(
+      db,
+      new WorkRepository(db),
+      new AssignmentRepository(db),
+      worktreesRoot,
+      () => NOW,
+    )
 
     const created = service.create({ workId: 'work-1', branchName: 'agentra/w1' })
     expect(created).toMatchObject({ workId: 'work-1', branchName: 'agentra/w1', status: 'active' })
@@ -169,6 +176,7 @@ describe('WorktreeService', () => {
     const service = new WorktreeService(
       db,
       new WorkRepository(db),
+      new AssignmentRepository(db),
       tempDir('agentra-wt-'),
       () => NOW,
     )
@@ -180,11 +188,43 @@ describe('WorktreeService', () => {
     db.close()
   })
 
+  it('assignmentId 必须属于该 Work，否则拒绝', () => {
+    const db = openDb()
+    const repo = tempDir('agentra-repo-')
+    makeGitRepo(repo)
+    seedWork(db, 'work-1', tempDir('agentra-root-'), repo)
+    seedWork(db, 'work-2', tempDir('agentra-root-'), repo)
+    db.prepare(
+      `INSERT INTO agent_profiles (id, name, role, description, system_prompt, skills_json,
+         tool_permissions_json, default_provider_id, max_concurrency, status, created_at, updated_at, archived_at)
+       VALUES ('agt-1', 'A', 'engineer', '', '', '[]', '{"version":1,"allow":["Read"],"deny":[]}', NULL, 1, 'active', ?, ?, NULL)`,
+    ).run(NOW, NOW)
+    db.prepare(
+      `INSERT INTO assignments (id, work_id, agent_id, team_id, work_role, task_scope, status,
+         concurrency_limit, context_ref, created_at, updated_at)
+       VALUES ('asg-2', 'work-2', 'agt-1', NULL, 'engineer', '', 'active', NULL, NULL, ?, ?)`,
+    ).run(NOW, NOW)
+
+    const service = new WorktreeService(
+      db,
+      new WorkRepository(db),
+      new AssignmentRepository(db),
+      tempDir('agentra-wt-'),
+      () => NOW,
+    )
+    // assignment 属于 work-2，却挂到 work-1 上 → 拒绝
+    expect(() =>
+      service.create({ workId: 'work-1', assignmentId: 'asg-2', branchName: 'agentra/x' }),
+    ).toThrow(expect.objectContaining({ code: 'INVALID_PARAMS' }))
+    db.close()
+  })
+
   it('reports the three error paths: no repository_path / missing path / not a git repo', () => {
     const db = openDb()
     const service = new WorktreeService(
       db,
       new WorkRepository(db),
+      new AssignmentRepository(db),
       tempDir('agentra-wt-'),
       () => NOW,
     )
@@ -217,7 +257,13 @@ describe('WorktreeService', () => {
     seedWork(db, 'work-1', tempDir('agentra-root-'), repo)
     const readOnlyRoot = tempDir('agentra-wt-ro-')
     fs.chmodSync(readOnlyRoot, 0o500)
-    const service = new WorktreeService(db, new WorkRepository(db), readOnlyRoot, () => NOW)
+    const service = new WorktreeService(
+      db,
+      new WorkRepository(db),
+      new AssignmentRepository(db),
+      readOnlyRoot,
+      () => NOW,
+    )
 
     expect(() => service.create({ workId: 'work-1', branchName: 'agentra/denied' })).toThrow(
       expect.objectContaining({ code: 'INVALID_PARAMS' }),

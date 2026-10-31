@@ -19,6 +19,7 @@ import type { RuntimeClient } from '../daemon/daemon-client'
 import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
 import { AgentRepository } from '../db/repositories/agent-repository'
+import { AssignmentRepository } from '../db/repositories/assignment-repository'
 import { AuditRepository } from '../db/repositories/audit-repository'
 import { ExecutionLogRepository } from '../db/repositories/execution-log-repository'
 import { ExecutionRepository } from '../db/repositories/execution-repository'
@@ -27,6 +28,7 @@ import { SessionRepository } from '../db/repositories/session-repository'
 import { TeamRepository } from '../db/repositories/team-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { AgentService } from './agent-service'
+import { AssignmentService } from './assignment-service'
 import { CoreEventHub } from './event-hub'
 import { ExecutionService } from './execution-service'
 import { ProviderRegistry } from './provider-registry'
@@ -188,6 +190,8 @@ type Harness = {
   repository: ExecutionRepository
   agentId: string
   works: WorkService
+  assignments: AssignmentService
+  sessions: SessionRepository
   worktrees: WorktreeService
   locks: WorkdirLockService
 }
@@ -208,6 +212,7 @@ async function harness(
 
   const providerRepository = new ProviderRepository(db)
   const workRepository = new WorkRepository(db)
+  const assignmentRepository = new AssignmentRepository(db)
   const teamRepository = new TeamRepository(db)
   const auditRepository = new AuditRepository(db)
   const agentRepository = new AgentRepository(db)
@@ -231,9 +236,24 @@ async function harness(
   )
 
   const registry = new ProviderRegistry(providerRepository, runtime)
-  const worktrees = new WorktreeService(db, workRepository, path.join(dir, 'worktrees'), () => NOW)
+  const worktrees = new WorktreeService(
+    db,
+    workRepository,
+    new AssignmentRepository(db),
+    path.join(dir, 'worktrees'),
+    () => NOW,
+  )
   const locks = new WorkdirLockService(db, () => NOW)
   const works = new WorkService(db, workRepository, teamRepository, auditRepository, () => NOW)
+  const assignments = new AssignmentService(
+    db,
+    assignmentRepository,
+    workRepository,
+    agentRepository,
+    teamRepository,
+    sessionRepository,
+    () => NOW,
+  )
   const agents = new AgentService(db, agentRepository, providerRepository, () => NOW)
   const agent = agents.create({
     name: 'Worker',
@@ -245,6 +265,7 @@ async function harness(
     runtime,
     registry,
     works: workRepository,
+    assignments: assignmentRepository,
     worktrees,
     locks,
     agents: agentRepository,
@@ -260,6 +281,8 @@ async function harness(
     dir,
     agents,
     works,
+    assignments,
+    sessions: sessionRepository,
     worktrees,
     locks,
     providers: providerRepository,
@@ -673,14 +696,29 @@ describe('工具权限强制（U3）', () => {
 })
 
 describe('阶段 2 B3：工作目录锁与 Worktree 隔离', () => {
+  /** 建 Work + 激活 + 配一个 active assignment（D-1 起，带 workId 启动必须有 active 岗位）。 */
+  function workWithAssignment(
+    h: Awaited<ReturnType<typeof harness>>,
+    name: string,
+    rootPath: string,
+    repositoryPath: string | null = null,
+  ) {
+    const work = h.works.create({ name, rootPath, repositoryPath })
+    h.works.activate(work.id)
+    const assignment = h.assignments.create({
+      workId: work.id,
+      agentId: h.agentId,
+      workRole: 'engineer',
+    })
+    return { work, assignment }
+  }
+
   it('WORKDIR_LOCKED：两个 Work 指向同一非 Worktree 目录时第二个启动被拒且不创建 Execution', async () => {
     const h = await harness()
     const shared = path.join(h.dir, 'shared-workdir')
 
-    const workA = h.works.create({ name: 'A', rootPath: shared })
-    h.works.activate(workA.id)
-    const workB = h.works.create({ name: 'B', rootPath: shared })
-    h.works.activate(workB.id)
+    const workA = workWithAssignment(h, 'A', shared).work
+    const workB = workWithAssignment(h, 'B', shared).work
 
     const first = await h.executions.start({
       agentId: h.agentId,
@@ -710,10 +748,8 @@ describe('阶段 2 B3：工作目录锁与 Worktree 隔离', () => {
     execFileSync('git', ['add', '.'], { cwd: repo })
     execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo })
 
-    const workA = h.works.create({ name: 'A', rootPath: repo, repositoryPath: repo })
-    h.works.activate(workA.id)
-    const workB = h.works.create({ name: 'B', rootPath: repo, repositoryPath: repo })
-    h.works.activate(workB.id)
+    const workA = workWithAssignment(h, 'A', repo, repo).work
+    const workB = workWithAssignment(h, 'B', repo, repo).work
 
     const wtA = h.worktrees.create({ workId: workA.id, branchName: 'agentra/a' })
     const wtB = h.worktrees.create({ workId: workB.id, branchName: 'agentra/b' })
@@ -739,8 +775,7 @@ describe('阶段 2 B3：工作目录锁与 Worktree 隔离', () => {
   it('执行终结后释放目录锁，同一目录可以再次启动', async () => {
     const h = await harness()
     const shared = path.join(h.dir, 'shared-2')
-    const work = h.works.create({ name: 'W', rootPath: shared })
-    h.works.activate(work.id)
+    const work = workWithAssignment(h, 'W', shared).work
 
     const first = await h.executions.start({ agentId: h.agentId, prompt: 'x', workId: work.id })
     expect(h.locks.get(shared)?.executionId).toBe(first.id)
@@ -827,10 +862,14 @@ describe('阶段 2 B4：Agent 并发限制与排队', () => {
   it('Core 重启后遗留的排队任务被丢弃并标记，锁随之释放', async () => {
     const h = await harness()
     // 两个 Work 用不同目录：这样第二个会卡在并发上限（而不是工作目录锁）
-    const workA = h.works.create({ name: 'A', rootPath: path.join(h.dir, 'queued-a') })
-    h.works.activate(workA.id)
-    const workB = h.works.create({ name: 'B', rootPath: path.join(h.dir, 'queued-b') })
-    h.works.activate(workB.id)
+    const mkWork = (suffix: string) => {
+      const work = h.works.create({ name: suffix, rootPath: path.join(h.dir, `queued-${suffix}`) })
+      h.works.activate(work.id)
+      h.assignments.create({ workId: work.id, agentId: h.agentId, workRole: 'engineer' })
+      return work
+    }
+    const workA = mkWork('a')
+    const workB = mkWork('b')
 
     await h.executions.start({ agentId: h.agentId, prompt: 'first', workId: workA.id })
     const queued = await h.executions.start({
@@ -848,5 +887,108 @@ describe('阶段 2 B4：Agent 并发限制与排队', () => {
     expect(logs.some((content) => content.includes('execution.queue_discarded'))).toBe(true)
     // 丢弃后排队的锁不再占着目录
     expect(h.locks.get(path.join(h.dir, 'queued-b'))).toBeNull()
+  })
+})
+
+describe('阶段 2 D-1：Session 绑定 Assignment', () => {
+  it('带 workId 启动：Session 绑到 active assignment，且能由 executionId 反查所属 Work', async () => {
+    const h = await harness()
+    const work = h.works.create({ name: 'W1', rootPath: path.join(h.dir, 'd1-a') })
+    h.works.activate(work.id)
+    const assignment = h.assignments.create({
+      workId: work.id,
+      agentId: h.agentId,
+      workRole: 'engineer',
+    })
+
+    const execution = await h.executions.start({
+      agentId: h.agentId,
+      prompt: 'bound',
+      workId: work.id,
+    })
+
+    expect(h.sessions.get(execution.sessionId)?.assignmentId).toBe(assignment.id)
+    // 可追溯路径：execution → session → assignment → work
+    expect(h.repository.findOwningWork(execution.id)).toEqual({
+      workId: work.id,
+      workName: 'W1',
+    })
+  })
+
+  it('不带 workId 的阶段 1 模式保持 assignmentId=null', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'scratch' })
+    expect(h.sessions.get(execution.sessionId)?.assignmentId).toBeNull()
+    expect(h.repository.findOwningWork(execution.id)).toBeNull()
+  })
+
+  it('没有 active assignment：拒绝且零副作用（不建 Execution / 不建 Session / 不持锁）', async () => {
+    const h = await harness()
+    const work = h.works.create({ name: 'W1', rootPath: path.join(h.dir, 'd1-b') })
+    h.works.activate(work.id)
+
+    const countSessions = (): number =>
+      (h.db.prepare('SELECT COUNT(*) AS c FROM agent_sessions').get() as { c: number }).c
+    const before = {
+      executions: h.repository.list(100).length,
+      sessions: countSessions(),
+      locks: h.locks.list().length,
+    }
+
+    await expect(
+      h.executions.start({ agentId: h.agentId, prompt: 'no-assignment', workId: work.id }),
+    ).rejects.toMatchObject({ code: 'INVALID_PARAMS' })
+
+    expect(h.repository.list(100).length).toBe(before.executions)
+    expect(countSessions()).toBe(before.sessions)
+    expect(h.locks.list().length).toBe(before.locks)
+  })
+
+  it('assignment 非 active 时拒绝启动', async () => {
+    const h = await harness()
+    const work = h.works.create({ name: 'W1', rootPath: path.join(h.dir, 'd1-c') })
+    h.works.activate(work.id)
+    const assignment = h.assignments.create({
+      workId: work.id,
+      agentId: h.agentId,
+      workRole: 'engineer',
+    })
+    h.assignments.complete(assignment.id)
+
+    await expect(
+      h.executions.start({ agentId: h.agentId, prompt: 'inactive', workId: work.id }),
+    ).rejects.toMatchObject({ code: 'INVALID_PARAMS' })
+  })
+
+  it('取消排队中的执行会清掉内存队列条目（D-2）', async () => {
+    const h = await harness()
+    const first = await h.executions.start({ agentId: h.agentId, prompt: 'a' })
+    const queued = await h.executions.start({ agentId: h.agentId, prompt: 'b' })
+    expect(queued.status).toBe('pending')
+
+    const cancelled = await h.executions.cancel({ executionId: queued.id })
+    expect(cancelled.status).toBe('cancelled')
+
+    // 释放第一个后，被取消的排队任务不应被调度（新进程数仍为 1）
+    h.executions.handleRuntimeEvent({
+      eventId: newId('evt'),
+      protocolVersion: PROTOCOL_VERSION,
+      eventType: 'execution.exited',
+      occurredAt: NOW,
+      aggregateType: 'execution',
+      aggregateId: first.id,
+      payload: {
+        executionId: first.id,
+        sequenceNo: 9,
+        exitCode: 0,
+        signal: null,
+        reason: 'exited',
+        timestamp: NOW,
+      },
+      correlationId: first.id,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(h.runtime.starts).toHaveLength(1)
+    expect(h.executions.get(queued.id)?.status).toBe('cancelled')
   })
 })

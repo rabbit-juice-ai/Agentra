@@ -133,6 +133,25 @@ export class ExecutionRepository {
    * 该 Agent 当前占用的并发槽位（pending + running）。
    * **排队中的执行不算**：它还没有进程，占位会让自己永远调度不上。
    */
+  /**
+   * 可追溯性：由 executionId 反查它属于哪个 Work。
+   * 路径 execution → session → assignment → work；不改 executions 表结构（DATABASE §2.4 也没有 work_id）。
+   * 阶段 1 的 scratch 执行没有 assignment，返回 null。
+   */
+  findOwningWork(executionId: string): { workId: string; workName: string } | null {
+    const row = this.db
+      .prepare(
+        `SELECT w.id AS work_id, w.name AS work_name
+         FROM executions e
+         JOIN agent_sessions s ON s.id = e.session_id
+         JOIN assignments a ON a.id = s.assignment_id
+         JOIN works w ON w.id = a.work_id
+         WHERE e.id = ?`,
+      )
+      .get(executionId) as { work_id: string; work_name: string } | undefined
+    return row ? { workId: row.work_id, workName: row.work_name } : null
+  }
+
   countActiveByAgent(agentId: string): number {
     const row = this.db
       .prepare(

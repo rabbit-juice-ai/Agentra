@@ -4,6 +4,7 @@ import path from 'node:path'
 import { RpcMethodError } from '@agentra/protocol'
 import { newId } from '@agentra/shared'
 import type { Database } from '../db/database'
+import type { AssignmentRepository } from '../db/repositories/assignment-repository'
 import type { WorkRepository } from '../db/repositories/work-repository'
 
 export type WorktreeStatus = 'active' | 'removed'
@@ -84,6 +85,7 @@ export class WorktreeService {
   constructor(
     private readonly db: Database,
     private readonly works: WorkRepository,
+    private readonly assignments: AssignmentRepository,
     readonly worktreeRoot: string,
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly runGit: (cwd: string, args: string[]) => string = git,
@@ -113,6 +115,20 @@ export class WorktreeService {
         'INVALID_PARAMS',
         `not a git repository: ${repositoryPath} (${gitErrorText(error)})`,
       )
+    }
+
+    // assignmentId 传了就必须属于该 Work，否则拒绝（防止把 worktree 挂到别的 Work 的岗位上）。
+    if (input.assignmentId) {
+      const assignment = this.assignments.get(input.assignmentId)
+      if (!assignment) {
+        throw new RpcMethodError('INVALID_PARAMS', `assignment not found: ${input.assignmentId}`)
+      }
+      if (assignment.workId !== work.id) {
+        throw new RpcMethodError(
+          'INVALID_PARAMS',
+          `assignment ${input.assignmentId} belongs to work ${assignment.workId}, not ${work.id}`,
+        )
+      }
     }
 
     const branchName = input.branchName.trim()

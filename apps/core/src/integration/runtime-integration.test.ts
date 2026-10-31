@@ -10,6 +10,7 @@ import { ensureDaemon } from '../daemon-launcher'
 import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
 import { AgentRepository } from '../db/repositories/agent-repository'
+import { AssignmentRepository } from '../db/repositories/assignment-repository'
 import { ExecutionLogRepository } from '../db/repositories/execution-log-repository'
 import { ExecutionRepository } from '../db/repositories/execution-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
@@ -74,7 +75,13 @@ describe('core ↔ daemon runtime integration', () => {
       runtime,
       registry,
       works: new WorkRepository(db),
-      worktrees: new WorktreeService(db, new WorkRepository(db), path.join(home, 'worktrees')),
+      assignments: new AssignmentRepository(db),
+      worktrees: new WorktreeService(
+        db,
+        new WorkRepository(db),
+        new AssignmentRepository(db),
+        path.join(home, 'worktrees'),
+      ),
       locks: new WorkdirLockService(db),
       agents: agentRepository,
       sessions: new SessionRepository(db),

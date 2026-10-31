@@ -69,7 +69,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const reclaimed = locks.purgeStale()
   if (reclaimed > 0) logger.info('reclaimed stale workdir locks', { count: reclaimed })
 
-  const worktrees = new WorktreeService(db, workRepository, paths.worktrees)
+  const worktrees = new WorktreeService(
+    db,
+    workRepository,
+    new AssignmentRepository(db),
+    paths.worktrees,
+  )
   const teamService = new TeamService(db, teamRepository, agentRepository)
   const workService = new WorkService(db, workRepository, teamRepository, auditRepository)
   const assignmentService = new AssignmentService(
@@ -87,6 +92,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     works: workRepository,
     worktrees,
     locks,
+    assignments: assignmentRepository,
     agents: agentRepository,
     sessions: sessionRepository,
     executions: executionRepository,

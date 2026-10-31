@@ -24,6 +24,7 @@ import type { RuntimeClient } from '../daemon/daemon-client'
 import type { Database } from '../db/database'
 import { transaction } from '../db/database'
 import type { AgentRepository } from '../db/repositories/agent-repository'
+import type { AssignmentRepository } from '../db/repositories/assignment-repository'
 import type { ExecutionLogRepository } from '../db/repositories/execution-log-repository'
 import {
   type ExecutionRepository,
@@ -70,6 +71,7 @@ export type ExecutionServiceDeps = {
   worktrees: WorktreeService
   locks: WorkdirLockService
   agents: AgentRepository
+  assignments: AssignmentRepository
   sessions: SessionRepository
   executions: ExecutionRepository
   logs: ExecutionLogRepository
@@ -101,6 +103,7 @@ export class ExecutionService {
   private readonly runtime: RuntimeClient
   private readonly registry: ProviderRegistry
   private readonly agents: AgentRepository
+  private readonly assignments: AssignmentRepository
   private readonly sessions: SessionRepository
   private readonly executions: ExecutionRepository
   private readonly logs: ExecutionLogRepository
@@ -117,6 +120,7 @@ export class ExecutionService {
     this.runtime = deps.runtime
     this.registry = deps.registry
     this.agents = deps.agents
+    this.assignments = deps.assignments
     this.sessions = deps.sessions
     this.executions = deps.executions
     this.logs = deps.logs
@@ -152,6 +156,10 @@ export class ExecutionService {
     const provider = this.resolveProvider(agent)
     // 验收 6：CLI 不可用/未认证必须在创建 Execution 之前拦截。
     this.assertProviderUsable(provider)
+
+    // D-1：绑定 Work 时必须先解析该 (workId, agentId) 的 active assignment。
+    // 拦截点必须在「获取目录锁 / 创建 Session / 创建 Execution」三者之前，命中即零副作用。
+    const assignment = this.resolveActiveAssignment(params.workId, agent.id)
 
     const executionId = `exe-${crypto.randomUUID()}`
     const sessionId = newId('ses')
@@ -208,6 +216,8 @@ export class ExecutionService {
         lastActiveAt: now,
       })
       this.executions.create(execution)
+      // D-1：同一事务内把 Session 绑到 Assignment（阶段 1 scratch 模式没有 assignment，保持 NULL）。
+      if (assignment) this.sessions.bindAssignment(sessionId, assignment.id, now)
       this.appendSystemLog(
         executionId,
         'execution.created',
@@ -355,6 +365,8 @@ export class ExecutionService {
 
   async cancel(params: ExecutionCancelParams): Promise<Execution> {
     const execution = this.get(params.executionId)
+    // D-2：取消排队中的执行时，把内存队列里的条目一并清掉，避免 Map 单调增长。
+    this.queued.delete(params.executionId)
     if (isTerminalExecutionState(execution.status)) return execution
 
     const now = this.now()
@@ -365,6 +377,7 @@ export class ExecutionService {
       recoveryState: { reason: 'user_cancelled' },
     })
     this.sessions.end(execution.sessionId, now)
+    this.queued.delete(execution.id)
     this.appendSystemLog(execution.id, 'execution.cancel_requested', {}, now)
     this.publishState(execution.id, 'cancelled', previous, 'cancelled by user')
     this.locks.releaseByExecution(execution.id)
@@ -563,6 +576,7 @@ export class ExecutionService {
       endedAt: payload.timestamp,
     })
     this.sessions.end(execution.sessionId, payload.timestamp)
+    this.queued.delete(payload.executionId)
     this.locks.releaseByExecution(payload.executionId)
     void this.drainQueue(execution.agentId)
     this.appendSystemLog(
@@ -686,6 +700,25 @@ export class ExecutionService {
       )
     }
     return queuedRows.length
+  }
+
+  /**
+   * 解析 (workId, agentId) 的 active assignment。
+   * 未指定 workId（阶段 1 scratch 模式）返回 null；指定了但查不到 active 岗位直接拒绝。
+   */
+  private resolveActiveAssignment(
+    workId: string | undefined,
+    agentId: string,
+  ): { id: string } | null {
+    if (!workId) return null
+    const assignment = this.assignments.findByWorkAndAgent(workId, agentId)
+    if (!assignment || assignment.status !== 'active') {
+      throw new RpcMethodError(
+        'INVALID_PARAMS',
+        `work ${workId} has no active assignment for agent ${agentId}; create one before starting an execution`,
+      )
+    }
+    return assignment
   }
 
   private resolveProvider(agent: AgentProfile): RuntimeProviderRecord {
