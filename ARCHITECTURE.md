@@ -1,6 +1,6 @@
 # 技术架构设计
 
-版本：V1.4（基于 v1.0.0 Development Baseline 的 D-016～D-023 修订）\
+版本：V1.5（基于 v1.0.0 Development Baseline 的 D-016～D-027 修订）\
 目标：macOS 本地桌面应用
 
 ## 1. 架构原则
@@ -180,6 +180,16 @@ Provider 应声明 capabilities：
 - method
 - params
 
+**所有 RPC 响应包含**（统一信封，`packages/protocol/src/envelope.ts`）：
+- requestId：回显请求的 id
+- ok：`true` 成功 / `false` 失败
+- 成功时 `result`：由方法定义，经该方法的 result schema 校验
+- 失败时 `error`：`{ code, message, detail? }`
+  - `code`：`RpcErrorCode` 取值（见 §7.1）。**客户端分支判断只看 `code`**
+  - `message`：面向人的说明；客户端不得依赖其文本或语言
+  - `detail`（可选）：**结构化补充信息**，形状由具体方法定义，详见 §7.1
+  - `detail` 是**可选字段**：新增它属于向后兼容的扩展（`RpcError` 非 strict 对象），**不改变 `PROTOCOL_VERSION`**；客户端必须容忍其缺失，服务端不得假设客户端读取它
+
 所有事件包含：
 - eventId
 - protocolVersion
@@ -217,6 +227,7 @@ Provider 应声明 capabilities：
 - **错误码唯一来源**为 `packages/protocol/src/envelope.ts` 的 `RpcErrorCode`，共 14 个：`PARSE_ERROR`、`INVALID_PARAMS`、`METHOD_NOT_FOUND`、`VERSION_MISMATCH`、`NOT_READY`、`INTERNAL`、`CLI_UNAVAILABLE`、`CLI_NOT_AUTHENTICATED`、`CAPABILITY_UNSUPPORTED`、`EXECUTION_NOT_FOUND`、`AGENT_NOT_FOUND`、`PROVIDER_NOT_FOUND`、`AGENT_TOOLS_NOT_CONFIGURED`（U3：Agent 的 allow 为空时启动执行返回该码且不创建 Execution）、`WORKDIR_LOCKED`（阶段 2：两个 Work 争用同一非 Worktree 目录时返回；B2 声明、B3 起生效）。
 - **适配器错误码必须先映射再跨进程**：Runtime SDK 的 `RuntimeErrorCode` 与协议错误码同名，但 SDK 多出的 `RUNTIME_ERROR` 在协议层没有对应值，统一映射为 `INTERNAL` 并保留原始 message；不为此扩展协议枚举。
 - **协议版本号唯一来源**为 `PROTOCOL_VERSION`（`packages/protocol/src/version.ts`），禁止字面量。RPC 信封、健康响应与 Core/Daemon 的 pid 文件均引用该常量；健康响应的 `protocolVersion` 以字面量类型校验，版本不匹配的响应必须被拒绝而不是宽松接受。
+- **`detail` 的形状**：`detail` 是开放对象（`unknown`），其结构由具体方法定义，协议层不做联合校验。工作流定义校验的 `detail.violations` 是一个数组，每项为 `{ violation, nodeKey?, edgeKey?, message }`；**`violation` 的 16 项闭集与「校验规则 → violation」映射只写在 WORKFLOW §2**，本节不重复列，避免同一枚举两处维护。`workflow.version.validate` 的成功返回值同样含 `violations`，与失败信封里的数组结构一致。
 
 ## 8. 工作流执行与事务边界
 
@@ -232,7 +243,7 @@ Provider 应声明 capabilities：
 不得在数据库事务未提交时就向下游发送“已完成”事件。
 
 ### 审批服务与 Workflow Engine 的交互
-- beforeExecute 门禁：Approval pending 期间引擎不得创建对应 AgentTask 的 Execution。
+- before_execute 门禁：审批 pending 期间引擎不得创建被审批任务的 Execution。
 - 审批决策（approve/request_changes/reject）由 approval 模块接收、校验幂等后，事务内写入 Approval 终态并通知 workflow-runtime。
 - request_changes：同一事务内创建 ReworkRequest（trigger_type=request_changes，含必填意见与关联返工任务）；返工完成后引擎将流程引导回原 Human Approval 节点进入下一轮审批（round+1）。
 - reject：分支暂停，不自动返工，等待用户后续决策。

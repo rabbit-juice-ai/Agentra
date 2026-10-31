@@ -1,6 +1,6 @@
 # 开发计划与任务清单
 
-版本：V1.4（基于 v1.0.0 Development Baseline 的 D-016～D-023 修订）\
+版本：V1.5（基于 v1.0.0 Development Baseline 的 D-016～D-027 修订）\
 开发策略：小步迭代、每阶段可运行、每阶段可验收  
 前置：阶段「产品文档修订与基线冻结」完成并经用户批准后，才进入阶段 0 及后续业务开发。
 
@@ -98,11 +98,18 @@
 - [ ] 画布导入/导出定义 JSON。
 
 ### 验收
-- 在画布上仅使用 7 种 MVP 节点搭建 "Start→AgentTask(PRD)→ParallelSplit→UI/后端→HumanApproval→Frontend→Join(all_success)→Testing→Condition→End" 模板；保存后 definition_json 通过 Zod 校验且节点/边数量与图一致；publish 成功生成 workflow_versions 记录。
-- 以下三类无效图发布必须被拒绝并返回定义的错误码：(1) 无 Start 入口或多个 Start；(2) 存在入度为 0 的非 Start 节点；(3) 存在有向环。
-- definition_json 含未知节点类型时发布被拒绝并返回 UNKNOWN_NODE_TYPE；画布节点面板仅提供 7 种 MVP 节点。
-- 发布版本不可原地修改（修改已发布模板强制生成新版本）。
-- Condition 节点条件表达式含任意 JS 时被 Zod 校验拒绝（禁 eval）。
+- 在画布上仅使用 7 种 MVP 节点搭建参考模板（`Start→AgentTask(PRD)→ParallelSplit→UI/后端→HumanApproval→Frontend→Join(all_success)→Testing→Condition→End`，11 节点 / 11 边）；保存后 definition_json 通过 Zod 校验且节点/边数量与图一致；publish 成功生成 workflow_versions 记录；definition 中不得出现 `assignmentId` 或 `workId`，Agent Task 只允许角色选择器。
+- 12 条发布前校验逐条有独立用例（唯一 Start、至少一个 End、全节点从 Start 可达、无环、边引用有效且无自环无重复、key 唯一、type 白名单、config 严格、出入度、condition 路由、split/join 分支结构、agent_task / human_approval / settings 配置）；失败返回 `INVALID_PARAMS` + `detail.violations` 数组，一次返回全部违规（不短路），violation 取值来自 16 项冻结闭集。
+- 未知节点类型以错误码 `UNKNOWN_NODE_TYPE`（第 15 个协议错误码）拒绝，且校验器内部不产生 violation（与 `INVALID_PARAMS` + violations 两种形态不混用）；画布节点面板仅提供 7 种 MVP 节点。
+- 提供 `workflow.version.validate`：成功返回 `{ valid, violations }`，UI 可在发布前看到全部违规；publish 失败时错误码为 `INVALID_PARAMS`，`detail.violations` 结构一致；协议错误对象新增可选 `detail`（纯增量、向后兼容，不改协议版本号）。
+- 多 End 允许、`end.outcome` 禁止、嵌套并行禁止；`workingDirectoryPolicy` 在定义层只校验枚举值，`worktree` 与 `repository_path` 的匹配属阶段 4 运行期。
+- 发布版本不可原地修改：draft 可改，published 不可原地改，修改已发布模板强制生成新 draft/version；发布走事务 + `unique(template_id, version)` + CAS；checksum 规范化后计算，等价类 E1–E5 必须相同、D1–D5 必须不同；deprecated 不等于删除，不得破坏历史版本引用。
+- `schemaVersion` 只接受 1；未知版本明确报错；读取不静默改写旧版本；新版本转换必须显式执行并保留原版本。
+- Condition 只接受 AST（不持久化文本语法），禁 eval / Function / 任意 JS；白名单字段路径之外的引用、非法运算符、深度或节点数越界在发布时拒绝。
+- 画布保存→关闭→重开后逐字段比对节点配置、边条件、位置与分支关系一致；导入/导出 JSON 往返后定义等价。
+- 阶段 3 发布构建中不存在工作流执行入口；不得通过 RPC / IPC 绕过 UI 创建 Workflow Execution；IPC 继续显式白名单，不允许通用透传；阶段 2 的控制台隔离与游离 Execution 收紧不得回归；画布为独立 chunk，主 chunk 增量为 0，画布 chunk 体积记入验收记录。
+- 迁移 v5→v6→v7 数据保全；workflow_versions 不可变触发器有效且不误拦 published→deprecated；D-3 的 `json_extract` 修复有真实数据库测试与 `EXPLAIN QUERY PLAN` 断言。
+- 阶段 3 模板是 Schema 校验模板；PRD §6 的完整流程（含产品经理验收与最终审批）属阶段 6 E2E。
 
 ## 阶段 4：Workflow Engine、分支调度与返工
 
@@ -185,7 +192,7 @@ MVP 人工参与范围 = 单一 Human Approval 原语（决策 D-012/D-015）。
 - A9. 超限后暂停相关分支，等待人工处理。
 - A10. 系统重启后待审批及返工状态能够正确恢复。
 - A11. 重复提交同一审批操作不产生重复返工（幂等 no-op：approvals 仅一条终态记录、NodeRun 仅一次状态迁移、事件不重复）。
-- A12. 执行前审批阻塞：配置 beforeExecute 的 AgentTask 在 approval.status=pending 期间不得创建 Execution；approve 后才启动。
+- A12. 执行前审批阻塞：由 before_execute 审批节点保护的任务，在 approval.status=pending 期间不得创建 Execution；approve 后才启动。
 - A13. 每条决策记录含 decided_by/decided_at/decision_comment（request_changes 时非空），字段完整性校验。
 - A14. UI V1 被要求修改（request_changes）→ UI 提交 V2（新 Artifact 版本）→ 用户批准 V2 → 前端随后启动；两个版本和全部审批意见保留。
 - A15. 审批决策、返工触发、备份/恢复操作均可在 audit_logs 中按 actor/action/target 查询。（Minor #8：其中备份/恢复相关审计断言依赖阶段 5.5 产物，在阶段 5.5 验收时一并执行；阶段 5 仅验收审批与返工审计。）

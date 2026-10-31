@@ -1,6 +1,6 @@
 # 产品决策记录（ADR-lite）
 
-版本：V1.4（含冻结后变更记录 D-016～D-023）
+版本：V1.5（含冻结后变更记录 D-016～D-027）
 
 ## 已确认决策
 
@@ -217,6 +217,51 @@
   - 本轮不动版本头；版本升级由 CTO 在交叉检查后统一处理。
   - 冻结后任何 MVP 需求变更继续走正式变更申请（更新本文件并经用户批准）。
 - 影响：在 V1.3 升级前，文档版本号不代表本轮变更已全部落地。
+
+## 已确认决策（阶段 3 工作流定义，D-024 ～ D-027，2026-10-31）
+
+### D-024：Workflow 模板的 Agent 绑定 = 角色选择器（2026-10-31，阶段 3）
+
+- 决策：WorkflowTemplate 跨 Work 复用；Agent Task 节点只存 `assignmentSelector { workRole, agentProfileId? }`，不存 `assignmentId` / `workId`。
+- 约束：
+  - 运行时（阶段 4）在目标 Work 的 active Assignment 中按 `work_role` 精确匹配；`agentProfileId` 作为可选 pin。
+  - 0 命中或多命中 → WorkflowRun 创建失败，不创建任何 NodeRun / Execution，不自动创建 Assignment。
+  - 阶段 3 只校验 `workRole` 非空与格式，不做数据库解析。
+  - 运行中 Assignment 失效 → 节点启动失败，不自动改绑其他 Agent。
+- 影响：模板可跨 Work 复用；Assignment 仍由用户在 Work 内显式分配（PRD §5.4）。
+- 文档同步：PRD §5.5；WORKFLOW §2（随 DC-1 落地）。
+
+### D-025：Human Approval 是独立画布节点，MVP 无超时自动决策（2026-10-31，阶段 3）
+
+- 决策：MVP 人工审批只由独立的 `human_approval` 节点表达；不使用 Agent Task 内的隐式审批开关（删除 `humanGates`）。
+- 约束：
+  - 节点配置 `target { nodeKey, phase }`：`before_execute` 审批节点位于被审批任务上游，pending 期间不得创建该任务 Execution；`after_execute` 审批节点位于下游，任务成功且 Artifact 版本落库后才发起。
+  - 决策集合固定 approve / request_changes / reject，不可配置删减。
+  - MVP 无审批超时自动通过或自动拒绝；等待时长只做展示与排序；pending 持久化、重启恢复；Work 终止时 pending 审批走系统取消路径。
+  - 审批记录挂在 HumanApproval 节点的 NodeRun；被审批任务的 NodeRun 需可追溯（字段形态随 DC-7 落地）。
+  - settings 中的「人工参与默认策略」删除，不留悬空配置。
+- 文档同步：PRD §5.7；WORKFLOW §2；DATABASE §2.5 / §2.7（随 DC-2 / DC-6 / DC-7 落地）。
+
+### D-026：Condition 的假分支可交给引擎 ReworkPolicy（2026-10-31，阶段 3）
+
+- 决策：Condition 节点配置 `predicate`（AST）+ `falseBranch`；`falseBranch` 取 `"edge"` 或 `{ kind: "rework", reportNodeKey }`。
+- 约束：
+  - `falseBranch="edge"`：必须有一条 `when=false` 画布出边。
+  - `falseBranch={kind:"rework"}`：不得有 false 出边；引擎按 `reportNodeKey` 的结构化测试报告创建 ReworkRequest，返工目标由报告中的 `relatedTasks` 决定；不产生回边，不新增画布节点。
+  - 字段路径白名单仅 `nodes.<key>.status` / `nodes.<key>.attempt` / `nodes.<key>.output.<field>`；字面量仅 string / number / boolean / null（数组仅用于 `in`）；禁 eval / Function / 任意 JS。
+  - 阶段 3 只校验 AST 与白名单，不做运行期求值（阶段 4）。
+- 文档同步：PRD §5.5；WORKFLOW §2（随 DC-3 落地）。
+
+### D-027：End 只表示成功结束（2026-10-31，阶段 3）
+
+- 决策：MVP 的 End 节点只有成功结束一种语义；schemaVersion 1 不提供 `end.outcome`。
+- 约束：
+  - 允许多个 End，每个 End 结束其所在分支；WorkflowRun 进入 completed 的条件是「没有 active 分支」，不是「经过某个 End」。
+  - failed / cancelled 由 WorkflowRun 与分支的引擎状态表达，不由 End 表达。
+  - 阶段 3 图校验：至少一个 End；End 出度 0。
+- 文档同步：WORKFLOW §2（随 DC-5 落地）；DATABASE §2.6 状态口径不变。
+
+**本批决策只记录阶段 3 已批准的设计口径，不构成阶段 3 关闭；阶段 3 关闭仍需 CTO 单独审批。**
 
 ## 暂定事项（实施前需验证，不可当作已确认事实）
 

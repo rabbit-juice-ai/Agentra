@@ -1,6 +1,6 @@
 # 数据库设计
 
-版本：V1.4（基于 v1.0.0 Development Baseline 的 D-016～D-023 修订）\
+版本：V1.5（基于 v1.0.0 Development Baseline 的 D-016～D-027 修订）\
 数据库：SQLite（WAL 模式）  
 数据访问：Node.js 内置 `node:sqlite` + Core 统一 Repository/Data Access Layer（无 ORM；决策 D-016）
 
@@ -136,6 +136,7 @@ Provider 是运行时实现，AgentProfile 是员工身份。不得把两者合�
 - due_at nullable
 - created_at
 - updated_at
+- **预留表**：当前阶段不实现（阶段 3 决策 D4）；保留定义，不建 DDL，不得据此宣称任务板能力已交付。
 
 ### 2.4 Session 与 Execution
 
@@ -194,14 +195,21 @@ v3 加外键前，指向不存在 Assignment 的孤儿引用统一置 NULL 并�
 - published_at nullable
 - unique(template_id, version)
 
-发布版本不可修改。模板编辑应产生新 draft/version。
+发布版本不可修改。模板编辑应产生新 draft/version。**不可变性必须在数据库层兜底**（已发布行的 `definition_json` / `checksum` / `schema_version` 不得被 UPDATE）：迁移 v6 建表时同时加触发器，越权更新直接报错，不只依赖服务层自觉。
 
-Workflow definition 建议包含：
-- nodes：节点 key、type、label、config、position（MVP type 白名单：start、agent_task、parallel_split、join、human_approval、condition、end；发布时含其他值拒绝 UNKNOWN_NODE_TYPE）
-- edges：source、target、condition、edge type
-- branches：逻辑分支标识（可由图结构推导，但运行时需有稳定实例 ID）
-- settings：并发、失败策略、超时、reworkPolicy（默认轮次上限 2）、人工参与默认策略
-- schemaVersion
+**Workflow definition 结构（`definition_json`，schemaVersion 1）**：
+- **nodes**：`key`、`type`、`label`、`config`、`position`。
+  - `type` 白名单 7 种：`start`、`agent_task`、`parallel_split`、`join`、`human_approval`、`condition`、`end`；发布时含其他值拒绝 **`UNKNOWN_NODE_TYPE`**（注意：这是**错误码**，不占 violation 编号）。
+  - `config` 按节点类型严格校验，**未知字段一律拒绝**（不做静默丢弃）。各类型字段见 WORKFLOW §2；`agent_task.config` 只存 `assignmentSelector`，**不存 `agentId` / `assignmentId` / `workId`**。
+- **edges**：`key`、`source`、`target`、`branchKey`（仅 `parallel_split` 出边必填）、`when`（仅 `condition` 出边必填，`true` / `false`）。边**没有**通用的 `condition` 字符串字段，也没有独立的 `edge type` 列——类型由端点节点类型与 `branchKey` / `when` 表达。
+- **branches**：**不存顶层数组**。分支由 `parallel_split` 出边的 `branchKey` 派生，运行期实例标识为 `<splitNodeKey>/<branchKey>`；同一事实不两处存储，避免定义与运行实例不一致。
+- **settings**：`defaults.timeoutSeconds`（默认 1800，60–86400）、`defaults.maxAttempts`（默认 1，1–3）、`reworkPolicy.maxRounds`（默认 2，1–2，不含首次）、`failureStrategy`（默认 `fail_branch`，schemaVersion 1 仅此值）、`concurrency.maxParallelNodes`（默认 4，1–16，阶段 4 生效）。**不含「人工参与默认策略」**——审批已是独立 HumanApproval 节点，没有默认策略可配。
+- **schemaVersion**：定义格式版本，当前仅 `1`。
+
+**schemaVersion 演进规则**：
+- 读取：只接受代码已知版本；未知版本明确报错（复用 `INVALID_PARAMS` 语义），**不得静默改写或猜测**读到的定义。
+- 写入：新格式必须走版本号递增；同一 `schema_version` 的语义不得就地变更（否则已发布版本的 checksum 与校验规则失去意义）。
+- 转换：升级必须是**显式动作**，产出新版本记录并保留原版本与原始 `checksum`；不提供自动降级。
 
 ### 2.6 Workflow Runtime
 
@@ -250,8 +258,10 @@ Workflow definition 建议包含：
 #### approvals
 - id PK
 - workflow_run_id FK
-- node_run_id FK
+- node_run_id FK：**HumanApproval 节点自身的 NodeRun**（即「这次审批」），不是被审批任务的 NodeRun
+- target_node_run_id nullable FK：**被审批的 AgentTask 的 NodeRun**。`after_execute` 时必填，指向被审的那次执行；`before_execute` 时为 NULL（决策发生时任务尚未执行），经 `target.nodeKey` 与图结构追溯
 - approval_type: before_execute | checkpoint | after_execute | artifact_review | manual_route
+  - **取值来源**：由该 HumanApproval 节点 `config.target.phase` 派生（`before_execute` / `after_execute`），不单独配置；两者的对应关系在写入时校验，不一致拒绝
   - **MVP 子集**：before_execute、after_execute（经 Human Approval 原语实现；checkpoint/manual_route/artifact_review 为后续版本能力，MVP 仍保留枚举定义并标注）
 - status: pending | approved | changes_requested | rejected | taken_over | cancelled
   - **MVP 子集**：pending、approved、changes_requested、rejected、cancelled（taken_over 为后续版本）。其中 cancelled 仅用于系统取消路径（如 Work 终止时取消 pending 审批，见 WORKFLOW §4 Work 级终止），不是用户审批决策的一种。
@@ -265,7 +275,8 @@ Workflow definition 建议包含：
 - rework_request_id nullable FK（request_changes 决策关联的返工任务；MVP 必填当 status=changes_requested）
 - requested_at
 - decided_at nullable
-- **幂等约束**：unique(node_run_id, round)——同一审批节点每轮至多一条记录；已进入终态（approved/changes_requested/rejected/cancelled）的记录不可被后续请求修改（历史不可覆盖）。
+- **幂等约束**：unique(node_run_id, round)——`node_run_id` 是审批节点自身的 NodeRun，因此语义是「同一审批节点每轮至多一条记录」；已进入终态（approved/changes_requested/rejected/cancelled）的记录不可被后续请求修改（历史不可覆盖）。
+- **与返工的关系**：`request_changes` 产生的 ReworkRequest 通过 `rework_request_id` 关联；返工完成后重新进入审批节点时 `round + 1`，产生**新的** NodeRun 与 Approval 行，旧行保留。
 
 #### human_inputs
 - id PK

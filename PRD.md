@@ -1,6 +1,6 @@
 # 产品需求文档（PRD）
 
-版本：V1.4（基于 v1.0.0 Development Baseline 的修订）\
+版本：V1.5（基于 v1.0.0 Development Baseline 的修订）\
 状态：开发基线（待基线冻结验收）  
 产品名称：Agent Team Workspace（暂定名）
 
@@ -108,6 +108,10 @@ MVP 画布节点（7 种，决策 D-010）。类型标识与 DATABASE §2.5 的 
 
 设计器支持节点拖拽、连线、配置面板、校验、保存、复制模板和发布新版本。模板版本发布后不可原地修改；修改应生成新版本。画布节点面板仅提供上述 7 种；发布含未知节点类型的定义被拒绝。
 
+- **模板与 Work 解耦**：工作流模板是跨 Work 复用的定义，不绑定具体 Work 或 Assignment。Agent Task 节点只配置角色选择器（`workRole`，可选 `agentProfileId`），运行 WorkflowRun 时在目标 Work 的 active Assignment 中解析；解析失败或出现歧义时不启动，且不自动创建 Assignment（运行时解析属阶段 4）。
+- **并行分支与汇合**：Parallel Split 的每条分支有稳定标识；Join 必须显式声明配对的分叉节点与 `all_success` 策略；MVP 不支持嵌套并行。
+- **条件节点不产生回边**：Condition 的假分支可配置为交给引擎内建的 ReworkPolicy（返工不是画布节点，不产生回边）；返工规则仍按 D-011 执行。
+
 后续版本节点（不进 MVP）：Human Input（V1.1）、Human Takeover（V1.2）、Wait、Retry/Loop、Artifact Review（独立节点）、人工选择条件分支（V1.1）。
 
 ### 5.6 工作流执行引擎
@@ -143,6 +147,9 @@ MVP 人工参与 = 单一 Human Approval 原语（决策 D-012/D-015）：
 - 审批等待期间只暂停当前分支，其他分支继续。
 - 审批状态持久化，重启后恢复待审批状态；审批操作幂等，历史决策不可覆盖。
 - 每次决策记录操作者、时间、意见、关联 Artifact 版本和后续动作。
+- **审批是独立画布节点**：Human Approval 作为独立节点参与流程图，配置指向被审批的 Agent Task 与时点（`before_execute` / `after_execute`）；不使用 Agent Task 内的隐式审批开关。
+- **审批时点与图位置**：`before_execute` 审批节点位于被审批任务的上游，pending 期间不得创建该任务的 Execution；`after_execute` 审批节点位于下游，被审批任务成功且 Artifact 版本落库后才发起审批。
+- **无审批超时自动决策**：MVP 审批等待不设自动通过或自动拒绝；等待时长只做展示与排序，pending 状态持久化并在重启后恢复；Work 终止时 pending 审批走系统取消路径。
 - 后续版本：Human Input（V1.1）、Checkpoint（V1.1）、人工选择条件分支（V1.1）、Human Takeover（V1.2）、多级审批（V1.2）。
 
 ### 5.8 Agent 执行与实时交互
