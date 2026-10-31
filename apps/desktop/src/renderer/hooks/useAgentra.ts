@@ -12,6 +12,7 @@ import type {
   TeamMemberAddParams,
   Work,
   WorkCreateParams,
+  Worktree,
 } from '@agentra/protocol'
 import { useCallback, useEffect, useReducer, useState } from 'react'
 import { ApiError, api } from '../services/api'
@@ -34,6 +35,7 @@ export function useAgentra() {
   const [works, setWorks] = useState<Work[]>([])
   const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({})
   const [assignmentsByWork, setAssignmentsByWork] = useState<Record<string, Assignment[]>>({})
+  const [worktreesByWork, setWorktreesByWork] = useState<Record<string, Worktree[]>>({})
   const [providers, setProviders] = useState<RuntimeProviderRecord[]>([])
   const [consoleState, dispatch] = useReducer(consoleReducer, initialConsoleState)
   const [coreHealth, setCoreHealth] = useState<HealthResult | null>(null)
@@ -87,6 +89,18 @@ export function useAgentra() {
       try {
         const assignments = await api.listAssignments(workId)
         setAssignmentsByWork((current) => ({ ...current, [workId]: assignments }))
+      } catch (error) {
+        reportError(error)
+      }
+    },
+    [reportError],
+  )
+
+  const refreshWorktrees = useCallback(
+    async (workId: string) => {
+      try {
+        const worktrees = await api.listWorktrees(workId)
+        setWorktreesByWork((current) => ({ ...current, [workId]: worktrees }))
       } catch (error) {
         reportError(error)
       }
@@ -455,10 +469,45 @@ export function useAgentra() {
     [refreshAssignments, reportError],
   )
 
+  const createWorktree = useCallback(
+    async (workId: string, branchName: string): Promise<boolean> => {
+      setBusy(true)
+      try {
+        await api.createWorktree(workId, branchName)
+        await refreshWorktrees(workId)
+        setBanner('Worktree 已创建')
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshWorktrees, reportError],
+  )
+
+  const removeWorktree = useCallback(
+    async (workId: string, id: string): Promise<void> => {
+      setBusy(true)
+      try {
+        await api.removeWorktree(id)
+        await refreshWorktrees(workId)
+        setBanner('Worktree 已清理')
+      } catch (error) {
+        reportError(error)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshWorktrees, reportError],
+  )
+
   return {
     agents,
     teams,
     works,
+    worktreesByWork,
     teamMembers,
     assignmentsByWork,
     providers,
@@ -489,6 +538,9 @@ export function useAgentra() {
       createAssignment,
       refreshAssignments,
       assignmentAction,
+      refreshWorktrees,
+      createWorktree,
+      removeWorktree,
     },
   }
 }

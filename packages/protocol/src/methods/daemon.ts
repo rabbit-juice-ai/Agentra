@@ -38,6 +38,11 @@ export const DaemonExecutionStartParams = z
     permissionMode: z.string().min(1).max(100).optional(),
     allowedTools: z.array(z.string().min(1)).max(100).optional(),
     disallowedTools: z.array(z.string().min(1)).max(100).optional(),
+    /**
+     * 阶段 2：Core 声明本次执行允许的工作目录根（scratch、worktrees 根、Work.rootPath）。
+     * Daemon 仍做边界校验：实际目录必须落在 scratch 根或这些根之内。
+     */
+    allowedRoots: z.array(z.string().min(1).max(4096)).max(8).optional(),
   })
   .strict()
 export type DaemonExecutionStartParams = z.infer<typeof DaemonExecutionStartParams>

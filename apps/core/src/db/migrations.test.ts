@@ -38,14 +38,15 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 0,
-        to: 3,
+        to: 4,
         applied: [
           'phase1_agent_runtime',
           'phase1_tool_permissions_and_provider_auth',
           'phase2_team_work_assignment',
+          'phase2_worktree_and_workdir_locks',
         ],
       })
-      expect(currentUserVersion(db)).toBe(3)
+      expect(currentUserVersion(db)).toBe(4)
     } finally {
       db.close()
     }
@@ -73,10 +74,10 @@ describe('migrate', () => {
     try {
       migrate(db)
       const second = migrate(db)
-      expect(second).toEqual({ from: 3, to: 3, applied: [] })
+      expect(second).toEqual({ from: 4, to: 4, applied: [] })
       const third = migrate(db, MIGRATIONS)
       expect(third.applied).toEqual([])
-      expect(currentUserVersion(db)).toBe(3)
+      expect(currentUserVersion(db)).toBe(4)
     } finally {
       db.close()
     }
@@ -90,7 +91,7 @@ describe('migrate', () => {
 
     const second = openDatabase(file)
     try {
-      expect(currentUserVersion(second)).toBe(3)
+      expect(currentUserVersion(second)).toBe(4)
       const journal = second.prepare('PRAGMA journal_mode').get() as { journal_mode: string }
       expect(journal.journal_mode).toBe('wal')
       const fk = second.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }
@@ -156,7 +157,11 @@ describe('migrate', () => {
       ).run()
 
       const result = migrate(db)
-      expect(result).toEqual({ from: 2, to: 3, applied: ['phase2_team_work_assignment'] })
+      expect(result).toEqual({
+        from: 2,
+        to: 4,
+        applied: ['phase2_team_work_assignment', 'phase2_worktree_and_workdir_locks'],
+      })
 
       // 阶段 1 数据一条不少
       expect(db.prepare('SELECT COUNT(*) AS c FROM agent_profiles').get()).toEqual({ c: 1 })

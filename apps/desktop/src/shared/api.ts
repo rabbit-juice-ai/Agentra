@@ -33,6 +33,11 @@ import type {
   WorkLinkTeamParams,
   WorkListResult,
   WorkResult,
+  WorktreeCreateParams,
+  WorktreeCreateResult,
+  WorktreeListResult,
+  WorktreeRemoveParams,
+  WorktreeRemoveResult,
 } from '@agentra/protocol'
 
 /** Desktop 主进程 ↔ renderer 的唯一结果形态（错误码原样透传 Core）。 */
@@ -85,6 +90,10 @@ export type AgentraApi = {
   completeWork(params: WorkIdParams): Promise<RpcResult<WorkResult>>
 
   // ---- 阶段 2：Assignment ----
+  listWorktrees(params: { workId: string }): Promise<RpcResult<WorktreeListResult>>
+  createWorktree(params: WorktreeCreateParams): Promise<RpcResult<WorktreeCreateResult>>
+  removeWorktree(params: WorktreeRemoveParams): Promise<RpcResult<WorktreeRemoveResult>>
+
   listAssignments(params: { workId: string }): Promise<RpcResult<AssignmentListResult>>
   createAssignment(params: AssignmentCreateParams): Promise<RpcResult<AssignmentResult>>
   pauseAssignment(params: AssignmentIdParams): Promise<RpcResult<AssignmentResult>>

@@ -98,6 +98,13 @@ export const api = {
     return (await unwrap(call({ id }))).work
   },
 
+  listWorktrees: async (workId: string) =>
+    (await unwrap(window.agentra.listWorktrees({ workId }))).worktrees,
+  createWorktree: async (workId: string, branchName: string) =>
+    (await unwrap(window.agentra.createWorktree({ workId, branchName }))).worktree,
+  removeWorktree: async (id: string) =>
+    (await unwrap(window.agentra.removeWorktree({ id, confirm: true }))).worktree,
+
   listAssignments: async (workId: string) =>
     (await unwrap(window.agentra.listAssignments({ workId }))).assignments,
   createAssignment: async (params: AssignmentCreateParams) =>

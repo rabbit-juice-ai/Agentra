@@ -5,12 +5,14 @@ import type {
   Team,
   Work,
   WorkCreateParams,
+  Worktree,
 } from '@agentra/protocol'
 import { useEffect, useState } from 'react'
 import { StatusBadge } from './StatusBadge'
 import {
   buttonStyle,
   colors,
+  dangerButtonStyle,
   inputStyle,
   labelStyle,
   panelStyle,
@@ -29,6 +31,7 @@ type Props = {
   teams: Team[]
   agents: AgentProfile[]
   assignmentsByWork: Record<string, Assignment[]>
+  worktreesByWork: Record<string, Worktree[]>
   busy: boolean
   onCreate: (params: WorkCreateParams) => Promise<boolean>
   onLinkTeam: (workId: string, teamId: string) => Promise<void>
@@ -40,6 +43,9 @@ type Props = {
     id: string,
   ) => Promise<void>
   onRefreshAssignments: (workId: string) => Promise<void>
+  onRefreshWorktrees: (workId: string) => Promise<void>
+  onCreateWorktree: (workId: string, branchName: string) => Promise<boolean>
+  onRemoveWorktree: (workId: string, id: string) => Promise<void>
 }
 
 export function WorksPage({
@@ -47,6 +53,7 @@ export function WorksPage({
   teams,
   agents,
   assignmentsByWork,
+  worktreesByWork,
   busy,
   onCreate,
   onLinkTeam,
@@ -54,6 +61,9 @@ export function WorksPage({
   onCreateAssignment,
   onAssignmentAction,
   onRefreshAssignments,
+  onRefreshWorktrees,
+  onCreateWorktree,
+  onRemoveWorktree,
 }: Props) {
   const [name, setName] = useState('')
   const [rootPath, setRootPath] = useState('')
@@ -61,17 +71,24 @@ export function WorksPage({
   const [linkTeamId, setLinkTeamId] = useState('')
   const [assignAgentId, setAssignAgentId] = useState('')
   const [assignRole, setAssignRole] = useState('engineer')
+  const [branchName, setBranchName] = useState('')
+  /** 两步确认：第一下只进入待确认态，第二下才真正清理（不默认执行）。 */
+  const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null)
 
   const selected = works.find((work) => work.id === selectedId) ?? null
   const assignments = selected ? (assignmentsByWork[selected.id] ?? []) : []
+  const worktrees = selected ? (worktreesByWork[selected.id] ?? []) : []
 
   useEffect(() => {
     if (selectedId === null && works.length > 0) setSelectedId(works[0]?.id ?? null)
   }, [works, selectedId])
 
   useEffect(() => {
-    if (selectedId) void onRefreshAssignments(selectedId)
-  }, [selectedId, onRefreshAssignments])
+    if (selectedId) {
+      void onRefreshAssignments(selectedId)
+      void onRefreshWorktrees(selectedId)
+    }
+  }, [selectedId, onRefreshAssignments, onRefreshWorktrees])
 
   useEffect(() => {
     if (linkTeamId === '' && teams.length > 0) setLinkTeamId(teams[0]?.id ?? '')
@@ -377,6 +394,72 @@ export function WorksPage({
                       ))}
                     </tbody>
                   </table>
+                )}
+              </div>
+
+              <div style={{ borderTop: `1px solid ${colors.subtle}`, paddingTop: 12 }}>
+                <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>Git Worktree</h3>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'end' }}>
+                  <label style={{ flex: 1 }}>
+                    <span style={labelStyle}>分支名 *</span>
+                    <input
+                      style={inputStyle}
+                      value={branchName}
+                      onChange={(event) => setBranchName(event.target.value)}
+                      placeholder="agentra/w1"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    style={buttonStyle}
+                    disabled={busy || branchName.trim() === ''}
+                    onClick={() => {
+                      if (!selected) return
+                      void onCreateWorktree(selected.id, branchName.trim()).then((ok) => {
+                        if (ok) setBranchName('')
+                      })
+                    }}
+                  >
+                    创建 Worktree
+                  </button>
+                </div>
+                {worktrees.length === 0 ? (
+                  <p style={{ fontSize: 13, color: colors.muted, margin: '8px 0 0' }}>
+                    该 Work 还没有 Worktree。
+                  </p>
+                ) : (
+                  <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12 }}>
+                    {worktrees.map((worktree) => (
+                      <li key={worktree.id} style={{ marginBottom: 4 }}>
+                        <code>{worktree.branchName}</code> · <code>{worktree.worktreePath}</code>
+                        <button
+                          type="button"
+                          style={{ ...dangerButtonStyle, marginLeft: 8 }}
+                          disabled={busy}
+                          onClick={() => {
+                            if (pendingRemoveId === worktree.id) {
+                              setPendingRemoveId(null)
+                              void onRemoveWorktree(selected.id, worktree.id)
+                            } else {
+                              setPendingRemoveId(worktree.id)
+                            }
+                          }}
+                        >
+                          {pendingRemoveId === worktree.id ? '确认清理（不可撤销）' : '清理'}
+                        </button>
+                        {pendingRemoveId === worktree.id && (
+                          <button
+                            type="button"
+                            style={{ ...buttonStyle, marginLeft: 4 }}
+                            disabled={busy}
+                            onClick={() => setPendingRemoveId(null)}
+                          >
+                            取消
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
             </>

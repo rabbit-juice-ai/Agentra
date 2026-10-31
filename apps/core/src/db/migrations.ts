@@ -282,6 +282,36 @@ function upPhase2(db: Database): void {
   db.exec(AGENT_SESSIONS_REBUILD)
 }
 
+const PHASE_2_WORKDIR_SCHEMA = `
+-- 阶段 2 B3：Git Worktree 记录 + 工作目录锁（DATABASE §2.8；锁是运行态，随 Core 生命周期）
+CREATE TABLE IF NOT EXISTS worktrees (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  assignment_id TEXT REFERENCES assignments(id) ON DELETE SET NULL,
+  repository_path TEXT NOT NULL,
+  worktree_path TEXT NOT NULL,
+  branch_name TEXT NOT NULL,
+  base_commit TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'removed')),
+  created_at TEXT NOT NULL,
+  removed_at TEXT,
+  UNIQUE (worktree_path)
+);
+
+-- 锁的键是「实际工作目录的绝对路径」：两个 Work 指向同一目录时才会冲突。
+-- holder_pid 是持锁进程（Core）的 pid，用于回收被 kill -9 后留下的陈旧锁。
+CREATE TABLE IF NOT EXISTS workdir_locks (
+  workdir TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  work_id TEXT,
+  holder_pid INTEGER NOT NULL,
+  acquired_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_worktrees_work ON worktrees(work_id);
+CREATE INDEX IF NOT EXISTS idx_workdir_locks_execution ON workdir_locks(execution_id);
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -302,6 +332,13 @@ export const MIGRATIONS: Migration[] = [
     name: 'phase2_team_work_assignment',
     rebuildsTables: true,
     up: upPhase2,
+  },
+  {
+    version: 4,
+    name: 'phase2_worktree_and_workdir_locks',
+    up: (db) => {
+      db.exec(PHASE_2_WORKDIR_SCHEMA)
+    },
   },
 ]
 

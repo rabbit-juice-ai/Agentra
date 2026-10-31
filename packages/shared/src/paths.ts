@@ -23,6 +23,7 @@ export type AgentraPaths = {
   runtime: string
   logs: string
   scratch: string
+  worktrees: string
   database: string
   coreSocket: string
   daemonSocket: string
@@ -45,6 +46,7 @@ export function agentraPaths(home: string = agentraHome()): AgentraPaths {
   const runtime = path.join(home, 'runtime')
   const logs = path.join(home, 'logs')
   const scratch = path.join(home, 'scratch')
+  const worktrees = path.join(home, 'worktrees')
   const coreSocket = path.join(runtime, 'core.sock')
   const daemonSocket = path.join(runtime, 'daemon.sock')
   assertSocketPathLength(coreSocket)
@@ -54,6 +56,7 @@ export function agentraPaths(home: string = agentraHome()): AgentraPaths {
     runtime,
     logs,
     scratch,
+    worktrees,
     database: path.join(home, 'agentra.db'),
     coreSocket,
     daemonSocket,
@@ -66,7 +69,7 @@ export function agentraPaths(home: string = agentraHome()): AgentraPaths {
 
 /** 确保目录存在（runtime/logs/scratch，权限 0700）。 */
 export function ensureDirs(paths: AgentraPaths): void {
-  for (const dir of [paths.home, paths.runtime, paths.logs, paths.scratch]) {
+  for (const dir of [paths.home, paths.runtime, paths.logs, paths.scratch, paths.worktrees]) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   }
 }

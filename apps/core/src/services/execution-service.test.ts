@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -18,14 +19,20 @@ import type { RuntimeClient } from '../daemon/daemon-client'
 import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
 import { AgentRepository } from '../db/repositories/agent-repository'
+import { AuditRepository } from '../db/repositories/audit-repository'
 import { ExecutionLogRepository } from '../db/repositories/execution-log-repository'
 import { ExecutionRepository } from '../db/repositories/execution-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
+import { TeamRepository } from '../db/repositories/team-repository'
+import { WorkRepository } from '../db/repositories/work-repository'
 import { AgentService } from './agent-service'
 import { CoreEventHub } from './event-hub'
 import { ExecutionService } from './execution-service'
 import { ProviderRegistry } from './provider-registry'
+import { WorkService } from './work-service'
+import { WorkdirLockService } from './workdir-lock-service'
+import { WorktreeService } from './worktree-service'
 
 const NOW = '2026-10-30T00:00:00.000Z'
 
@@ -180,6 +187,9 @@ type Harness = {
   logs: ExecutionLogRepository
   repository: ExecutionRepository
   agentId: string
+  works: WorkService
+  worktrees: WorktreeService
+  locks: WorkdirLockService
 }
 
 const dirs: string[] = []
@@ -197,6 +207,9 @@ async function harness(
   migrate(db)
 
   const providerRepository = new ProviderRepository(db)
+  const workRepository = new WorkRepository(db)
+  const teamRepository = new TeamRepository(db)
+  const auditRepository = new AuditRepository(db)
   const agentRepository = new AgentRepository(db)
   const sessionRepository = new SessionRepository(db)
   const executionRepository = new ExecutionRepository(db)
@@ -218,6 +231,9 @@ async function harness(
   )
 
   const registry = new ProviderRegistry(providerRepository, runtime)
+  const worktrees = new WorktreeService(db, workRepository, path.join(dir, 'worktrees'), () => NOW)
+  const locks = new WorkdirLockService(db, () => NOW)
+  const works = new WorkService(db, workRepository, teamRepository, auditRepository, () => NOW)
   const agents = new AgentService(db, agentRepository, providerRepository, () => NOW)
   const agent = agents.create({
     name: 'Worker',
@@ -228,6 +244,9 @@ async function harness(
     db,
     runtime,
     registry,
+    works: workRepository,
+    worktrees,
+    locks,
     agents: agentRepository,
     sessions: sessionRepository,
     executions: executionRepository,
@@ -240,6 +259,9 @@ async function harness(
     db,
     dir,
     agents,
+    works,
+    worktrees,
+    locks,
     providers: providerRepository,
     executions,
     runtime,
@@ -647,5 +669,103 @@ describe('工具权限强制（U3）', () => {
         toolPermissions: { version: 1, allow: ['Read'], deny: [' Read '] },
       }),
     ).toThrow(expect.objectContaining({ code: 'INVALID_PARAMS' }))
+  })
+})
+
+describe('阶段 2 B3：工作目录锁与 Worktree 隔离', () => {
+  it('WORKDIR_LOCKED：两个 Work 指向同一非 Worktree 目录时第二个启动被拒且不创建 Execution', async () => {
+    const h = await harness()
+    const shared = path.join(h.dir, 'shared-workdir')
+
+    const workA = h.works.create({ name: 'A', rootPath: shared })
+    h.works.activate(workA.id)
+    const workB = h.works.create({ name: 'B', rootPath: shared })
+    h.works.activate(workB.id)
+
+    const first = await h.executions.start({
+      agentId: h.agentId,
+      prompt: 'first',
+      workId: workA.id,
+    })
+    expect(first.workingDirectory).toBe(shared)
+    expect(h.locks.get(shared)?.executionId).toBe(first.id)
+
+    const before = h.repository.list(100).length
+    await expect(
+      h.executions.start({ agentId: h.agentId, prompt: 'second', workId: workB.id }),
+    ).rejects.toMatchObject({ code: 'WORKDIR_LOCKED' })
+    expect(h.repository.list(100).length).toBe(before)
+    expect(h.runtime.starts).toHaveLength(1)
+  })
+
+  it('Worktree 隔离时不阻塞：两个 Work 各自的 worktree 目录不同，可以同时启动', async () => {
+    const h = await harness()
+    // 两个 Work 指向同一个仓库，但各自用不同的 worktree 目录
+    const repo = path.join(h.dir, 'repo')
+    fs.mkdirSync(repo, { recursive: true })
+    execFileSync('git', ['init', '-q'], { cwd: repo })
+    execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: repo })
+    execFileSync('git', ['config', 'user.name', 'T'], { cwd: repo })
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'x')
+    execFileSync('git', ['add', '.'], { cwd: repo })
+    execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo })
+
+    const workA = h.works.create({ name: 'A', rootPath: repo, repositoryPath: repo })
+    h.works.activate(workA.id)
+    const workB = h.works.create({ name: 'B', rootPath: repo, repositoryPath: repo })
+    h.works.activate(workB.id)
+
+    const wtA = h.worktrees.create({ workId: workA.id, branchName: 'agentra/a' })
+    const wtB = h.worktrees.create({ workId: workB.id, branchName: 'agentra/b' })
+    expect(wtA.worktreePath).not.toBe(wtB.worktreePath)
+
+    const exA = await h.executions.start({
+      agentId: h.agentId,
+      prompt: 'a',
+      workId: workA.id,
+      worktreeId: wtA.id,
+    })
+    const exB = await h.executions.start({
+      agentId: h.agentId,
+      prompt: 'b',
+      workId: workB.id,
+      worktreeId: wtB.id,
+    })
+    expect(exA.workingDirectory).toBe(path.resolve(wtA.worktreePath))
+    expect(exB.workingDirectory).toBe(path.resolve(wtB.worktreePath))
+    expect(exA.workingDirectory).not.toBe(exB.workingDirectory)
+  })
+
+  it('执行终结后释放目录锁，同一目录可以再次启动', async () => {
+    const h = await harness()
+    const shared = path.join(h.dir, 'shared-2')
+    const work = h.works.create({ name: 'W', rootPath: shared })
+    h.works.activate(work.id)
+
+    const first = await h.executions.start({ agentId: h.agentId, prompt: 'x', workId: work.id })
+    expect(h.locks.get(shared)?.executionId).toBe(first.id)
+
+    // 直接喂事件：本 harness 没有把 runtime 订阅到 service（生产由 index.ts 订阅）
+    h.executions.handleRuntimeEvent({
+      eventId: newId('evt'),
+      protocolVersion: PROTOCOL_VERSION,
+      eventType: 'execution.exited',
+      occurredAt: NOW,
+      aggregateType: 'execution',
+      aggregateId: first.id,
+      payload: {
+        executionId: first.id,
+        sequenceNo: 9,
+        exitCode: 0,
+        signal: null,
+        reason: 'exited',
+        timestamp: NOW,
+      },
+      correlationId: first.id,
+    })
+
+    expect(h.locks.get(shared)).toBeNull()
+    const second = await h.executions.start({ agentId: h.agentId, prompt: 'y', workId: work.id })
+    expect(second.id).not.toBe(first.id)
   })
 })

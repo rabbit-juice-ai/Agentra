@@ -34,6 +34,8 @@ import { ExecutionService } from '../services/execution-service'
 import { ProviderRegistry } from '../services/provider-registry'
 import { TeamService } from '../services/team-service'
 import { WorkService } from '../services/work-service'
+import { WorkdirLockService } from '../services/workdir-lock-service'
+import { WorktreeService } from '../services/worktree-service'
 import { createDispatcher, type MethodTable } from './dispatcher'
 import { coreMethods } from './methods'
 
@@ -85,6 +87,9 @@ function harness(): {
     db,
     runtime: unusedRuntime,
     registry,
+    works: workRepository,
+    worktrees: new WorktreeService(db, workRepository, path.join(dir, 'worktrees'), () => NOW),
+    locks: new WorkdirLockService(db, () => NOW),
     agents: agentRepository,
     sessions: sessionRepository,
     executions: executionRepository,
@@ -110,6 +115,7 @@ function harness(): {
       sessionRepository,
       () => NOW,
     ),
+    worktrees: new WorktreeService(db, workRepository, path.join(dir, 'worktrees'), () => NOW),
   })
 
   const dispatch = async (method: string, params: unknown) => {

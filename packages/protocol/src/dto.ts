@@ -234,3 +234,20 @@ export const Assignment = z.object({
   updatedAt: IsoTimestamp,
 })
 export type Assignment = z.infer<typeof Assignment>
+
+export const WorktreeStatus = z.enum(['active', 'removed'])
+export type WorktreeStatus = z.infer<typeof WorktreeStatus>
+
+export const Worktree = z.object({
+  id: z.string().min(1),
+  workId: z.string().min(1),
+  assignmentId: z.string().min(1).nullable(),
+  repositoryPath: z.string().min(1),
+  worktreePath: z.string().min(1),
+  branchName: z.string().min(1),
+  baseCommit: z.string().min(1).nullable(),
+  status: WorktreeStatus,
+  createdAt: IsoTimestamp,
+  removedAt: IsoTimestamp.nullable(),
+})
+export type Worktree = z.infer<typeof Worktree>

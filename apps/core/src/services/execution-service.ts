@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
+import path from 'node:path'
 import {
   type AgentProfile,
   type Execution,
@@ -29,8 +30,11 @@ import {
   isTerminalExecutionState,
 } from '../db/repositories/execution-repository'
 import type { SessionRepository } from '../db/repositories/session-repository'
+import type { WorkRepository } from '../db/repositories/work-repository'
 import type { CoreEventHub } from './event-hub'
 import type { ProviderRegistry } from './provider-registry'
+import type { WorkdirLockService } from './workdir-lock-service'
+import type { WorktreeService } from './worktree-service'
 
 export type ExecutionServiceLogger = {
   info: (message: string, data?: Record<string, unknown>) => void
@@ -42,6 +46,9 @@ export type ExecutionServiceDeps = {
   db: Database
   runtime: RuntimeClient
   registry: ProviderRegistry
+  works: WorkRepository
+  worktrees: WorktreeService
+  locks: WorkdirLockService
   agents: AgentRepository
   sessions: SessionRepository
   executions: ExecutionRepository
@@ -57,6 +64,8 @@ const DEFAULT_PERMISSION_MODE = 'dontAsk'
 const MAX_SEEN_EVENT_IDS = 10_000
 /** 对账宽限：刚创建的 pending 执行可能仍在启动途中，不判为崩溃。 */
 const RECONCILE_PENDING_GRACE_MS = 30_000
+/** 只有进行中的 Work 可以启动执行。 */
+const WORK_ACCEPTS_EXECUTIONS = new Set(['active', 'paused'])
 
 /**
  * 执行编排：Core 是 Execution 状态的唯一权威写入者。
@@ -73,6 +82,9 @@ export class ExecutionService {
   private readonly executions: ExecutionRepository
   private readonly logs: ExecutionLogRepository
   private readonly hub: CoreEventHub
+  private readonly works: WorkRepository
+  private readonly worktrees: WorktreeService
+  private readonly locks: WorkdirLockService
   private readonly scratchRoot: string
   private readonly logger: ExecutionServiceLogger | undefined
   private readonly now: () => string
@@ -86,6 +98,9 @@ export class ExecutionService {
     this.executions = deps.executions
     this.logs = deps.logs
     this.hub = deps.hub
+    this.works = deps.works
+    this.worktrees = deps.worktrees
+    this.locks = deps.locks
     this.scratchRoot = deps.scratchRoot
     this.logger = deps.logger
     this.now = deps.now ?? (() => new Date().toISOString())
@@ -118,8 +133,22 @@ export class ExecutionService {
     const executionId = `exe-${crypto.randomUUID()}`
     const sessionId = newId('ses')
     const externalSessionId = crypto.randomUUID()
-    const workingDirectory = executionScratchDir(this.scratchRoot, executionId)
-    fs.mkdirSync(workingDirectory, { recursive: true, mode: 0o700 })
+    const { workingDirectory, workId, allowedRoots } = this.resolveWorkingDirectory(
+      params,
+      executionId,
+    )
+
+    // 工作目录锁：键是实际目录的绝对路径。命中时不创建 Execution（与 AGENT_TOOLS_NOT_CONFIGURED 同级）。
+    this.locks.acquire(workingDirectory, executionId, workId)
+    try {
+      fs.mkdirSync(workingDirectory, { recursive: true, mode: 0o700 })
+    } catch (error) {
+      this.locks.releaseByExecution(executionId)
+      throw new RpcMethodError(
+        'INVALID_PARAMS',
+        `cannot create working directory ${workingDirectory}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
 
     const now = this.now()
     const execution: Execution = {
@@ -186,6 +215,8 @@ export class ExecutionService {
         permissionMode: DEFAULT_PERMISSION_MODE,
         allowedTools: toolPermissions.allow,
         disallowedTools: toolPermissions.deny,
+        // 阶段 2：绑定 Work 时把允许的目录根一并声明给 Daemon（Daemon 仍做边界校验）。
+        allowedRoots: workId ? [this.scratchRoot, ...allowedRoots] : undefined,
       })
       this.executions.markRunning(executionId, {
         processId: handle.processId,
@@ -201,6 +232,7 @@ export class ExecutionService {
       return this.get(executionId)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      this.locks.releaseByExecution(executionId)
       const failedAt = this.now()
       this.executions.finish(executionId, {
         status: 'failed',
@@ -268,6 +300,7 @@ export class ExecutionService {
     this.sessions.end(execution.sessionId, now)
     this.appendSystemLog(execution.id, 'execution.cancel_requested', {}, now)
     this.publishState(execution.id, 'cancelled', previous, 'cancelled by user')
+    this.locks.releaseByExecution(execution.id)
 
     try {
       await this.runtime.cancel(execution.id)
@@ -419,6 +452,7 @@ export class ExecutionService {
         endedAt: payload.timestamp,
       })
       this.sessions.end(execution.sessionId, payload.timestamp)
+      this.locks.releaseByExecution(payload.executionId)
     }
 
     this.appendSystemLog(
@@ -457,6 +491,7 @@ export class ExecutionService {
       endedAt: payload.timestamp,
     })
     this.sessions.end(execution.sessionId, payload.timestamp)
+    this.locks.releaseByExecution(payload.executionId)
     this.appendSystemLog(
       payload.executionId,
       'execution.exited',
@@ -464,6 +499,54 @@ export class ExecutionService {
       payload.timestamp,
     )
     this.hub.publish(event)
+  }
+
+  /**
+   * 解析工作目录：绑定 Work 时用 worktree 或 work.rootPath，否则沿用阶段 1 的执行 scratch 目录。
+   * 返回值里的 workId 只用于锁记录与排障。
+   */
+  private resolveWorkingDirectory(
+    params: ExecutionStartParams,
+    executionId: string,
+  ): { workingDirectory: string; workId: string | null; allowedRoots: string[] } {
+    if (!params.workId) {
+      return {
+        workingDirectory: executionScratchDir(this.scratchRoot, executionId),
+        workId: null,
+        allowedRoots: [],
+      }
+    }
+    const work = this.works.get(params.workId)
+    if (!work) throw new RpcMethodError('INVALID_PARAMS', `work not found: ${params.workId}`)
+    if (!WORK_ACCEPTS_EXECUTIONS.has(work.status)) {
+      throw new RpcMethodError(
+        'INVALID_PARAMS',
+        `work ${work.id} is ${work.status}, cannot start executions`,
+      )
+    }
+    if (params.worktreeId) {
+      const worktree = this.worktrees.get(params.worktreeId)
+      if (!worktree || worktree.workId !== work.id) {
+        throw new RpcMethodError(
+          'INVALID_PARAMS',
+          `worktree ${params.worktreeId} does not belong to work ${work.id}`,
+        )
+      }
+      if (worktree.status !== 'active') {
+        throw new RpcMethodError('INVALID_PARAMS', `worktree ${worktree.id} is ${worktree.status}`)
+      }
+      return {
+        workingDirectory: path.resolve(worktree.worktreePath),
+        workId: work.id,
+        // worktree 在数据目录下，同时声明 Work 根，便于未来在 rootPath 内再派生子目录。
+        allowedRoots: [this.worktrees.worktreeRoot, path.resolve(work.rootPath)],
+      }
+    }
+    return {
+      workingDirectory: path.resolve(work.rootPath),
+      workId: work.id,
+      allowedRoots: [path.resolve(work.rootPath)],
+    }
   }
 
   private resolveProvider(agent: AgentProfile): RuntimeProviderRecord {

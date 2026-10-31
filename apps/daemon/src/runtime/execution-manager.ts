@@ -96,7 +96,10 @@ export class ExecutionManager {
         `daemon has no runtime for provider ${params.providerId}`,
       )
     }
-    const workingDirectory = this.resolveWorkingDirectory(params.workingDirectory)
+    const workingDirectory = this.resolveWorkingDirectory(
+      params.workingDirectory,
+      params.allowedRoots ?? [],
+    )
 
     const record: ExecutionRecord = {
       executionId: params.executionId,
@@ -269,19 +272,35 @@ export class ExecutionManager {
     return record
   }
 
-  private resolveWorkingDirectory(input: string): string {
+  /**
+   * 工作目录边界校验：实际目录必须落在 scratch 根或 Core 声明的 allowedRoots 之内。
+   * 符号链接逃逸同样要挡（realpath 后再比一次）。
+   */
+  private resolveWorkingDirectory(input: string, allowedRoots: string[]): string {
     const dir = path.resolve(input)
-    if (dir !== this.scratchRoot && !dir.startsWith(`${this.scratchRoot}${path.sep}`)) {
-      throw new RpcMethodError('INVALID_PARAMS', `working directory escapes scratch root: ${input}`)
-    }
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-    // 符号链接逃逸检查：真实路径也必须位于 scratch 根内。
-    const realRoot = fs.realpathSync(this.scratchRoot)
-    const realDir = fs.realpathSync(dir)
-    if (realDir !== realRoot && !realDir.startsWith(`${realRoot}${path.sep}`)) {
+    const roots = [this.scratchRoot, ...allowedRoots.map((root) => path.resolve(root))]
+    const within = (candidate: string, root: string): boolean =>
+      candidate === root || candidate.startsWith(`${root}${path.sep}`)
+
+    if (!roots.some((root) => within(dir, root))) {
       throw new RpcMethodError(
         'INVALID_PARAMS',
-        `working directory escapes scratch root via symlink: ${input}`,
+        `working directory is outside the allowed roots: ${input}`,
+      )
+    }
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const realDir = fs.realpathSync(dir)
+    const realRoots = roots.map((root) => {
+      try {
+        return fs.realpathSync(root)
+      } catch {
+        return root
+      }
+    })
+    if (!realRoots.some((root) => within(realDir, root))) {
+      throw new RpcMethodError(
+        'INVALID_PARAMS',
+        `working directory escapes allowed roots via symlink: ${input}`,
       )
     }
     return realDir

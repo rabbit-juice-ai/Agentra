@@ -34,6 +34,10 @@ const api: AgentraApi = {
   resumeWork: (params) => ipcRenderer.invoke('agentra:work-resume', params),
   completeWork: (params) => ipcRenderer.invoke('agentra:work-complete', params),
 
+  listWorktrees: (params) => ipcRenderer.invoke('agentra:worktree-list', params),
+  createWorktree: (params) => ipcRenderer.invoke('agentra:worktree-create', params),
+  removeWorktree: (params) => ipcRenderer.invoke('agentra:worktree-remove', params),
+
   listAssignments: (params) => ipcRenderer.invoke('agentra:assignment-list', params),
   createAssignment: (params) => ipcRenderer.invoke('agentra:assignment-create', params),
   pauseAssignment: (params) => ipcRenderer.invoke('agentra:assignment-pause', params),

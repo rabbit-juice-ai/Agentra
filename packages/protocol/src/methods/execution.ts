@@ -14,6 +14,10 @@ export const ExecutionStartParams = z
   .object({
     agentId: z.string().min(1),
     prompt: z.string().min(1).max(100_000),
+    /** 阶段 2：绑定到 Work 时，执行的工作目录取该 Work 的 worktree 或 rootPath。 */
+    workId: z.string().min(1).optional(),
+    /** 指定用该 Work 下的哪个 Worktree 作为工作目录（缺省用 work.rootPath）。 */
+    worktreeId: z.string().min(1).optional(),
   })
   .strict()
 export type ExecutionStartParams = z.infer<typeof ExecutionStartParams>

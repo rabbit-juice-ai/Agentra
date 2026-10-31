@@ -52,8 +52,14 @@ import {
   WORK_LIST_METHOD,
   WORK_PAUSE_METHOD,
   WORK_RESUME_METHOD,
+  WORKTREE_CREATE_METHOD,
+  WORKTREE_LIST_METHOD,
+  WORKTREE_REMOVE_METHOD,
   WorkListResult,
   WorkResult,
+  WorktreeCreateResult,
+  WorktreeListResult,
+  WorktreeRemoveResult,
 } from '@agentra/protocol'
 import { agentraPaths } from '@agentra/shared'
 import { app, BrowserWindow, ipcMain } from 'electron'
@@ -175,6 +181,16 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:work-complete', (_event, params: unknown) =>
     callCore(WORK_COMPLETE_METHOD, params, WorkResult),
+  )
+
+  ipcMain.handle('agentra:worktree-list', (_event, params: unknown) =>
+    callCore(WORKTREE_LIST_METHOD, params, WorktreeListResult),
+  )
+  ipcMain.handle('agentra:worktree-create', (_event, params: unknown) =>
+    callCore(WORKTREE_CREATE_METHOD, params, WorktreeCreateResult),
+  )
+  ipcMain.handle('agentra:worktree-remove', (_event, params: unknown) =>
+    callCore(WORKTREE_REMOVE_METHOD, params, WorktreeRemoveResult),
   )
 
   ipcMain.handle('agentra:assignment-list', (_event, params: unknown) =>

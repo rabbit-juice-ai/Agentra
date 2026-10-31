@@ -14,10 +14,13 @@ import { ExecutionLogRepository } from '../db/repositories/execution-log-reposit
 import { ExecutionRepository } from '../db/repositories/execution-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
+import { WorkRepository } from '../db/repositories/work-repository'
 import { AgentService } from '../services/agent-service'
 import { CoreEventHub } from '../services/event-hub'
 import { ExecutionService } from '../services/execution-service'
 import { ProviderRegistry } from '../services/provider-registry'
+import { WorkdirLockService } from '../services/workdir-lock-service'
+import { WorktreeService } from '../services/worktree-service'
 
 /**
  * Core ↔ Daemon 集成：真实 daemon 进程 + 真实 NDJSON/UDS + fake CLI 夹具。
@@ -70,6 +73,9 @@ describe('core ↔ daemon runtime integration', () => {
       db,
       runtime,
       registry,
+      works: new WorkRepository(db),
+      worktrees: new WorktreeService(db, new WorkRepository(db), path.join(home, 'worktrees')),
+      locks: new WorkdirLockService(db),
       agents: agentRepository,
       sessions: new SessionRepository(db),
       executions: new ExecutionRepository(db),

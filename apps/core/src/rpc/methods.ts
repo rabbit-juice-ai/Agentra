@@ -84,6 +84,9 @@ import {
   WORK_PAUSE_METHOD,
   WORK_RESUME_METHOD,
   WORK_TERMINATE_METHOD,
+  WORKTREE_CREATE_METHOD,
+  WORKTREE_LIST_METHOD,
+  WORKTREE_REMOVE_METHOD,
   WorkCreateParams,
   type Work as WorkDto,
   WorkGetParams,
@@ -92,6 +95,12 @@ import {
   WorkListParams,
   WorkListResult,
   WorkResult,
+  WorktreeCreateParams,
+  WorktreeCreateResult,
+  WorktreeListParams,
+  WorktreeListResult,
+  WorktreeRemoveParams,
+  WorktreeRemoveResult,
 } from '@agentra/protocol'
 import type { AgentService } from '../services/agent-service'
 import type { AssignmentService } from '../services/assignment-service'
@@ -101,6 +110,7 @@ import { coreHealthMethods } from '../services/health'
 import type { ProviderRegistry } from '../services/provider-registry'
 import type { TeamService } from '../services/team-service'
 import type { WorkService } from '../services/work-service'
+import type { WorktreeService } from '../services/worktree-service'
 import type { MethodTable } from './dispatcher'
 
 export type CoreMethodServices = {
@@ -111,6 +121,7 @@ export type CoreMethodServices = {
   teams: TeamService
   works: WorkService
   assignments: AssignmentService
+  worktrees: WorktreeService
 }
 
 /**
@@ -267,6 +278,25 @@ export function coreMethods(
     })),
 
     // ---- 阶段 2：Assignment ----
+    // ---- 阶段 2：Worktree ----
+    [WORKTREE_LIST_METHOD]: defineMethod(WorktreeListParams, WorktreeListResult, (params) => ({
+      worktrees: services.worktrees.list(params.workId),
+    })),
+    [WORKTREE_CREATE_METHOD]: defineMethod(
+      WorktreeCreateParams,
+      WorktreeCreateResult,
+      (params) => ({
+        worktree: services.worktrees.create(params),
+      }),
+    ),
+    [WORKTREE_REMOVE_METHOD]: defineMethod(
+      WorktreeRemoveParams,
+      WorktreeRemoveResult,
+      (params) => ({
+        worktree: services.worktrees.remove(params.id, params.confirm),
+      }),
+    ),
+
     [ASSIGNMENT_LIST_METHOD]: defineMethod(
       AssignmentListParams,
       AssignmentListResult,

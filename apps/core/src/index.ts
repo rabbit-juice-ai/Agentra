@@ -23,6 +23,8 @@ import { ExecutionService } from './services/execution-service'
 import { ProviderRegistry } from './services/provider-registry'
 import { TeamService } from './services/team-service'
 import { WorkService } from './services/work-service'
+import { WorkdirLockService } from './services/workdir-lock-service'
+import { WorktreeService } from './services/worktree-service'
 
 const VERSION = '0.1.0'
 
@@ -62,6 +64,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   await registry.refreshQuietly()
 
   const agentService = new AgentService(db, agentRepository, providerRepository)
+  const locks = new WorkdirLockService(db)
+  // Core 启动即回收 holder_pid 已死的陈旧锁（上一次 Core 被 kill -9 之后留下的）。
+  const reclaimed = locks.purgeStale()
+  if (reclaimed > 0) logger.info('reclaimed stale workdir locks', { count: reclaimed })
+
+  const worktrees = new WorktreeService(db, workRepository, paths.worktrees)
   const teamService = new TeamService(db, teamRepository, agentRepository)
   const workService = new WorkService(db, workRepository, teamRepository, auditRepository)
   const assignmentService = new AssignmentService(
@@ -76,6 +84,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     db,
     runtime,
     registry,
+    works: workRepository,
+    worktrees,
+    locks,
     agents: agentRepository,
     sessions: sessionRepository,
     executions: executionRepository,
@@ -118,6 +129,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       teams: teamService,
       works: workService,
       assignments: assignmentService,
+      worktrees,
     }),
   )
   logger.info('core started', {

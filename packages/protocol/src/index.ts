@@ -26,6 +26,8 @@ export {
   ToolPermissions,
   Work,
   WorkStatus,
+  Worktree,
+  WorktreeStatus,
 } from './dto'
 export {
   RpcError,
@@ -182,4 +184,15 @@ export {
   WorkListResult,
   WorkResult,
 } from './methods/work'
+export {
+  WORKTREE_CREATE_METHOD,
+  WORKTREE_LIST_METHOD,
+  WORKTREE_REMOVE_METHOD,
+  WorktreeCreateParams,
+  WorktreeCreateResult,
+  WorktreeListParams,
+  WorktreeListResult,
+  WorktreeRemoveParams,
+  WorktreeRemoveResult,
+} from './methods/worktree'
 export { PROTOCOL_VERSION, ProtocolVersionSchema } from './version'

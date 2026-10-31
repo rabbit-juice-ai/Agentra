@@ -159,6 +159,7 @@ export function App() {
             teams={store.teams}
             agents={store.agents}
             assignmentsByWork={store.assignmentsByWork}
+            worktreesByWork={store.worktreesByWork}
             busy={store.busy}
             onCreate={store.actions.createWork}
             onLinkTeam={store.actions.linkWorkTeam}
@@ -166,6 +167,9 @@ export function App() {
             onCreateAssignment={store.actions.createAssignment}
             onAssignmentAction={store.actions.assignmentAction}
             onRefreshAssignments={store.actions.refreshAssignments}
+            onRefreshWorktrees={store.actions.refreshWorktrees}
+            onCreateWorktree={store.actions.createWorktree}
+            onRemoveWorktree={store.actions.removeWorktree}
           />
         ) : (
           <AgentsPage
