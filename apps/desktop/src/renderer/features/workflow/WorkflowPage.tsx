@@ -88,8 +88,13 @@ export default function WorkflowPage() {
   }, [])
 
   const refreshVersions = useCallback(async (templateId: string) => {
-    const list = await workflowApi.listVersions(templateId)
+    const { versions: list, skipped } = await workflowApi.listVersions(templateId)
     setVersions(list)
+    if (skipped.length > 0) {
+      setBanner(
+        `已跳过 ${skipped.length} 条不可读版本：${skipped.map((item) => item.id).join('、')}`,
+      )
+    }
     return list
   }, [])
 

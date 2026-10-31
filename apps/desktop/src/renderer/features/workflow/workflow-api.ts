@@ -1,4 +1,9 @@
-import type { WorkflowTemplate, WorkflowVersion, WorkflowViolation } from '@agentra/protocol'
+import type {
+  WorkflowTemplate,
+  WorkflowVersion,
+  WorkflowVersionSkip,
+  WorkflowViolation,
+} from '@agentra/protocol'
 import { unwrap } from '../../services/api'
 import type { WorkflowDefinition } from './types'
 
@@ -13,8 +18,10 @@ export const workflowApi = {
   archiveTemplate: async (id: string): Promise<WorkflowTemplate> =>
     (await unwrap(window.agentra.archiveWorkflowTemplate({ id }))).template,
 
-  listVersions: async (templateId: string): Promise<WorkflowVersion[]> =>
-    (await unwrap(window.agentra.listWorkflowVersions({ templateId }))).versions,
+  listVersions: async (
+    templateId: string,
+  ): Promise<{ versions: WorkflowVersion[]; skipped: WorkflowVersionSkip[] }> =>
+    unwrap(window.agentra.listWorkflowVersions({ templateId })),
 
   createDraft: async (
     templateId: string,

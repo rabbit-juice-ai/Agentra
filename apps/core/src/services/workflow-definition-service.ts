@@ -8,6 +8,7 @@ import {
 import type { Database } from '../db/database'
 import { transaction } from '../db/database'
 import type {
+  SkippedWorkflowVersion,
   UpdateWorkflowTemplateInput,
   WorkflowRepository,
   WorkflowTemplateRecord,
@@ -220,7 +221,10 @@ export class WorkflowDefinitionService {
     return record
   }
 
-  listVersions(templateId: string): WorkflowVersionRecord[] {
+  listVersions(templateId: string): {
+    versions: WorkflowVersionRecord[]
+    skipped: SkippedWorkflowVersion[]
+  } {
     return this.workflows.listVersions(templateId)
   }
 

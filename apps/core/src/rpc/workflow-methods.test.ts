@@ -324,6 +324,38 @@ describe('阶段 3 工作流定义 RPC', () => {
       expect(detail.violations[0]?.violation).toBe('cas_failed')
     }
   })
+
+  it('version.list degrades unreadable rows instead of returning INTERNAL (F-3)', async () => {
+    const { db, dispatch } = harness()
+    const template = await dispatch(WORKFLOW_TEMPLATE_CREATE_METHOD, { name: 't' })
+    if (!template.ok) return
+    const templateId = (template.result as { template: { id: string } }).template.id
+
+    const draft = await dispatch(WORKFLOW_VERSION_CREATE_DRAFT_METHOD, {
+      templateId,
+      definition: definition(),
+    })
+    expect(draft.ok).toBe(true)
+    if (!draft.ok) return
+
+    db.prepare(
+      `INSERT INTO workflow_versions (
+         id, template_id, version, schema_version, definition_json, checksum, status,
+         created_at, published_at
+       ) VALUES ('wfv-bad', ?, 2, 0, '{"schemaVersion":1,"nodes":[],"edges":[]}', 'x', 'draft', 't0', NULL)`,
+    ).run(templateId)
+
+    const listed = await dispatch(WORKFLOW_VERSION_LIST_METHOD, { templateId })
+    expect(listed.ok).toBe(true)
+    if (!listed.ok) return
+    const result = listed.result as {
+      versions: { id: string }[]
+      skipped: { id: string; reason: string }[]
+    }
+    expect(result.versions).toHaveLength(1)
+    expect(result.skipped).toHaveLength(1)
+    expect(result.skipped[0]?.id).toBe('wfv-bad')
+  })
 })
 
 describe('阶段 3 隔离断言', () => {

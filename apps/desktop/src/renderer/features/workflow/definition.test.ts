@@ -89,12 +89,14 @@ describe('画布 ↔ 定义 双向转换', () => {
     expect(rebuilt.edges[2]).toEqual(definition.edges[2])
   })
 
-  it('rounds float positions (drag) without touching other fields', () => {
+  it('preserves fractional positions exactly (no silent rounding)', () => {
     const definition = fullDefinition()
     const flowNodes = toFlowNodes(definition)
     item(flowNodes, 0).position = { x: 10.4, y: 20.6 }
+    item(flowNodes, 1).position = { x: -3.25, y: 71.125 }
     const rebuilt = fromFlow(flowNodes, toFlowEdges(definition), definition.settings)
-    expect(rebuilt.nodes[0]?.position).toEqual({ x: 10, y: 21 })
+    expect(rebuilt.nodes[0]?.position).toEqual({ x: 10.4, y: 20.6 })
+    expect(rebuilt.nodes[1]?.position).toEqual({ x: -3.25, y: 71.125 })
     expect(rebuilt.nodes[0]?.config).toEqual({})
   })
 })

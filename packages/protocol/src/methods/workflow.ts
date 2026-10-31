@@ -96,7 +96,18 @@ export type WorkflowTemplateIdParams = z.infer<typeof WorkflowTemplateIdParams>
 export const WorkflowVersionListParams = z.object({ templateId: z.string().min(1) }).strict()
 export type WorkflowVersionListParams = z.infer<typeof WorkflowVersionListParams>
 
-export const WorkflowVersionListResult = z.object({ versions: z.array(WorkflowVersion) })
+/** 列表中被跳过的不可读行：可诊断，但不阻塞其余版本。 */
+export const WorkflowVersionSkip = z.object({
+  id: z.string().min(1),
+  version: z.number().int().nullable(),
+  reason: z.string().min(1),
+})
+export type WorkflowVersionSkip = z.infer<typeof WorkflowVersionSkip>
+
+export const WorkflowVersionListResult = z.object({
+  versions: z.array(WorkflowVersion),
+  skipped: z.array(WorkflowVersionSkip).default([]),
+})
 export type WorkflowVersionListResult = z.infer<typeof WorkflowVersionListResult>
 
 export const WorkflowVersionGetParams = z.object({ versionId: z.string().min(1) }).strict()

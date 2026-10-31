@@ -78,7 +78,7 @@ export function createNode(
     ),
     type,
     label: '',
-    position: { x: Math.round(position.x), y: Math.round(position.y) },
+    position: { x: position.x, y: position.y },
     config: defaultConfig(type, existing),
   }
 }
@@ -131,6 +131,7 @@ export function toFlowEdges(definition: WorkflowDefinition): WorkflowFlowEdge[] 
 /**
  * 画布 → 定义。节点/边的其它字段原样保留（包括服务端填充的默认值），
  * 只覆盖 position 与 source/target，保证「保存 → 重开」逐字段一致。
+ * position 不做取整：坐标是用户定义的一部分，静默改写会造成「导入后变成另一个定义」。
  */
 export function fromFlow(
   flowNodes: WorkflowFlowNode[],
@@ -142,7 +143,7 @@ export function fromFlow(
     schemaVersion,
     nodes: flowNodes.map((node) => ({
       ...node.data.node,
-      position: { x: Math.round(node.position.x), y: Math.round(node.position.y) },
+      position: { x: node.position.x, y: node.position.y },
     })),
     edges: flowEdges.map((edge) => ({
       ...edge.data?.edge,

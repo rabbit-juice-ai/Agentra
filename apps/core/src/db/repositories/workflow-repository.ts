@@ -26,6 +26,13 @@ export type WorkflowVersionRecord = {
   publishedAt: string | null
 }
 
+/** 列表里被跳过的不可读行：只影响这一条，不拖垮整个列表。 */
+export type SkippedWorkflowVersion = {
+  id: string
+  version: number | null
+  reason: string
+}
+
 export type CreateWorkflowTemplateInput = {
   id: string
   name: string
@@ -85,6 +92,15 @@ function toTemplate(row: TemplateRow): WorkflowTemplateRecord {
 function toVersion(row: VersionRow): WorkflowVersionRecord {
   if (!(WORKFLOW_VERSION_STATUSES as readonly string[]).includes(row.status)) {
     throw new Error(`unexpected workflow_versions.status: ${row.status}`)
+  }
+  // 旧版本可读的前提是「版本号与格式版本可判定」；不可判定的行由 listVersions 跳过。
+  if (!Number.isInteger(row.version) || row.version < 1) {
+    throw new Error(`workflow_versions.version(${row.id}): unsupported value ${row.version}`)
+  }
+  if (!Number.isInteger(row.schema_version) || row.schema_version < 1) {
+    throw new Error(
+      `workflow_versions.schema_version(${row.id}): unsupported value ${row.schema_version}`,
+    )
   }
   let definition: unknown
   try {
@@ -222,7 +238,14 @@ export class WorkflowRepository {
     return row ? toVersion(row) : null
   }
 
-  listVersions(templateId: string): WorkflowVersionRecord[] {
+  /**
+   * 列表按行降级：单条不可读记录（坏 JSON / 未知状态 / 不可判定的 schema_version）
+   * 只进 skipped，不影响其余行——一条脏数据不能让整个列表返回 INTERNAL。
+   */
+  listVersions(templateId: string): {
+    versions: WorkflowVersionRecord[]
+    skipped: SkippedWorkflowVersion[]
+  } {
     const rows = this.db
       .prepare(
         `SELECT id, template_id, version, schema_version, definition_json, checksum,
@@ -231,7 +254,21 @@ export class WorkflowRepository {
          ORDER BY version DESC`,
       )
       .all(templateId) as VersionRow[]
-    return rows.map(toVersion)
+
+    const versions: WorkflowVersionRecord[] = []
+    const skipped: SkippedWorkflowVersion[] = []
+    for (const row of rows) {
+      try {
+        versions.push(toVersion(row))
+      } catch (error) {
+        skipped.push({
+          id: row.id,
+          version: Number.isInteger(row.version) ? row.version : null,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return { versions, skipped }
   }
 
   /** 发布 CAS：只有 draft 能迁移到 published；返回是否命中。 */

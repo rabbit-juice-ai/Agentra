@@ -163,6 +163,20 @@ describe('图规则 1–12', () => {
     expect(codes(def)).toContain('start_invalid')
   })
 
+  it('rule 1: multiple starts carry nodeKey so the UI can locate them (F-2)', () => {
+    const def = baseDefinition()
+    ;(def.nodes as Json[]).push({
+      key: 'start_2',
+      type: 'start',
+      position: { x: 5, y: 5 },
+      config: {},
+    })
+    const startViolations = violationsOf(def).filter((item) => item.violation === 'start_invalid')
+    expect(startViolations.length).toBeGreaterThan(0)
+    expect(startViolations[0]?.nodeKey).toBe('start')
+    expect(startViolations[0]?.message).toContain('start_2')
+  })
+
   it('rule 2: requires at least one end', () => {
     const def = baseDefinition()
     ;(node(def, 'end') as Json).type = 'agent_task'

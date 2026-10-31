@@ -223,9 +223,15 @@ function checkStartAndEnd(
 ): void {
   const starts = [...nodes.values()].filter((node) => node.type === 'start')
   if (starts.length !== 1) {
+    // 数量类违规同样要能定位：多于一个 start 时，涉及的节点是确定的。
+    const keys = starts.map((node) => node.key)
     violations.push({
       violation: 'start_invalid',
-      message: `expected exactly one start node, found ${starts.length}`,
+      nodeKey: keys[0],
+      message:
+        keys.length > 0
+          ? `expected exactly one start node, found ${starts.length}: ${keys.join(', ')}`
+          : `expected exactly one start node, found ${starts.length}`,
     })
   }
   for (const start of starts) {

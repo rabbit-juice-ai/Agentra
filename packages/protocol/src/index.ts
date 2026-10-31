@@ -210,6 +210,7 @@ export {
   WorkflowVersionListResult,
   WorkflowVersionPublishParams,
   WorkflowVersionResult,
+  WorkflowVersionSkip,
   WorkflowVersionStatus,
   WorkflowVersionValidateParams,
   WorkflowVersionValidateResult,

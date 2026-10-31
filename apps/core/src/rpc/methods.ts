@@ -419,7 +419,7 @@ export function coreMethods(
     [WORKFLOW_VERSION_LIST_METHOD]: defineMethod(
       WorkflowVersionListParams,
       WorkflowVersionListResult,
-      (params) => ({ versions: services.workflows.listVersions(params.templateId) }),
+      (params) => services.workflows.listVersions(params.templateId),
     ),
     [WORKFLOW_VERSION_GET_METHOD]: defineMethod(
       WorkflowVersionGetParams,

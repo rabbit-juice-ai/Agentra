@@ -146,7 +146,42 @@ describe('WorkflowDefinitionService · 模板与 draft', () => {
       'VERSION_CONFLICT',
     )
     expect(error.violations[0]?.violation).toBe('version_conflict')
-    expect(repo.listVersions(template.id)).toHaveLength(0)
+    expect(repo.listVersions(template.id).versions).toHaveLength(0)
+  })
+
+  it('preserves fractional node positions exactly through save and read-back (F-1)', () => {
+    const { service } = setup()
+    const template = service.createTemplate({ name: 't' })
+    const def = definition()
+    const nodes = def.nodes as Record<string, unknown>[]
+    const task = nodes[1]
+    if (!task) throw new Error('missing task node')
+    task.position = { x: 10.4, y: -3.25 }
+
+    const draft = service.createDraft(template.id, def)
+    const loaded = service.getVersion(draft.id)
+    const loadedNodes = (loaded.definition as { nodes: { position: { x: number; y: number } }[] })
+      .nodes
+    expect(loadedNodes[1]?.position).toEqual({ x: 10.4, y: -3.25 })
+  })
+
+  it('skips unreadable version rows instead of failing the whole list (F-3)', () => {
+    const { db, repo, service } = setup()
+    const template = service.createTemplate({ name: 't' })
+    const draft = service.createDraft(template.id, definition())
+
+    db.prepare(
+      `INSERT INTO workflow_versions (
+         id, template_id, version, schema_version, definition_json, checksum, status,
+         created_at, published_at
+       ) VALUES ('wfv-bad', ?, 2, 0, '{"schemaVersion":1,"nodes":[],"edges":[]}', 'x', 'draft', 't0', NULL)`,
+    ).run(template.id)
+
+    const result = repo.listVersions(template.id)
+    expect(result.versions.map((version) => version.id)).toEqual([draft.id])
+    expect(result.skipped).toHaveLength(1)
+    expect(result.skipped[0]?.id).toBe('wfv-bad')
+    expect(result.skipped[0]?.reason).toContain('schema_version')
   })
 
   it('enforces unique(template_id, version) at the database level', () => {
