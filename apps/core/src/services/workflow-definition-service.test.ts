@@ -290,16 +290,21 @@ describe('WorkflowDefinitionService · 发布', () => {
 })
 
 describe('阶段 3 边界', () => {
-  it('does not create workflow execution tables', () => {
-    const { db } = setup()
-    const tables = (
-      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as {
-        name: string
-      }[]
-    ).map((row) => row.name)
-    expect(tables).not.toContain('workflow_runs')
-    expect(tables).not.toContain('branch_runs')
-    expect(tables).not.toContain('node_runs')
-    expect(tables).not.toContain('approvals')
+  it('definition operations never create workflow run rows (阶段 4 v9 只建表)', () => {
+    const { db, service } = setup()
+    const template = service.createTemplate({ name: 't' })
+    const draft = service.createDraft(template.id, definition())
+    service.publish(draft.id)
+    service.deprecate(draft.id)
+
+    // 阶段 4 的 v9 会建这三张表；但定义层操作不得写入任何运行记录。
+    for (const table of ['workflow_runs', 'branch_runs', 'node_runs']) {
+      const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }
+      expect(row.count).toBe(0)
+    }
+    const approvals = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'approvals'")
+      .get()
+    expect(approvals).toBeUndefined()
   })
 })

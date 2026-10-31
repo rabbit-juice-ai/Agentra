@@ -1,0 +1,228 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { checkWorkflowConsistency } from '../workflow/consistency'
+import { openDatabase, transaction } from './database'
+import { currentUserVersion, MIGRATIONS, migrate } from './migrations'
+
+const NOW = '2026-11-01T00:00:00.000Z'
+const dirs: string[] = []
+
+function tempDb(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentra-wf-runtime-'))
+  dirs.push(dir)
+  return path.join(dir, 'agentra.db')
+}
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+function openMigrated(): ReturnType<typeof openDatabase> {
+  const db = openDatabase(tempDb())
+  migrate(db)
+  return db
+}
+
+function insertTemplateAndVersion(db: ReturnType<typeof openDatabase>): string {
+  db.prepare(
+    `INSERT INTO workflow_templates (id, name, description, category, created_at, updated_at, archived_at)
+     VALUES ('wft-1', 'T', '', '', ?, ?, NULL)`,
+  ).run(NOW, NOW)
+  db.prepare(
+    `INSERT INTO workflow_versions (
+       id, template_id, version, schema_version, definition_json, checksum, status, created_at, published_at
+     ) VALUES ('wfv-1', 'wft-1', 1, 1, '{"schemaVersion":1,"nodes":[],"edges":[]}', 'sum', 'published', ?, ?)`,
+  ).run(NOW, NOW)
+  return 'wfv-1'
+}
+
+function insertWork(db: ReturnType<typeof openDatabase>): void {
+  db.prepare(
+    `INSERT INTO works (id, name, description, objective, status, priority, root_path,
+       repository_path, settings_json, created_at, updated_at, completed_at)
+     VALUES ('work-1', 'W', '', '', 'active', 'normal', '/tmp/w', NULL, '{}', ?, ?, NULL)`,
+  ).run(NOW, NOW)
+}
+
+describe('migration v9 · workflow runtime tables', () => {
+  it('creates workflow_runs / branch_runs / node_runs with indexes', () => {
+    const db = openMigrated()
+    try {
+      expect(currentUserVersion(db)).toBe(9)
+      const tables = (
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+          name: string
+        }[]
+      ).map((row) => row.name)
+      expect(tables).toEqual(expect.arrayContaining(['workflow_runs', 'branch_runs', 'node_runs']))
+
+      const indexes = (
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as {
+          name: string
+        }[]
+      ).map((row) => row.name)
+      expect(indexes).toEqual(
+        expect.arrayContaining([
+          'idx_workflow_runs_work_status',
+          'idx_branch_runs_run_status',
+          'idx_node_runs_run_status',
+          'idx_node_runs_run_key_attempt',
+        ]),
+      )
+
+      const nodeColumns = (
+        db.prepare('PRAGMA table_info(node_runs)').all() as { name: string }[]
+      ).map((column) => column.name)
+      expect(nodeColumns).toEqual(
+        expect.arrayContaining([
+          'workflow_run_id',
+          'workflow_node_key',
+          'branch_run_id',
+          'status',
+          'attempt',
+          'error_json',
+        ]),
+      )
+    } finally {
+      db.close()
+    }
+  })
+
+  it('enforces unique(workflow_run_id, branch_key)', () => {
+    const db = openMigrated()
+    try {
+      insertWork(db)
+      const versionId = insertTemplateAndVersion(db)
+      db.prepare(
+        `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, runtime_state_json, created_at, updated_at)
+         VALUES ('run-1', 'work-1', ?, 'pending', '{}', ?, ?)`,
+      ).run(versionId, NOW, NOW)
+      const insert = db.prepare(
+        `INSERT INTO branch_runs (id, workflow_run_id, branch_key, status, created_at, updated_at)
+         VALUES (?, 'run-1', 'ui', 'active', ?, ?)`,
+      )
+      insert.run('br-1', NOW, NOW)
+      expect(() => insert.run('br-2', NOW, NOW)).toThrow(/UNIQUE constraint failed/)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('rejects unknown statuses and orphan foreign keys', () => {
+    const db = openMigrated()
+    try {
+      insertWork(db)
+      const versionId = insertTemplateAndVersion(db)
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, runtime_state_json, created_at, updated_at)
+             VALUES ('run-bad', 'work-1', ?, 'nope', '{}', ?, ?)`,
+          )
+          .run(versionId, NOW, NOW),
+      ).toThrow(/CHECK constraint failed/)
+
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO branch_runs (id, workflow_run_id, branch_key, status, created_at, updated_at)
+             VALUES ('br-orphan', 'missing-run', 'ui', 'active', ?, ?)`,
+          )
+          .run(NOW, NOW),
+      ).toThrow(/FOREIGN KEY constraint failed/)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('is repeatable: running the full migration list twice is a no-op', () => {
+    const db = openMigrated()
+    try {
+      const second = migrate(db)
+      expect(second).toEqual({ from: 9, to: 9, applied: [] })
+
+      // v9 自身的 SQL 也必须幂等（CREATE … IF NOT EXISTS），重放一次再回滚
+      const v9 = MIGRATIONS.find((migration) => migration.version === 9)
+      if (!v9) throw new Error('missing migration v9')
+      expect(() => {
+        db.exec('BEGIN IMMEDIATE')
+        v9.up(db)
+        db.exec('ROLLBACK')
+      }).not.toThrow()
+    } finally {
+      db.close()
+    }
+  })
+})
+
+describe('一致性断言只能在一致性边界调用', () => {
+  it('passes after a committed, complete write', () => {
+    const db = openMigrated()
+    try {
+      insertWork(db)
+      const versionId = insertTemplateAndVersion(db)
+      transaction(db, () => {
+        db.prepare(
+          `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, started_at, runtime_state_json, created_at, updated_at)
+           VALUES ('run-1', 'work-1', ?, 'running', ?, '{}', ?, ?)`,
+        ).run(versionId, NOW, NOW, NOW)
+      })
+      expect(checkWorkflowConsistency(db)).toEqual([])
+    } finally {
+      db.close()
+    }
+  })
+
+  it('sees half-written data inside a transaction — which is exactly why it must not be called there', () => {
+    const db = openMigrated()
+    try {
+      insertWork(db)
+      const versionId = insertTemplateAndVersion(db)
+      let sawIssueInsideTransaction = false
+
+      expect(() =>
+        transaction(db, () => {
+          // 事务中间态：run 已写成 running，但 started_at 还没写
+          db.prepare(
+            `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, started_at, runtime_state_json, created_at, updated_at)
+             VALUES ('run-mid', 'work-1', ?, 'running', NULL, '{}', ?, ?)`,
+          ).run(versionId, NOW, NOW)
+          const issues = checkWorkflowConsistency(db)
+          sawIssueInsideTransaction = issues.some(
+            (issue) => issue.code === 'run_running_without_started_at',
+          )
+          throw new Error('rollback on purpose')
+        }),
+      ).toThrow('rollback on purpose')
+
+      expect(sawIssueInsideTransaction).toBe(true)
+      // 回滚后库是干净的：边界之外调用会误报，所以调用点必须受约束
+      expect(checkWorkflowConsistency(db)).toEqual([])
+    } finally {
+      db.close()
+    }
+  })
+
+  it('reports a terminal run that still has a non-terminal node', () => {
+    const db = openMigrated()
+    try {
+      insertWork(db)
+      const versionId = insertTemplateAndVersion(db)
+      db.prepare(
+        `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, started_at, ended_at, runtime_state_json, created_at, updated_at)
+         VALUES ('run-done', 'work-1', ?, 'completed', ?, ?, '{}', ?, ?)`,
+      ).run(versionId, NOW, NOW, NOW, NOW)
+      db.prepare(
+        `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, status, attempt, input_snapshot_json, created_at, updated_at)
+         VALUES ('node-open', 'run-done', 'task_1', 'running', 1, '{}', ?, ?)`,
+      ).run(NOW, NOW)
+
+      const codes = checkWorkflowConsistency(db).map((issue) => issue.code)
+      expect(codes).toContain('terminal_run_with_open_node')
+    } finally {
+      db.close()
+    }
+  })
+})

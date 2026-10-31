@@ -387,6 +387,66 @@ const PHASE_2_WORKDIR_BOOT_UUID = `
 ALTER TABLE workdir_locks ADD COLUMN boot_uuid TEXT;
 `
 
+const PHASE_4_WORKFLOW_RUNTIME = `
+-- 阶段 4 S4-1：Workflow Runtime 三张表（DATABASE §2.6）。
+-- 状态枚举只含 MVP 子集（WORKFLOW §3：不含 waiting_input / waiting_checkpoint）。
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  workflow_version_id TEXT NOT NULL REFERENCES workflow_versions(id),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (
+    status IN ('pending', 'running', 'paused', 'waiting_human', 'completed', 'failed',
+               'cancelled', 'reconciliation_required')
+  ),
+  started_at TEXT,
+  ended_at TEXT,
+  runtime_state_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS branch_runs (
+  id TEXT PRIMARY KEY,
+  workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  branch_key TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (
+    status IN ('active', 'paused', 'blocked', 'completed', 'failed', 'cancelled')
+  ),
+  pause_reason TEXT,
+  paused_at TEXT,
+  resumed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (workflow_run_id, branch_key)
+);
+
+CREATE TABLE IF NOT EXISTS node_runs (
+  id TEXT PRIMARY KEY,
+  workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  workflow_node_key TEXT NOT NULL,
+  branch_run_id TEXT REFERENCES branch_runs(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'blocked' CHECK (
+    status IN ('blocked', 'ready', 'running', 'waiting_approval', 'paused', 'succeeded',
+               'changes_requested', 'rejected', 'failed', 'cancelled', 'skipped',
+               'reconciliation_required')
+  ),
+  attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
+  input_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  output_snapshot_json TEXT,
+  error_json TEXT,
+  started_at TEXT,
+  ended_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_work_status ON workflow_runs(work_id, status);
+CREATE INDEX IF NOT EXISTS idx_branch_runs_run_status ON branch_runs(workflow_run_id, status);
+CREATE INDEX IF NOT EXISTS idx_node_runs_run_status ON node_runs(workflow_run_id, status);
+CREATE INDEX IF NOT EXISTS idx_node_runs_run_key_attempt
+  ON node_runs(workflow_run_id, workflow_node_key, attempt);
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -443,6 +503,13 @@ export const MIGRATIONS: Migration[] = [
     name: 'phase2_workdir_lock_boot_uuid',
     up: (db) => {
       db.exec(PHASE_2_WORKDIR_BOOT_UUID)
+    },
+  },
+  {
+    version: 9,
+    name: 'phase4_workflow_runtime',
+    up: (db) => {
+      db.exec(PHASE_4_WORKFLOW_RUNTIME)
     },
   },
 ]

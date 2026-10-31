@@ -38,7 +38,7 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 0,
-        to: 8,
+        to: 9,
         applied: [
           'phase1_agent_runtime',
           'phase1_tool_permissions_and_provider_auth',
@@ -48,9 +48,10 @@ describe('migrate', () => {
           'phase3_workflow_templates_and_versions',
           'phase3_execution_queue_index',
           'phase2_workdir_lock_boot_uuid',
+          'phase4_workflow_runtime',
         ],
       })
-      expect(currentUserVersion(db)).toBe(8)
+      expect(currentUserVersion(db)).toBe(9)
     } finally {
       db.close()
     }
@@ -80,10 +81,10 @@ describe('migrate', () => {
     try {
       migrate(db)
       const second = migrate(db)
-      expect(second).toEqual({ from: 8, to: 8, applied: [] })
+      expect(second).toEqual({ from: 9, to: 9, applied: [] })
       const third = migrate(db, MIGRATIONS)
       expect(third.applied).toEqual([])
-      expect(currentUserVersion(db)).toBe(8)
+      expect(currentUserVersion(db)).toBe(9)
     } finally {
       db.close()
     }
@@ -97,7 +98,7 @@ describe('migrate', () => {
 
     const second = openDatabase(file)
     try {
-      expect(currentUserVersion(second)).toBe(8)
+      expect(currentUserVersion(second)).toBe(9)
       const journal = second.prepare('PRAGMA journal_mode').get() as { journal_mode: string }
       expect(journal.journal_mode).toBe('wal')
       const fk = second.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }
@@ -165,7 +166,7 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 2,
-        to: 8,
+        to: 9,
         applied: [
           'phase2_team_work_assignment',
           'phase2_worktree_and_workdir_locks',
@@ -173,6 +174,7 @@ describe('migrate', () => {
           'phase3_workflow_templates_and_versions',
           'phase3_execution_queue_index',
           'phase2_workdir_lock_boot_uuid',
+          'phase4_workflow_runtime',
         ],
       })
 
@@ -373,7 +375,10 @@ describe('migration v8 · workdir lock boot uuid', () => {
          VALUES ('/tmp/legacy-workdir', 'exe-legacy', NULL, 1, 1793441153, 't0')`,
       ).run()
 
-      const result = migrate(db)
+      const result = migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 8),
+      )
       expect(result).toEqual({
         from: 7,
         to: 8,
