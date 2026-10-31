@@ -68,9 +68,19 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
 
   const agentService = new AgentService(db, agentRepository, providerRepository)
   const locks = new WorkdirLockService(db)
-  // Core 启动即回收 holder_pid 已死的陈旧锁（上一次 Core 被 kill -9 之后留下的）。
-  const reclaimed = locks.purgeStale()
-  if (reclaimed > 0) logger.info('reclaimed stale workdir locks', { count: reclaimed })
+  // Core 启动即回收陈旧锁（上一次 Core 被 kill -9 之后留下的）。
+  // 身份不可读时只按 holder_pid 死亡回收，并在日志里标明 degraded。
+  const purged = locks.purgeStale()
+  logger.info('workdir locks purged', {
+    reclaimed: purged.reclaimed,
+    retained: purged.retained,
+    identityStatus: purged.identity.status,
+  })
+  if (purged.identity.status === 'unknown') {
+    logger.warn('workdir lock boot identity unavailable; identity-based reclaim disabled', {
+      reason: purged.identity.reason,
+    })
+  }
 
   const worktrees = new WorktreeService(
     db,

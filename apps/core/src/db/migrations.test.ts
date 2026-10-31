@@ -38,7 +38,7 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 0,
-        to: 7,
+        to: 8,
         applied: [
           'phase1_agent_runtime',
           'phase1_tool_permissions_and_provider_auth',
@@ -47,9 +47,10 @@ describe('migrate', () => {
           'phase2_workdir_lock_boot_id',
           'phase3_workflow_templates_and_versions',
           'phase3_execution_queue_index',
+          'phase2_workdir_lock_boot_uuid',
         ],
       })
-      expect(currentUserVersion(db)).toBe(7)
+      expect(currentUserVersion(db)).toBe(8)
     } finally {
       db.close()
     }
@@ -79,10 +80,10 @@ describe('migrate', () => {
     try {
       migrate(db)
       const second = migrate(db)
-      expect(second).toEqual({ from: 7, to: 7, applied: [] })
+      expect(second).toEqual({ from: 8, to: 8, applied: [] })
       const third = migrate(db, MIGRATIONS)
       expect(third.applied).toEqual([])
-      expect(currentUserVersion(db)).toBe(7)
+      expect(currentUserVersion(db)).toBe(8)
     } finally {
       db.close()
     }
@@ -96,7 +97,7 @@ describe('migrate', () => {
 
     const second = openDatabase(file)
     try {
-      expect(currentUserVersion(second)).toBe(7)
+      expect(currentUserVersion(second)).toBe(8)
       const journal = second.prepare('PRAGMA journal_mode').get() as { journal_mode: string }
       expect(journal.journal_mode).toBe('wal')
       const fk = second.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }
@@ -164,13 +165,14 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 2,
-        to: 7,
+        to: 8,
         applied: [
           'phase2_team_work_assignment',
           'phase2_worktree_and_workdir_locks',
           'phase2_workdir_lock_boot_id',
           'phase3_workflow_templates_and_versions',
           'phase3_execution_queue_index',
+          'phase2_workdir_lock_boot_uuid',
         ],
       })
 
@@ -351,6 +353,51 @@ describe('transaction', () => {
         }),
       ).toThrow('rollback me')
       expect(db.prepare('SELECT COUNT(*) AS c FROM txn_probe').get()).toEqual({ c: 1 })
+    } finally {
+      db.close()
+    }
+  })
+})
+
+describe('migration v8 · workdir lock boot uuid', () => {
+  it('adds boot_uuid and preserves existing lock rows', () => {
+    const db = openDatabase(tempDb())
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 7),
+      )
+      expect(currentUserVersion(db)).toBe(7)
+      db.prepare(
+        `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_id, acquired_at)
+         VALUES ('/tmp/legacy-workdir', 'exe-legacy', NULL, 1, 1793441153, 't0')`,
+      ).run()
+
+      const result = migrate(db)
+      expect(result).toEqual({
+        from: 7,
+        to: 8,
+        applied: ['phase2_workdir_lock_boot_uuid'],
+      })
+
+      const columns = (
+        db.prepare('PRAGMA table_info(workdir_locks)').all() as { name: string }[]
+      ).map((column) => column.name)
+      expect(columns).toContain('boot_uuid')
+
+      expect(
+        db
+          .prepare(
+            `SELECT workdir, execution_id, boot_id, boot_uuid
+             FROM workdir_locks WHERE workdir = '/tmp/legacy-workdir'`,
+          )
+          .get(),
+      ).toEqual({
+        workdir: '/tmp/legacy-workdir',
+        execution_id: 'exe-legacy',
+        boot_id: 1793441153,
+        boot_uuid: null,
+      })
     } finally {
       db.close()
     }

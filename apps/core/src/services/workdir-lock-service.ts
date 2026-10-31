@@ -1,55 +1,120 @@
-import os from 'node:os'
+import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { RpcMethodError } from '@agentra/protocol'
 import type { Database } from '../db/database'
 
-export type WorkdirLockRecord = {
-  workdir: string
-  executionId: string
-  workId: string | null
-  holderPid: number
-  bootId: number | null
-  acquiredAt: string
+/**
+ * 开机身份 = macOS Boot Session UUID（`kern.bootsessionuuid`）。
+ *
+ * 旧实现用「当前时刻减去系统运行时长」推算开机纪元并四舍五入到秒：两次独立采样之间
+ * 存在 0.7 秒级的抖动，对带噪声的连续估计值做单点阈值判断，同一开机内会算出两个不同
+ * 身份，进而把活锁当陈旧锁回收。新实现不再做任何推算。
+ * Boot Session UUID 是内核维护的离散标识，同一开机会话内逐字不变；重启后必变。
+ */
+export type BootIdentity = { status: 'known'; uuid: string } | { status: 'unknown'; reason: string }
+
+export type PurgeResult = {
+  reclaimed: number
+  retained: number
+  identity: BootIdentity
 }
 
-type LockRow = {
-  workdir: string
-  execution_id: string
-  work_id: string | null
-  holder_pid: number
-  boot_id: number | null
-  acquired_at: string
+export type SysctlReader = (args: string[]) => string
+
+const BOOT_UUID_PATTERN = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/
+
+function defaultSysctlReader(args: string[]): string {
+  // 绝对路径：GUI 启动的 Core 不依赖 PATH。
+  return execFileSync('/usr/sbin/sysctl', args, {
+    encoding: 'utf8',
+    timeout: 2000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+}
+
+function describeReadError(error: unknown): string {
+  if (typeof error === 'object' && error !== null) {
+    const record = error as { code?: unknown; status?: unknown; message?: unknown }
+    const parts: string[] = []
+    if (typeof record.code === 'string') parts.push(`code=${record.code}`)
+    if (typeof record.status === 'number') parts.push(`exit=${record.status}`)
+    if (typeof record.message === 'string') parts.push(record.message)
+    if (parts.length > 0) return parts.join(' ')
+  }
+  return String(error)
 }
 
 /**
- * 开机身份：当前时刻减去系统运行时长，取整到秒。
- * 跨重启一定不同（重启后 uptime 归零），用来识别「上一次开机的锁」——
- * 只靠 pid 判活会被 pid 复用骗过，导致目录永久锁死。
+ * 读取当前开机身份。读取失败返回 `unknown` —— 调用方必须 fail closed：
+ * 不得依据不确定的开机身份回收任何锁，也不得回退到旧的 uptime 推算。
  */
-export function currentBootId(nowMs: number = Date.now(), uptimeSeconds = os.uptime()): number {
-  return Math.round((nowMs - uptimeSeconds * 1000) / 1000)
-}
-
-function toRecord(row: LockRow): WorkdirLockRecord {
-  return {
-    workdir: row.workdir,
-    executionId: row.execution_id,
-    workId: row.work_id,
-    holderPid: row.holder_pid,
-    bootId: row.boot_id,
-    acquiredAt: row.acquired_at,
+export function currentBootUuid(read: SysctlReader = defaultSysctlReader): BootIdentity {
+  try {
+    const raw = read(['-n', 'kern.bootsessionuuid'])
+    const uuid = raw.trim().toUpperCase()
+    if (!BOOT_UUID_PATTERN.test(uuid)) {
+      return {
+        status: 'unknown',
+        reason: `unexpected kern.bootsessionuuid: ${JSON.stringify(raw.trim().slice(0, 80))}`,
+      }
+    }
+    return { status: 'known', uuid }
+  } catch (error) {
+    return { status: 'unknown', reason: describeReadError(error) }
   }
 }
 
-/** pid 是否存活；EPERM 表示存在但无权限发信号，按存活处理。 */
+/** pid 是否存活：只有 ESRCH 表示进程不存在；EPERM 与其他错误一律按存活处理（fail closed）。 */
 export function isProcessAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false
   try {
     process.kill(pid, 0)
     return true
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
   }
+}
+
+export type WorkdirLockRecord = {
+  workdir: string
+  executionId: string
+  workId: string | null
+  holderPid: number
+  bootUuid: string | null
+  acquiredAt: string
+}
+
+export type WorkdirLockRow = {
+  workdir: string
+  execution_id: string
+  work_id: string | null
+  holder_pid: number
+  boot_uuid: string | null
+  acquired_at: string
+}
+
+function toRecord(row: WorkdirLockRow): WorkdirLockRecord {
+  return {
+    workdir: row.workdir,
+    executionId: row.execution_id,
+    workId: row.work_id,
+    holderPid: row.holder_pid,
+    bootUuid: row.boot_uuid,
+    acquiredAt: row.acquired_at,
+  }
+}
+
+/**
+ * 陈旧判定（fail closed）：
+ * - 身份已知且行内 UUID 明确不同 → 真跨开机，回收（即使 pid 存活，可能是复用）；
+ * - 其余情况（身份未知 / 历史行 UUID 为 NULL / UUID 相同）→ 只依据「holder_pid 已死」
+ *   这一确定事实回收，绝不依据不确定的身份回收。
+ */
+function shouldReclaim(row: WorkdirLockRow, identity: BootIdentity): boolean {
+  if (identity.status === 'known' && row.boot_uuid !== null && row.boot_uuid !== identity.uuid) {
+    return true
+  }
+  return !isProcessAlive(row.holder_pid)
 }
 
 /**
@@ -61,23 +126,24 @@ export function isProcessAlive(pid: number): boolean {
  * 回收策略：持锁者是 Core 进程，行里记 holder_pid。
  * - 正常路径：执行终结时 release（按 execution_id 删）。
  * - 异常路径：Core 被 kill -9 后行还在，但 holder_pid 已死 → 下一次 acquire 或启动时 purgeStale 回收。
+ * - 身份不可读（sysctl 失败）：降级为「只按 pid 死亡回收」，并在日志里标明 degraded。
  */
 export class WorkdirLockService {
-  private readonly bootId: number
-
   constructor(
     private readonly db: Database,
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly holderPid: number = process.pid,
-    bootId: number = currentBootId(),
-  ) {
-    this.bootId = bootId
+    readonly identity: BootIdentity = currentBootUuid(),
+  ) {}
+
+  private get bootUuid(): string | null {
+    return this.identity.status === 'known' ? this.identity.uuid : null
   }
 
   acquire(workdirInput: string, executionId: string, workId: string | null): WorkdirLockRecord {
     const workdir = path.resolve(workdirInput)
 
-    demoteStale(this.db, workdir, this.bootId)
+    demoteStale(this.db, workdir, this.identity)
 
     const existing = this.get(workdir)
     if (existing) {
@@ -92,10 +158,10 @@ export class WorkdirLockService {
     try {
       this.db
         .prepare(
-          `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_id, acquired_at)
+          `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_uuid, acquired_at)
            VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(workdir, executionId, workId, this.holderPid, this.bootId, this.now())
+        .run(workdir, executionId, workId, this.holderPid, this.bootUuid, this.now())
     } catch (error) {
       // 并发写入撞主键：按「已被占用」处理，不静默覆盖。
       const code = (error as { code?: string }).code
@@ -125,32 +191,27 @@ export class WorkdirLockService {
     return Number(result.changes) > 0
   }
 
-  /** 回收陈旧锁；返回回收条数。Core 启动时调用一次。 */
-  purgeStale(): number {
-    const rows = this.db.prepare('SELECT * FROM workdir_locks').all() as LockRow[]
-    const stale = rows.filter((row) => this.isStale(row))
+  /** 回收陈旧锁；Core 启动时调用一次。身份不可读时只做 pid 死亡回收。 */
+  purgeStale(): PurgeResult {
+    const rows = this.db.prepare('SELECT * FROM workdir_locks').all() as WorkdirLockRow[]
     const del = this.db.prepare('DELETE FROM workdir_locks WHERE workdir = ? AND execution_id = ?')
-    let removed = 0
-    for (const row of stale) {
-      removed += Number(del.run(row.workdir, row.execution_id).changes)
+    let reclaimed = 0
+    for (const row of rows) {
+      if (!shouldReclaim(row, this.identity)) continue
+      reclaimed += Number(del.run(row.workdir, row.execution_id).changes)
     }
-    return removed
+    return { reclaimed, retained: rows.length - reclaimed, identity: this.identity }
   }
 
-  /**
-   * 陈旧判定：
-   * 1. 跨开机（boot_id 不同或缺失）→ 无条件回收，**不看 pid**（pid 会被复用）；
-   * 2. 同一次开机内 → 持锁进程已死才算陈旧。
-   */
-  isStale(row: LockRow): boolean {
-    if (row.boot_id === null || row.boot_id !== this.bootId) return true
-    return !isProcessAlive(row.holder_pid)
+  /** 单条锁是否应按陈旧回收（规则见 shouldReclaim）。 */
+  isStale(row: WorkdirLockRow): boolean {
+    return shouldReclaim(row, this.identity)
   }
 
   get(workdirInput: string): WorkdirLockRecord | null {
     const workdir = path.resolve(workdirInput)
     const row = this.db.prepare('SELECT * FROM workdir_locks WHERE workdir = ?').get(workdir) as
-      | LockRow
+      | WorkdirLockRow
       | undefined
     return row ? toRecord(row) : null
   }
@@ -158,19 +219,18 @@ export class WorkdirLockService {
   list(): WorkdirLockRecord[] {
     const rows = this.db
       .prepare('SELECT * FROM workdir_locks ORDER BY acquired_at ASC')
-      .all() as LockRow[]
+      .all() as WorkdirLockRow[]
     return rows.map(toRecord)
   }
 }
 
-/** 单条锁的陈旧判定：跨开机或持锁者已死则删掉，让本次获取继续。 */
-function demoteStale(db: Database, workdir: string, bootId: number): void {
+/** 单条锁的陈旧判定与回收：规则与 purgeStale 完全一致。 */
+function demoteStale(db: Database, workdir: string, identity: BootIdentity): void {
   const row = db.prepare('SELECT * FROM workdir_locks WHERE workdir = ?').get(workdir) as
-    | LockRow
+    | WorkdirLockRow
     | undefined
   if (!row) return
-  const stale = row.boot_id === null || row.boot_id !== bootId || !isProcessAlive(row.holder_pid)
-  if (stale) {
+  if (shouldReclaim(row, identity)) {
     db.prepare('DELETE FROM workdir_locks WHERE workdir = ? AND execution_id = ?').run(
       workdir,
       row.execution_id,

@@ -42,8 +42,8 @@ describe('migration v6 · workflow templates and versions', () => {
     const db = openDatabase(file)
     try {
       const result = migrate(db)
-      expect(result.to).toBe(7)
-      expect(currentUserVersion(db)).toBe(7)
+      expect(result.to).toBe(8)
+      expect(currentUserVersion(db)).toBe(8)
 
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as {
@@ -215,8 +215,12 @@ describe('migration v7 · execution queue index', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 5,
-        to: 7,
-        applied: ['phase3_workflow_templates_and_versions', 'phase3_execution_queue_index'],
+        to: 8,
+        applied: [
+          'phase3_workflow_templates_and_versions',
+          'phase3_execution_queue_index',
+          'phase2_workdir_lock_boot_uuid',
+        ],
       })
       const works = db.prepare("SELECT id FROM works WHERE id = 'work-1'").all()
       expect(works).toHaveLength(1)

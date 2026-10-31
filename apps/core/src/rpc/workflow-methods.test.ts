@@ -41,6 +41,8 @@ import { WorktreeService } from '../services/worktree-service'
 import { createDispatcher, type MethodTable } from './dispatcher'
 import { coreMethods } from './methods'
 
+const TEST_BOOT = { status: 'known' as const, uuid: '11111111-1111-4111-8111-111111111111' }
+
 const NOW = '2026-11-01T00:00:00.000Z'
 const dirs: string[] = []
 
@@ -102,7 +104,7 @@ function harness(): {
       path.join(dir, 'worktrees'),
       () => NOW,
     ),
-    locks: new WorkdirLockService(db, () => NOW),
+    locks: new WorkdirLockService(db, () => NOW, undefined, TEST_BOOT),
     agents: agentRepository,
     sessions: sessionRepository,
     executions: executionRepository,

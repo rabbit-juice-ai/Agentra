@@ -27,6 +27,8 @@ import { WorktreeService } from '../services/worktree-service'
  * Core ↔ Daemon 集成：真实 daemon 进程 + 真实 NDJSON/UDS + fake CLI 夹具。
  * 覆盖：发现 → 启动 → 实时输出 → 正常完成 → kill -9 崩溃检测。
  */
+const TEST_BOOT = { status: 'known' as const, uuid: '11111111-1111-4111-8111-111111111111' }
+
 describe('core ↔ daemon runtime integration', () => {
   let home: string
   let paths: AgentraPaths
@@ -82,7 +84,7 @@ describe('core ↔ daemon runtime integration', () => {
         new AssignmentRepository(db),
         path.join(home, 'worktrees'),
       ),
-      locks: new WorkdirLockService(db),
+      locks: new WorkdirLockService(db, undefined, undefined, TEST_BOOT),
       agents: agentRepository,
       sessions: new SessionRepository(db),
       executions: new ExecutionRepository(db),

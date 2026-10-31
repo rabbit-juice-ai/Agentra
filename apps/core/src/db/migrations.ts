@@ -377,6 +377,16 @@ CREATE INDEX IF NOT EXISTS idx_executions_pending_created
   WHERE status = 'pending';
 `
 
+const PHASE_2_WORKDIR_BOOT_UUID = `
+-- 阶段 2 回归修复：开机身份从「uptime 推算的 INTEGER」改为 macOS Boot Session UUID。
+-- 历史行的 boot_uuid 为 NULL = 未知身份；新代码只按 holder_pid 死亡这一确定事实回收。
+--
+-- !! 回滚警告：新代码不再写 boot_id。若在执行运行期间回滚到旧代码，旧逻辑会把
+-- !! boot_uuid / boot_id 为 NULL 的行判为陈旧并回收【活锁】—— 与本次缺陷同一形态。
+-- !! 回滚流程必须先停掉所有执行，再回滚代码。
+ALTER TABLE workdir_locks ADD COLUMN boot_uuid TEXT;
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -426,6 +436,13 @@ export const MIGRATIONS: Migration[] = [
     name: 'phase3_execution_queue_index',
     up: (db) => {
       db.exec(PHASE_3_QUEUE_INDEX)
+    },
+  },
+  {
+    version: 8,
+    name: 'phase2_workdir_lock_boot_uuid',
+    up: (db) => {
+      db.exec(PHASE_2_WORKDIR_BOOT_UUID)
     },
   },
 ]

@@ -36,6 +36,7 @@ import { WorkService } from './work-service'
 import { WorkdirLockService } from './workdir-lock-service'
 import { WorktreeService } from './worktree-service'
 
+const TEST_BOOT = { status: 'known' as const, uuid: '11111111-1111-4111-8111-111111111111' }
 const NOW = '2026-10-30T00:00:00.000Z'
 
 const CAPABILITIES = ProviderCapabilities.parse({
@@ -243,7 +244,7 @@ async function harness(
     path.join(dir, 'worktrees'),
     () => NOW,
   )
-  const locks = new WorkdirLockService(db, () => NOW)
+  const locks = new WorkdirLockService(db, () => NOW, undefined, TEST_BOOT)
   const works = new WorkService(db, workRepository, teamRepository, auditRepository, () => NOW)
   const assignments = new AssignmentService(
     db,
