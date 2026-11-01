@@ -160,6 +160,12 @@ function harness(): {
       ),
       new ApprovalRepository(db),
     ),
+    artifacts: {
+      preview: () => {
+        throw new Error('not used in this test')
+      },
+      listByWork: () => ({ artifacts: [] }),
+    } as never,
   })
 
   const dispatch = async (method: string, params: unknown): Promise<RpcEnvelope> => {

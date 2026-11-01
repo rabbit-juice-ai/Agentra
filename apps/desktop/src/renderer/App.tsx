@@ -5,9 +5,11 @@ import { ConsolePage } from './components/ConsolePage'
 import { buttonStyle, colors } from './components/styles'
 import { TeamsPage } from './components/TeamsPage'
 import { WorksPage } from './components/WorksPage'
+import { ApprovalsPage } from './features/approvals/ApprovalsPage'
+import { ArtifactsPanel } from './features/approvals/ArtifactsPanel'
 import { useAgentra } from './hooks/useAgentra'
 
-type Tab = 'console' | 'agents' | 'teams' | 'works' | 'workflow'
+type Tab = 'console' | 'agents' | 'teams' | 'works' | 'workflow' | 'approvals' | 'artifacts'
 
 // 画布必须独立成 chunk：WorkflowPage 走 React.lazy + 动态 import()。
 const WorkflowPage = lazy(() => import('./features/workflow/WorkflowPage'))
@@ -108,6 +110,12 @@ export function App() {
           <TabButton active={tab === 'workflow'} onClick={() => setTab('workflow')}>
             Workflow
           </TabButton>
+          <TabButton active={tab === 'approvals'} onClick={() => setTab('approvals')}>
+            审批中心
+          </TabButton>
+          <TabButton active={tab === 'artifacts'} onClick={() => setTab('artifacts')}>
+            交付物
+          </TabButton>
         </nav>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 16 }}>
           <HealthDot label="Core" health={store.coreHealth} />
@@ -153,6 +161,10 @@ export function App() {
           <Suspense fallback={<div style={{ fontSize: 13, color: colors.muted }}>加载画布…</div>}>
             <WorkflowPage />
           </Suspense>
+        ) : tab === 'approvals' ? (
+          <ApprovalsPage />
+        ) : tab === 'artifacts' ? (
+          <ArtifactsPanel />
         ) : tab === 'teams' ? (
           <TeamsPage
             teams={store.teams}

@@ -2,6 +2,7 @@ import type {
   AgentCreateParams,
   AgentProfile,
   AgentUpdateParams,
+  ApprovalDecideParams,
   AssignmentCreateParams,
   AssignmentStatus,
   Execution,
@@ -122,6 +123,18 @@ export const api = {
     }[action]
     return (await unwrap(call({ id }))).assignment
   },
+
+  // 阶段 5 S5-3：审批中心 + 运行态查询。
+  listPendingApprovals: async (runId: string) =>
+    (await unwrap(window.agentra.listPendingApprovals({ runId }))).approvals,
+  decideApproval: async (params: ApprovalDecideParams) =>
+    (await unwrap(window.agentra.decideApproval(params))).approval,
+  getApproval: async (nodeRunId: string) => await unwrap(window.agentra.getApproval({ nodeRunId })),
+  getWorkflowRun: async (runId: string) => await unwrap(window.agentra.getWorkflowRun({ runId })),
+  listArtifacts: async (workId: string) =>
+    (await unwrap(window.agentra.listArtifacts({ workId }))).artifacts,
+  previewArtifact: async (artifactId: string, version?: number) =>
+    await unwrap(window.agentra.previewArtifact({ artifactId, version })),
 
   onEvent: (listener: (event: RuntimeEvent) => void): (() => void) =>
     window.agentra.onEvent(listener),

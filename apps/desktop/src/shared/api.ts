@@ -3,6 +3,16 @@ import type {
   AgentListResult,
   AgentResult,
   AgentUpdateParams,
+  ApprovalDecideParams,
+  ApprovalGetParams,
+  ApprovalGetResult,
+  ApprovalListPendingParams,
+  ApprovalListPendingResult,
+  ApprovalResult,
+  ArtifactListParams,
+  ArtifactListResult,
+  ArtifactPreviewParams,
+  ArtifactPreviewResult,
   AssignmentCreateParams,
   AssignmentIdParams,
   AssignmentListResult,
@@ -29,6 +39,8 @@ import type {
   TeamMemberResult,
   TeamResult,
   WorkCreateParams,
+  WorkflowRunGetParams,
+  WorkflowRunGetResult,
   WorkflowTemplateCreateParams,
   WorkflowTemplateGetParams,
   WorkflowTemplateIdParams,
@@ -141,6 +153,16 @@ export type AgentraApi = {
   validateWorkflowDefinition(
     params: WorkflowVersionValidateParams,
   ): Promise<RpcResult<WorkflowVersionValidateResult>>
+
+  // 阶段 5 S5-3：审批中心 + 运行态查询（无执行入口）。
+  decideApproval(params: ApprovalDecideParams): Promise<RpcResult<ApprovalResult>>
+  getApproval(params: ApprovalGetParams): Promise<RpcResult<ApprovalGetResult>>
+  listPendingApprovals(
+    params: ApprovalListPendingParams,
+  ): Promise<RpcResult<ApprovalListPendingResult>>
+  getWorkflowRun(params: WorkflowRunGetParams): Promise<RpcResult<WorkflowRunGetResult>>
+  listArtifacts(params: ArtifactListParams): Promise<RpcResult<ArtifactListResult>>
+  previewArtifact(params: ArtifactPreviewParams): Promise<RpcResult<ArtifactPreviewResult>>
 
   /** 订阅 Core 推送的执行事件；返回取消订阅函数。 */
   onEvent(listener: (event: RuntimeEvent) => void): () => void

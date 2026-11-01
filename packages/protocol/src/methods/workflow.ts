@@ -21,6 +21,9 @@ export const WORKFLOW_VERSION_VALIDATE_METHOD = 'workflow.version.validate'
 export const WORKFLOW_RUN_GET_METHOD = 'workflow.run.get'
 
 /** S5-1：审批决策 API（领域事件 approval.decided 的协议入口）。 */
+/** S5-3：Artifact 只读服务面（预览/元数据；创建走 Core 内部，不做通用透传）。 */
+export const ARTIFACT_PREVIEW_METHOD = 'artifact.preview'
+export const ARTIFACT_LIST_METHOD = 'artifact.list'
 export const APPROVAL_DECIDE_METHOD = 'approval.decide'
 export const APPROVAL_GET_METHOD = 'approval.get'
 export const APPROVAL_LIST_PENDING_METHOD = 'approval.listPending'
@@ -252,4 +255,54 @@ export {
   ApprovalListPendingParamsSchema as ApprovalListPendingParams,
   ApprovalListPendingResultSchema as ApprovalListPendingResult,
   ApprovalResultSchema as ApprovalResult,
+}
+
+export const ArtifactVersion = z.object({
+  id: z.string().min(1),
+  artifactId: z.string().min(1),
+  version: z.number().int().min(1),
+  storagePath: z.string().min(1),
+  checksum: z.string().min(1),
+  createdAt: IsoTimestamp,
+})
+export type ArtifactVersion = z.infer<typeof ArtifactVersion>
+
+export const ArtifactRecord = z.object({
+  id: z.string().min(1),
+  workId: z.string().min(1),
+  nodeRunId: z.string().nullable(),
+  artifactType: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string(),
+  mimeType: z.string().nullable(),
+  createdAt: IsoTimestamp,
+})
+export type ArtifactRecord = z.infer<typeof ArtifactRecord>
+
+export const ArtifactPreviewParamsSchema = z
+  .object({ artifactId: z.string().min(1), version: z.number().int().min(1).optional() })
+  .strict()
+export type ArtifactPreviewParams = z.infer<typeof ArtifactPreviewParamsSchema>
+
+export const ArtifactPreviewResultSchema = z.object({
+  artifact: ArtifactRecord,
+  version: ArtifactVersion,
+  /** base64 编码的文件内容；文本类 UI 可自行解码。 */
+  contentBase64: z.string(),
+})
+export type ArtifactPreviewResult = z.infer<typeof ArtifactPreviewResultSchema>
+
+export const ArtifactListParamsSchema = z.object({ workId: z.string().min(1) }).strict()
+export type ArtifactListParams = z.infer<typeof ArtifactListParamsSchema>
+
+export const ArtifactListResultSchema = z.object({
+  artifacts: z.array(ArtifactRecord.extend({ versions: z.array(ArtifactVersion) })),
+})
+export type ArtifactListResult = z.infer<typeof ArtifactListResultSchema>
+
+export {
+  ArtifactListParamsSchema as ArtifactListParams,
+  ArtifactListResultSchema as ArtifactListResult,
+  ArtifactPreviewParamsSchema as ArtifactPreviewParams,
+  ArtifactPreviewResultSchema as ArtifactPreviewResult,
 }

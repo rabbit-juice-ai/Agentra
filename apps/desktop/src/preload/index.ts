@@ -70,6 +70,13 @@ const api: AgentraApi = {
   validateWorkflowDefinition: (params) =>
     ipcRenderer.invoke('agentra:workflow-version-validate', params),
 
+  decideApproval: (params) => ipcRenderer.invoke('agentra:approval-decide', params),
+  getApproval: (params) => ipcRenderer.invoke('agentra:approval-get', params),
+  listPendingApprovals: (params) => ipcRenderer.invoke('agentra:approval-list-pending', params),
+  getWorkflowRun: (params) => ipcRenderer.invoke('agentra:workflow-run-get', params),
+  listArtifacts: (params) => ipcRenderer.invoke('agentra:artifact-list', params),
+  previewArtifact: (params) => ipcRenderer.invoke('agentra:artifact-preview', params),
+
   onEvent: (listener) => {
     const handler = (_event: IpcRendererEvent, payload: RuntimeEvent): void => listener(payload)
     ipcRenderer.on('agentra:event', handler)

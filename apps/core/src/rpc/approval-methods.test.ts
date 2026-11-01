@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
 import { ApprovalRepository } from '../db/repositories/approval-repository'
+import { AuditRepository } from '../db/repositories/audit-repository'
 import { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { WorkflowEventRepository } from '../db/repositories/workflow-event-repository'
@@ -77,6 +78,7 @@ type Harness = {
   db: Database
   dispatch: (method: string, params: unknown) => Promise<unknown>
   approvals: ApprovalRepository
+  audit: AuditRepository
   approvalService: ApprovalService
   nodes: NodeRunRepository
   branches: BranchRunRepository
@@ -113,6 +115,7 @@ function setup(definition: WorkflowDefinition): Harness {
   const branches = new BranchRunRepository(db)
   const nodes = new NodeRunRepository(db)
   const approvalRepository = new ApprovalRepository(db)
+  const audit = new AuditRepository(db)
   const approvalService = new ApprovalService(
     db,
     approvalRepository,
@@ -120,7 +123,7 @@ function setup(definition: WorkflowDefinition): Harness {
     branches,
     () => NOW,
     undefined,
-    undefined,
+    audit,
     {
       // 生产装配同样把 approval.decided 落 workflow_events；测试里用同一 sink 语义。
       publish: (event) => {
@@ -188,6 +191,7 @@ function setup(definition: WorkflowDefinition): Harness {
     db,
     dispatch,
     approvals: approvalRepository,
+    audit,
     approvalService,
     nodes,
     branches,
@@ -379,6 +383,77 @@ describe('approval RPC · A2/A3/A6/A11/A13', () => {
         .prepare("SELECT COUNT(*) AS c FROM workflow_events WHERE event_type = 'approval.decided'")
         .get() as { c: number }
       expect(again.c).toBe(1)
+    } finally {
+      h.close()
+    }
+  })
+})
+
+describe('A15 · 审批决策写 audit_logs（actor/action/target 三维度可查）', () => {
+  it('writes one audit row per decision for all three decision kinds', async () => {
+    // 三种决策各跑一次：approve / request_changes / reject
+    const decisions = [
+      { decision: 'approve' as const, comment: undefined },
+      { decision: 'request_changes' as const, comment: 'please fix' },
+      { decision: 'reject' as const, comment: undefined },
+    ]
+    for (const { decision, comment } of decisions) {
+      const h = setup(afterExecuteDefinition())
+      try {
+        const result = (await h.dispatch(APPROVAL_DECIDE_METHOD, {
+          nodeRunId: h.approvalRunId,
+          decision,
+          decidedBy: 'user-15',
+          comment,
+        })) as { ok: boolean }
+        expect(result.ok).toBe(true)
+
+        // ① 按 action 查
+        const byAction = h.audit.listByAction('workflow.approval.decided')
+        expect(byAction).toHaveLength(1)
+        // ② 按 target 查
+        const byTarget = h.audit.listByTarget(
+          'approval',
+          h.approvals.latestByNodeRun(h.approvalRunId)?.id ?? '',
+        )
+        expect(byTarget).toHaveLength(1)
+        expect(byTarget[0]?.id).toBe(byAction[0]?.id)
+        // ③ 按 actor 查（A15 要求 actor 维度可查）
+        const byActor = byAction.filter(
+          (row) => row.actorType === 'user' && row.actorId === 'user-15',
+        )
+        expect(byActor).toHaveLength(1)
+        // 行内容：actor / action / target / details 齐备
+        expect(byAction[0]).toMatchObject({
+          actorType: 'user',
+          actorId: 'user-15',
+          action: 'workflow.approval.decided',
+          targetType: 'approval',
+          details: {
+            runId: h.runId,
+            nodeRunId: h.approvalRunId,
+            round: 1,
+            decision,
+            comment: comment ?? null,
+          },
+        })
+      } finally {
+        h.close()
+      }
+    }
+  })
+
+  it('does not write a duplicate audit row on idempotent replay (A11 consistency)', async () => {
+    const h = setup(afterExecuteDefinition())
+    try {
+      const params = {
+        nodeRunId: h.approvalRunId,
+        decision: 'approve' as const,
+        decidedBy: 'user-15',
+      }
+      await h.dispatch(APPROVAL_DECIDE_METHOD, params)
+      await h.dispatch(APPROVAL_DECIDE_METHOD, params)
+      expect(h.audit.listByAction('workflow.approval.decided')).toHaveLength(1)
     } finally {
       h.close()
     }

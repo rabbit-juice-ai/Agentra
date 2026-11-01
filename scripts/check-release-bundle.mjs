@@ -37,6 +37,9 @@ const REQUIRED_MARKERS = [
   { name: 'Work 页面', value: 'agentra-product-works' },
   // 阶段 3：画布是产品功能，两种构建都必须包含；与控制台标记互不影响。
   { name: 'Workflow 页面', value: 'agentra-product-workflow' },
+  // 阶段 5 S5-3：审批中心与 Artifact 面板是产品功能，两种构建都必须包含。
+  { name: '审批中心页面', value: 'agentra-product-approvals' },
+  { name: 'Artifact 面板', value: 'agentra-product-artifacts' },
 ]
 
 function modeLabel(devConsole) {

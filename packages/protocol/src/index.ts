@@ -188,6 +188,8 @@ export type {
   Approval,
   ApprovalDecisionValue,
   ApprovalStatusValue,
+  ArtifactRecord,
+  ArtifactVersion,
 } from './methods/workflow'
 export {
   APPROVAL_DECIDE_METHOD,
@@ -201,6 +203,12 @@ export {
   ApprovalListPendingResult,
   ApprovalResult,
   ApprovalStatusEnum,
+  ARTIFACT_LIST_METHOD,
+  ARTIFACT_PREVIEW_METHOD,
+  ArtifactListParams,
+  ArtifactListResult,
+  ArtifactPreviewParams,
+  ArtifactPreviewResult,
   WORKFLOW_RUN_GET_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,

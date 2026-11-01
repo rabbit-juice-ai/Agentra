@@ -172,6 +172,24 @@ export class ApprovalService {
             })
           }
         }
+        // S5-4 / A15：三种决策都写审批审计行（此前只有 approve 的分支恢复审计）。
+        // 与事件双写共用决策时刻；幂等重放不经过这里（无 pending 即提前返回）。
+        this.audit?.append({
+          actorType: 'user',
+          actorId: input.decidedBy,
+          action: 'workflow.approval.decided',
+          targetType: 'approval',
+          targetId: pending.id,
+          details: {
+            runId: nodeRun?.workflowRunId ?? pending.workflowRunId,
+            nodeRunId,
+            round: pending.round,
+            decision,
+            comment: comment.length > 0 ? comment : null,
+            approvalType: pending.approvalType,
+          },
+          now,
+        })
         if (decision === 'request_changes' && this.rework) {
           this.rework.requestForApprovalChange({
             runId: nodeRun.workflowRunId,

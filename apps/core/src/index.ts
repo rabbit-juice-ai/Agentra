@@ -8,6 +8,7 @@ import { openDatabase } from './db/database'
 import { migrate } from './db/migrations'
 import { AgentRepository } from './db/repositories/agent-repository'
 import { ApprovalRepository } from './db/repositories/approval-repository'
+import { ArtifactRepository } from './db/repositories/artifact-repository'
 import { AssignmentRepository } from './db/repositories/assignment-repository'
 import { AuditRepository } from './db/repositories/audit-repository'
 import { BranchRunRepository } from './db/repositories/branch-run-repository'
@@ -26,6 +27,8 @@ import { coreMethods } from './rpc/methods'
 import { startWsServer } from './rpc/ws-server'
 import { AgentService } from './services/agent-service'
 import { ApprovalRpcService } from './services/approval-rpc-service'
+import { ArtifactRpcService } from './services/artifact-rpc-service'
+import { ArtifactService } from './services/artifact-service'
 import { AssignmentService } from './services/assignment-service'
 import { CoreEventHub } from './services/event-hub'
 import { ExecutionService } from './services/execution-service'
@@ -221,6 +224,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     },
   )
   const approvalRpc = new ApprovalRpcService(approvalService, approvalRepository)
+  const artifactService = new ArtifactService(db, new ArtifactRepository(db), paths.artifacts, {
+    get: (id) => workRepository.get(id),
+  })
+  const artifactRpc = new ArtifactRpcService(artifactService)
   const workflowBridge = new WorkflowExecutionBridge({
     runs: workflowRunRepository,
     nodes: nodeRunRepository,
@@ -362,6 +369,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       workflows: workflowService,
       workflowRuns: workflowRunQuery,
       approvals: approvalRpc,
+      artifacts: artifactRpc,
     }),
   )
   logger.info('core started', {

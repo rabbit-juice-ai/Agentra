@@ -20,6 +20,12 @@ import {
   ApprovalListPendingParams,
   ApprovalListPendingResult,
   ApprovalResult,
+  ARTIFACT_LIST_METHOD,
+  ARTIFACT_PREVIEW_METHOD,
+  ArtifactListParams,
+  ArtifactListResult,
+  ArtifactPreviewParams,
+  ArtifactPreviewResult,
   ASSIGNMENT_COMPLETE_METHOD,
   ASSIGNMENT_CREATE_METHOD,
   ASSIGNMENT_GET_METHOD,
@@ -143,6 +149,7 @@ import {
 import { validateWorkflowDefinition } from '@agentra/workflow-schema'
 import type { AgentService } from '../services/agent-service'
 import type { ApprovalRpcService } from '../services/approval-rpc-service'
+import type { ArtifactRpcService } from '../services/artifact-rpc-service'
 import type { AssignmentService } from '../services/assignment-service'
 import type { CoreEventHub } from '../services/event-hub'
 import type { ExecutionService } from '../services/execution-service'
@@ -170,6 +177,7 @@ export type CoreMethodServices = {
   workflows: WorkflowDefinitionService
   workflowRuns: WorkflowRunQueryService
   approvals: ApprovalRpcService
+  artifacts: ArtifactRpcService
 }
 
 /**
@@ -466,6 +474,15 @@ export function coreMethods(
         }
         return { valid: false, violations: outcome.violations }
       },
+    ),
+
+    [ARTIFACT_PREVIEW_METHOD]: defineMethod(
+      ArtifactPreviewParams,
+      ArtifactPreviewResult,
+      (params) => services.artifacts.preview(params),
+    ),
+    [ARTIFACT_LIST_METHOD]: defineMethod(ArtifactListParams, ArtifactListResult, (params) =>
+      services.artifacts.listByWork(params.workId),
     ),
 
     [APPROVAL_DECIDE_METHOD]: defineMethod(ApprovalDecideParams, ApprovalResult, (params) => ({

@@ -6,6 +6,16 @@ import {
   AGENT_UPDATE_METHOD,
   AgentListResult,
   AgentResult,
+  APPROVAL_DECIDE_METHOD,
+  APPROVAL_GET_METHOD,
+  APPROVAL_LIST_PENDING_METHOD,
+  ApprovalGetResult,
+  ApprovalListPendingResult,
+  ApprovalResult,
+  ARTIFACT_LIST_METHOD,
+  ARTIFACT_PREVIEW_METHOD,
+  ArtifactListResult,
+  ArtifactPreviewResult,
   ASSIGNMENT_COMPLETE_METHOD,
   ASSIGNMENT_CREATE_METHOD,
   ASSIGNMENT_LIST_METHOD,
@@ -52,6 +62,7 @@ import {
   WORK_LIST_METHOD,
   WORK_PAUSE_METHOD,
   WORK_RESUME_METHOD,
+  WORKFLOW_RUN_GET_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,
   WORKFLOW_TEMPLATE_GET_METHOD,
@@ -65,6 +76,7 @@ import {
   WORKTREE_CREATE_METHOD,
   WORKTREE_LIST_METHOD,
   WORKTREE_REMOVE_METHOD,
+  WorkflowRunGetResult,
   WorkflowTemplateListResult,
   WorkflowTemplateResult,
   WorkflowVersionListResult,
@@ -276,6 +288,26 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:workflow-version-validate', (_event, params: unknown) =>
     callCore(WORKFLOW_VERSION_VALIDATE_METHOD, params, WorkflowVersionValidateResult),
+  )
+
+  // 阶段 5 S5-3：审批中心 + 运行态查询。逐条显式通道，无通用透传；没有任何执行入口。
+  ipcMain.handle('agentra:approval-decide', (_event, params: unknown) =>
+    callCore(APPROVAL_DECIDE_METHOD, params, ApprovalResult),
+  )
+  ipcMain.handle('agentra:approval-get', (_event, params: unknown) =>
+    callCore(APPROVAL_GET_METHOD, params, ApprovalGetResult),
+  )
+  ipcMain.handle('agentra:approval-list-pending', (_event, params: unknown) =>
+    callCore(APPROVAL_LIST_PENDING_METHOD, params, ApprovalListPendingResult),
+  )
+  ipcMain.handle('agentra:workflow-run-get', (_event, params: unknown) =>
+    callCore(WORKFLOW_RUN_GET_METHOD, params, WorkflowRunGetResult),
+  )
+  ipcMain.handle('agentra:artifact-list', (_event, params: unknown) =>
+    callCore(ARTIFACT_LIST_METHOD, params, ArtifactListResult),
+  )
+  ipcMain.handle('agentra:artifact-preview', (_event, params: unknown) =>
+    callCore(ARTIFACT_PREVIEW_METHOD, params, ArtifactPreviewResult),
   )
 }
 
