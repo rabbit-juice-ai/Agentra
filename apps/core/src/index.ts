@@ -233,6 +233,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       inputArtifacts: { isAvailable: () => true },
     }),
     onNodeStarted: (context) => workflowEngine?.onNodeStarted(context),
+    // S4-07：分支暂停时按 Provider 能力处置运行中 Execution（三档策略）。
+    executionsRepo: executionRepository,
+    pauseExecutor: {
+      interrupt: (executionId) => executionService.interrupt({ executionId }),
+    },
+    pauseLogger: logger,
     agentResolver: (context) => {
       try {
         return workflowAssignmentResolver.resolveForNode(context.run.workId, context.node).agentId

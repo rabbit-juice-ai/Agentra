@@ -295,7 +295,7 @@ describe('WorkflowScheduler · 分支暂停（C-4：60 秒窗口）', () => {
         h.branches.transition(branch.id, ['blocked'], 'active', h.now())
       }
 
-      expect(h.scheduler.pauseBranch(h.runId, 'split_1/ui', 'user_paused')).toBe(true)
+      expect(await h.scheduler.pauseBranch(h.runId, 'split_1/ui', 'user_paused')).toBe(true)
       const pausedAt = h.branches.getByKey(h.runId, 'split_1/ui')?.pausedAt
       expect(pausedAt).not.toBeNull()
 
@@ -311,7 +311,7 @@ describe('WorkflowScheduler · 分支暂停（C-4：60 秒窗口）', () => {
       expect(h.started).toContain('backend')
 
       // 恢复后只派发满足依赖的节点
-      expect(h.scheduler.resumeBranch(h.runId, 'split_1/ui')).toBe(true)
+      expect(await h.scheduler.resumeBranch(h.runId, 'split_1/ui')).toBe(true)
       const resumed = await h.scheduler.tick(h.runId)
       expect(resumed.startedAttempts).toEqual(['ui'])
     } finally {
@@ -425,7 +425,7 @@ describe('WorkflowScheduler · 同 tick 内暂停（F-3）', () => {
       const scheduler = h.makeScheduler({
         onNodeStarted: (context) => {
           if (context.node.key === 'ui') {
-            active?.pauseBranch(h.runId, 'split_1/backend', 'paused during tick')
+            void active?.pauseBranch(h.runId, 'split_1/backend', 'paused during tick')
           }
         },
       })
@@ -517,20 +517,20 @@ describe('WorkflowScheduler · 失败兜底可观测性（O-1）', () => {
   })
 
   describe('WorkflowScheduler · 审计', () => {
-    it('writes actor/action/target for branch and run pause/resume', () => {
+    it('writes actor/action/target for branch and run pause/resume', async () => {
       const h = harness()
       try {
         const branch = h.branches.getByKey('run-1', 'split_1/ui')
         if (!branch) throw new Error('missing branch')
         h.branches.transition(branch.id, ['blocked'], 'active', h.now())
         expect(
-          h.scheduler.pauseBranch('run-1', 'split_1/ui', 'user_paused', {
+          await h.scheduler.pauseBranch('run-1', 'split_1/ui', 'user_paused', {
             type: 'user',
             id: 'user-1',
           }),
         ).toBe(true)
         expect(
-          h.scheduler.resumeBranch('run-1', 'split_1/ui', { type: 'user', id: 'user-1' }),
+          await h.scheduler.resumeBranch('run-1', 'split_1/ui', { type: 'user', id: 'user-1' }),
         ).toBe(true)
         expect(h.scheduler.pauseRun('run-1')).toBe(true)
         expect(h.scheduler.resumeRun('run-1')).toBe(true)

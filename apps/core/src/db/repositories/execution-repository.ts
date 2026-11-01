@@ -126,6 +126,22 @@ export class ExecutionRepository {
     return row?.node_run_id ?? null
   }
 
+  /**
+   * 暂停分支处置（S4-07）：某分支上全部非终态执行。
+   * 经 node_runs.branch_run_id 归属分支，覆盖该分支每个 NodeRun 的最新 attempt。
+   */
+  listActiveByBranch(branchRunId: string): Execution[] {
+    const rows = this.db
+      .prepare(
+        `${SELECT_EXECUTION}
+         JOIN node_runs n ON n.id = e.node_run_id
+         WHERE n.branch_run_id = ? AND e.status IN ('pending', 'running')
+         ORDER BY e.created_at ASC, e.id ASC`,
+      )
+      .all(branchRunId) as ExecutionRow[]
+    return rows.map(toExecution)
+  }
+
   /** 某个 NodeRun 当前的非终态执行（工作流恢复对账用）。 */
   findActiveByNodeRun(nodeRunId: string): Execution | null {
     const row = this.db

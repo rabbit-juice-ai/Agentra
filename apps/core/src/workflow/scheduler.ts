@@ -2,11 +2,13 @@ import { newId } from '@agentra/shared'
 import type { WorkflowDefinition } from '@agentra/workflow-schema'
 import type { AuditRepository } from '../db/repositories/audit-repository'
 import type { BranchRunRecord, BranchRunRepository } from '../db/repositories/branch-run-repository'
+import type { ExecutionRepository } from '../db/repositories/execution-repository'
 import type { NodeRunRecord, NodeRunRepository } from '../db/repositories/node-run-repository'
 import type {
   WorkflowRunRecord,
   WorkflowRunRepository,
 } from '../db/repositories/workflow-run-repository'
+import { applyBranchPausePolicy, type BranchPauseExecutor } from './branch-pause-policy'
 import type { DispatchContext, DispatchGate } from './dispatch-gates'
 import { evaluateReadiness, type NodeStateView, ROOT_BRANCH_KEY, resolveBranchKeys } from './graph'
 import type { PublishedDefinitionProvider } from './published-definition-provider'
@@ -65,6 +67,12 @@ export type SchedulerDeps = {
   agentResolver?: (context: DispatchContext) => string | null
   /** 暂停/恢复审计（actor/action/target）。 */
   audit?: AuditRepository
+  /** S4-07：执行处置端口。未提供时 pauseBranch 只做状态迁移（不中断执行）。 */
+  pauseExecutor?: BranchPauseExecutor
+  /** S4-07：执行处置的可观测性。 */
+  pauseLogger?: { warn(message: string, meta?: Record<string, unknown>): void }
+  /** S4-07：非终态执行查询（按分支）。 */
+  executionsRepo?: ExecutionRepository
   /** 失败兜底路径的可观测性（如 nodes.fail() 因状态被并发改走而未生效）。 */
   logger?: SchedulerLogger
   /**
@@ -135,6 +143,11 @@ export class WorkflowScheduler {
   private readonly gates: DispatchGate[]
   private readonly agentResolver: ((context: DispatchContext) => string | null) | undefined
   private readonly audit: AuditRepository | undefined
+  private readonly pauseExecutor: BranchPauseExecutor | undefined
+  private readonly pauseLogger:
+    | { warn(message: string, meta?: Record<string, unknown>): void }
+    | undefined
+  private readonly executionsRepo: ExecutionRepository | undefined
   private readonly onNodeStarted: NodeStartHandler | undefined
   private readonly logger: SchedulerLogger | undefined
   private readonly now: () => string
@@ -152,6 +165,9 @@ export class WorkflowScheduler {
     this.gates = deps.gates
     this.agentResolver = deps.agentResolver
     this.audit = deps.audit
+    this.pauseExecutor = deps.pauseExecutor
+    this.pauseLogger = deps.pauseLogger
+    this.executionsRepo = deps.executionsRepo
     this.onNodeStarted = deps.onNodeStarted
     this.logger = deps.logger
     this.now = deps.now ?? (() => new Date().toISOString())
@@ -324,16 +340,21 @@ export class WorkflowScheduler {
     return ensureBranchRuns(this.branches, runId, definition, this.now())
   }
 
-  /** 暂停分支：只改状态（CAS active → paused），调度闸门随即拒绝该分支的派发。 */
+  /**
+   * 暂停分支：CAS active → paused + 对该分支运行中 Execution 按其 Provider 能力处置（S4-07）。
+   * 顺序保证：状态先落库（闸门立即停止派发），随后执行处置；处置是异步的，
+   * 失败不回滚状态（闸门已生效），按 awaiting_completion 兜底并记录审计/告警。
+   */
   pauseBranch(
     runId: string,
     branchKey: string,
     reason: string,
     actor: { type: 'user' | 'agent' | 'system'; id?: string } = { type: 'system' },
-  ): boolean {
+  ): Promise<boolean> {
     const branch = this.branches.getByKey(runId, branchKey)
-    if (!branch) return false
-    const paused = this.branches.pause(branch.id, reason, this.now())
+    if (!branch) return Promise.resolve(false)
+    const now = this.now()
+    const paused = this.branches.pause(branch.id, reason, now)
     if (paused) {
       this.audit?.append({
         actorType: actor.type,
@@ -342,13 +363,37 @@ export class WorkflowScheduler {
         targetType: 'branch_run',
         targetId: branch.id,
         details: { runId, branchKey, reason, from: 'active', to: 'paused' },
-        now: this.now(),
+        now,
       })
+      if (this.pauseExecutor && this.executionsRepo) {
+        return applyBranchPausePolicy({
+          branchRunId: branch.id,
+          executions: this.executionsRepo,
+          nodeRuns: this.nodes,
+          executor: this.pauseExecutor,
+          audit: this.audit,
+          logger: this.pauseLogger,
+          runId,
+          branchKey,
+          now: this.now(),
+        }).then(() => true)
+      }
     }
-    return paused
+    return Promise.resolve(paused)
   }
 
-  /** 恢复分支：CAS paused → active；下一次 tick 会重新计算依赖并派发。 */
+  /**
+   * 恢复分支：CAS paused → active；下一次 tick 会重新计算依赖并派发。
+   *
+   * 被中断执行的续接语义（S4-07）：
+   * - interrupt + resume 均可用（native 档）：无需重建——若 CLI 进程仍在，reconcile 会
+   *   恢复订阅；若进程已随中断退出，node 回到 running 时由 Execution 终态回写/恢复服务
+   *   按「终态执行补记账」处理，重新派发新 attempt（resume 走既有 session）。
+   * - interrupt 可用、resume 不可用（上下文档）：不 resume，恢复后由调度器为该节点
+   *   重新派发新 attempt（上下文在 Session 里，attempt 是新执行）。
+   * - interrupt 不支持：无需动作——执行从未被打断，自然结束后闸门恢复派发。
+   * 三档的共同点：恢复后该分支 ready 的节点由 tick 重新计算依赖派发，无需专门重建。
+   */
   resumeBranch(
     runId: string,
     branchKey: string,
