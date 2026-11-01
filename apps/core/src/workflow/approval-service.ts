@@ -11,6 +11,17 @@ import type { NodeRunRepository } from '../db/repositories/node-run-repository'
 
 export type ApprovalDecision = 'approve' | 'request_changes' | 'reject'
 
+/** request_changes → ReworkRequest 的接缝（S4-6）；只做 Core 内部调用。 */
+export type ApprovalReworkPort = {
+  requestForApprovalChange(input: {
+    runId: string
+    approvalId: string
+    approvalNodeRunId: string
+    targetNodeRunId: string | null
+  }): { id: string } | null
+  onApprovalReentered?(nodeRunId: string): string[]
+}
+
 const DECISION_STATUS = {
   approve: 'approved',
   request_changes: 'changes_requested',
@@ -38,6 +49,7 @@ export class ApprovalService {
     private readonly nodes: NodeRunRepository,
     private readonly branches: BranchRunRepository,
     private readonly now: () => string = () => new Date().toISOString(),
+    private readonly rework?: ApprovalReworkPort,
   ) {}
 
   requestForNode(
@@ -48,18 +60,21 @@ export class ApprovalService {
     if (!nodeRun) throw new ApprovalError('NOT_FOUND', `node run ${nodeRunId} not found`)
     const existing = this.approvals.findPendingByNodeRun(nodeRunId)
     if (existing) return existing
-    return this.approvals.create(
+    const created = this.approvals.create(
       {
         id: newId('apv'),
         workflowRunId: nodeRun.workflowRunId,
         nodeRunId,
         targetNodeRunId: input.targetNodeRunId,
         approvalType: input.approvalType,
-        round: this.approvals.nextRound(nodeRunId),
+        round: this.approvals.nextRoundForNodeKey(nodeRun.workflowRunId, nodeRun.workflowNodeKey),
         requestedBy: input.requestedBy,
       },
       this.now(),
     )
+    // 重新进入审批节点 = 上一轮 request_changes 返工完成。
+    this.rework?.onApprovalReentered?.(nodeRunId)
+    return created
   }
 
   decide(
@@ -121,6 +136,14 @@ export class ApprovalService {
         }
         if (decision === 'approve' && nodeRun.branchRunId) {
           this.branches.resume(nodeRun.branchRunId, now)
+        }
+        if (decision === 'request_changes' && this.rework) {
+          this.rework.requestForApprovalChange({
+            runId: nodeRun.workflowRunId,
+            approvalId: pending.id,
+            approvalNodeRunId: nodeRunId,
+            targetNodeRunId: pending.targetNodeRunId,
+          })
         }
       }
 

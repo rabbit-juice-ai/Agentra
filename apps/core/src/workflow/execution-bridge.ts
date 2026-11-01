@@ -7,6 +7,7 @@ import type { WorkflowRunRepository } from '../db/repositories/workflow-run-repo
 import type { WorktreeService } from '../services/worktree-service'
 import { WorkflowAssignmentError, type WorkflowAssignmentResolver } from './assignment-resolver'
 import type { DispatchContext } from './dispatch-gates'
+import { isTestReportConsumedByCondition } from './graph'
 import type { PublishedDefinitionProvider } from './published-definition-provider'
 import type { NodeFailureCategory } from './types'
 
@@ -74,6 +75,16 @@ export type ExecutionBridgeLogger = {
   warn(message: string, meta?: Record<string, unknown>): void
 }
 
+/** 测试报告完成后的返工触发接缝（S4-6 ReworkPolicy）。 */
+export type TestResultReworkPort = {
+  onTestResult(input: {
+    runId: string
+    reportNodeRunId: string
+    reportNodeKey: string
+    output: Record<string, unknown>
+  }): void
+}
+
 export type ExecutionBridgeDeps = {
   runs: WorkflowRunRepository
   nodes: NodeRunRepository
@@ -83,6 +94,7 @@ export type ExecutionBridgeDeps = {
   resolver: WorkflowAssignmentResolver
   executions: ExecutionStarter
   outputs?: OutputExtractor
+  rework?: TestResultReworkPort
   logger?: ExecutionBridgeLogger
   now?: () => string
 }
@@ -224,7 +236,32 @@ export class WorkflowExecutionBridge {
       now,
       output ? { outputSnapshot: output } : undefined,
     )
-    if (!succeeded) this.warnUnchanged(nodeRun.id, node.key, 'succeeded')
+    if (!succeeded) {
+      this.warnUnchanged(nodeRun.id, node.key, 'succeeded')
+      return
+    }
+    // 契约通过后才允许触发返工；契约失败在上面的分支已经 failed 并 return。
+    if (
+      output &&
+      node.config.outputContract.profile === 'test_result' &&
+      this.deps.rework &&
+      !isTestReportConsumedByCondition(definition, node.key)
+    ) {
+      try {
+        this.deps.rework.onTestResult({
+          runId: run.id,
+          reportNodeRunId: nodeRun.id,
+          reportNodeKey: node.key,
+          output,
+        })
+      } catch (error) {
+        this.deps.logger?.warn('rework trigger failed', {
+          nodeRunId: nodeRun.id,
+          nodeKey: node.key,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
   }
 
   private retryOrFail(

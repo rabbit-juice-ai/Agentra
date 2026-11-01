@@ -167,7 +167,11 @@ export class WorkflowScheduler {
       // 期间发生的 pauseBranch/pauseRun 仍会跨越到本次 tick 的后续节点。
       const currentRun = this.runs.get(runId)
       if (currentRun === null || currentRun.status !== 'running') break
-      const currentBranch = this.branches.getByKey(runId, branchKey)
+      // 返工会为已终结的并行分支创建带后缀的新 BranchRun；NodeRun 上的 branch_run_id
+      // 是权威归属，定义映射只是旧数据的回退。重读与闸门/CAS 之间仍然不得 await。
+      const currentBranch =
+        (nodeRun.branchRunId ? this.branches.get(nodeRun.branchRunId) : null) ??
+        this.branches.getByKey(runId, branchKey)
       if (currentBranch === null) {
         skippedGates.push({
           nodeKey: definitionNode.key,
@@ -182,7 +186,7 @@ export class WorkflowScheduler {
         nodeRun,
         node: definitionNode,
         branch: currentBranch,
-        branchKey,
+        branchKey: currentBranch.branchKey,
         definition,
       }
 

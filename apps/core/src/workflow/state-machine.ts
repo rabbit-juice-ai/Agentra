@@ -29,6 +29,31 @@ export const BRANCH_RUN_STATUSES = [
 ] as const
 export type BranchRunStatus = (typeof BRANCH_RUN_STATUSES)[number]
 
+export const REWORK_REQUEST_STATUSES = [
+  'requested',
+  'in_rework',
+  'completed',
+  'cancelled',
+  'exhausted',
+] as const
+export type ReworkRequestStatus = (typeof REWORK_REQUEST_STATUSES)[number]
+
+const REWORK_TRANSITIONS: Record<ReworkRequestStatus, readonly ReworkRequestStatus[]> = {
+  requested: ['in_rework', 'cancelled', 'exhausted'],
+  in_rework: ['completed', 'cancelled', 'exhausted'],
+  completed: [],
+  cancelled: [],
+  exhausted: [],
+}
+
+export function assertReworkTransition(from: ReworkRequestStatus, to: ReworkRequestStatus): void {
+  assertTransition('rework_request', REWORK_TRANSITIONS, from, to)
+}
+
+export function isTerminalReworkStatus(status: ReworkRequestStatus): boolean {
+  return status === 'completed' || status === 'cancelled' || status === 'exhausted'
+}
+
 /** 节点状态只含 MVP 子集（WORKFLOW §3）：不含 waiting_input / waiting_checkpoint。 */
 export const NODE_RUN_STATUSES = [
   'blocked',
@@ -82,7 +107,14 @@ const NODE_TRANSITIONS: Record<NodeRunStatus, readonly NodeRunStatus[]> = {
   blocked: ['ready', 'skipped', 'cancelled'],
   ready: ['running', 'blocked', 'skipped', 'cancelled'],
   // waiting_approval：HumanApproval 节点在任务执行/审批时点进入等待（S4-5）
-  running: ['waiting_approval', 'succeeded', 'failed', 'cancelled', 'reconciliation_required'],
+  running: [
+    'waiting_approval',
+    'succeeded',
+    'failed',
+    'cancelled',
+    'skipped',
+    'reconciliation_required',
+  ],
   waiting_approval: [
     'succeeded',
     'changes_requested',
@@ -123,7 +155,7 @@ export function isTerminalNodeStatus(status: NodeRunStatus): boolean {
 
 export class IllegalWorkflowTransitionError extends Error {
   constructor(
-    readonly entity: 'workflow_run' | 'branch_run' | 'node_run',
+    readonly entity: 'workflow_run' | 'branch_run' | 'node_run' | 'rework_request',
     readonly from: string,
     readonly to: string,
   ) {
@@ -133,7 +165,7 @@ export class IllegalWorkflowTransitionError extends Error {
 }
 
 function assertTransition<T extends string>(
-  entity: 'workflow_run' | 'branch_run' | 'node_run',
+  entity: 'workflow_run' | 'branch_run' | 'node_run' | 'rework_request',
   transitions: Record<T, readonly T[]>,
   from: T,
   to: T,

@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest'
 import {
   assertBranchTransition,
   assertNodeTransition,
+  assertReworkTransition,
   assertRunTransition,
   branchTargets,
   IllegalWorkflowTransitionError,
   isTerminalBranchStatus,
   isTerminalNodeStatus,
+  isTerminalReworkStatus,
   isTerminalRunStatus,
   nodeTargets,
+  type ReworkRequestStatus,
   runTargets,
 } from './state-machine'
 
@@ -76,5 +79,27 @@ describe('NodeRun 状态机', () => {
     }
     expect(isTerminalNodeStatus('waiting_approval')).toBe(false)
     expect(isTerminalNodeStatus('changes_requested')).toBe(false)
+  })
+})
+
+describe('ReworkRequest 状态机', () => {
+  it('allows requested → in_rework → completed / cancelled / exhausted', () => {
+    expect(() => assertReworkTransition('requested', 'in_rework')).not.toThrow()
+    for (const terminal of ['completed', 'cancelled', 'exhausted'] as const) {
+      expect(() => assertReworkTransition('in_rework', terminal)).not.toThrow()
+      expect(isTerminalReworkStatus(terminal)).toBe(true)
+    }
+    expect(() => assertReworkTransition('requested', 'exhausted')).not.toThrow()
+    expect(() => assertReworkTransition('requested', 'cancelled')).not.toThrow()
+  })
+
+  it('blocks transitions out of terminal states', () => {
+    for (const terminal of ['completed', 'cancelled', 'exhausted'] as ReworkRequestStatus[]) {
+      for (const target of ['requested', 'in_rework', 'completed'] as ReworkRequestStatus[]) {
+        expect(() => assertReworkTransition(terminal, target)).toThrow(
+          IllegalWorkflowTransitionError,
+        )
+      }
+    }
   })
 })

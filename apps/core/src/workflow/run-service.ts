@@ -10,6 +10,7 @@ import type {
   WorkflowRunRepository,
 } from '../db/repositories/workflow-run-repository'
 import type { WorkflowAssignmentResolver } from './assignment-resolver'
+import { ROOT_BRANCH_KEY, resolveBranchKeys } from './graph'
 import type { PublishedDefinitionProvider } from './published-definition-provider'
 import { ensureBranchRuns } from './scheduler'
 
@@ -58,10 +59,18 @@ export class WorkflowRunService {
         { id: newId('run'), workId: input.workId, workflowVersionId: input.workflowVersionId },
         now,
       )
-      ensureBranchRuns(this.branches, run.id, definition, now)
+      const branchRuns = ensureBranchRuns(this.branches, run.id, definition, now)
+      const branchByKey = new Map(branchRuns.map((branch) => [branch.branchKey, branch]))
+      const branchKeys = resolveBranchKeys(definition)
       for (const node of definition.nodes) {
+        const branchKey = branchKeys.get(node.key) ?? ROOT_BRANCH_KEY
         this.nodes.create(
-          { id: newId('nrn'), workflowRunId: run.id, workflowNodeKey: node.key },
+          {
+            id: newId('nrn'),
+            workflowRunId: run.id,
+            workflowNodeKey: node.key,
+            branchRunId: branchByKey.get(branchKey)?.id ?? null,
+          },
           now,
         )
       }

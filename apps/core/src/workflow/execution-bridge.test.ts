@@ -6,9 +6,11 @@ import type { WorkflowDefinition } from '@agentra/workflow-schema'
 import { afterEach, describe, expect, it } from 'vitest'
 import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
+import { ApprovalRepository } from '../db/repositories/approval-repository'
 import { AssignmentRepository } from '../db/repositories/assignment-repository'
 import { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import { NodeRunRepository } from '../db/repositories/node-run-repository'
+import { ReworkRequestRepository } from '../db/repositories/rework-request-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { WorkflowRepository } from '../db/repositories/workflow-repository'
 import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
@@ -16,8 +18,13 @@ import { WorkflowDefinitionService } from '../services/workflow-definition-servi
 import { WorktreeService } from '../services/worktree-service'
 import { WorkflowAssignmentResolver } from './assignment-resolver'
 import type { DispatchContext } from './dispatch-gates'
-import { type ExecutionStarter, WorkflowExecutionBridge } from './execution-bridge'
+import {
+  type ExecutionStarter,
+  type TestResultReworkPort,
+  WorkflowExecutionBridge,
+} from './execution-bridge'
 import { PublishedDefinitionProvider } from './published-definition-provider'
+import { ReworkService } from './rework-service'
 import { WorkflowRunService } from './run-service'
 
 const NOW = '2026-11-01T00:00:00.000Z'
@@ -118,13 +125,15 @@ class FakeStarter implements ExecutionStarter {
   }
 }
 
-function setup(): {
+function setup(rework?: TestResultReworkPort): {
   db: Database
   bridge: WorkflowExecutionBridge
   starter: FakeStarter
   outputs: Map<string, Record<string, unknown>>
   context: DispatchContext
   nodes: NodeRunRepository
+  reworks: ReworkRequestRepository
+  reworkService: ReworkService
   nodeRunId: string
   close: () => void
 } {
@@ -183,6 +192,17 @@ function setup(): {
 
   const starter = new FakeStarter()
   const outputs = new Map<string, Record<string, unknown>>()
+  const reworks = new ReworkRequestRepository(db)
+  const reworkService = new ReworkService({
+    db,
+    runs,
+    branches,
+    nodes,
+    reworks,
+    approvals: new ApprovalRepository(db),
+    definitions,
+    now: () => NOW,
+  })
   const bridge = new WorkflowExecutionBridge({
     runs,
     nodes,
@@ -198,6 +218,7 @@ function setup(): {
     resolver,
     executions: starter,
     outputs: (executionId) => outputs.get(executionId) ?? null,
+    rework: rework ?? reworkService,
     now: () => NOW,
   })
 
@@ -207,6 +228,8 @@ function setup(): {
     starter,
     outputs,
     nodes,
+    reworks,
+    reworkService,
     nodeRunId: nodeRun.id,
     context: {
       run,
@@ -271,7 +294,8 @@ describe('WorkflowExecutionBridge · 完成与输出契约', () => {
   })
 
   it('fails the node with output_contract_violation when output is missing (no rework)', () => {
-    const h = setup()
+    const calls: unknown[] = []
+    const h = setup({ onTestResult: (input) => calls.push(input) })
     try {
       h.starter.bind('exe-1', h.nodeRunId)
       h.bridge.onExecutionFinished(execution('exe-1', 'succeeded', 0))
@@ -279,6 +303,46 @@ describe('WorkflowExecutionBridge · 完成与输出契约', () => {
       expect(node?.status).toBe('failed')
       expect(node?.error?.category).toBe('output_contract_violation')
       expect(h.nodes.listByRunAndKey(h.context.run.id, 'task_1')).toHaveLength(1)
+      // 契约失败不得触发返工（v12 后这条终于有真实落点）
+      expect(calls).toEqual([])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('creates no rework_requests when the test_result contract is violated (O-1 full check)', () => {
+    const h = setup()
+    try {
+      h.starter.bind('exe-1', h.nodeRunId)
+      h.bridge.onExecutionFinished(execution('exe-1', 'succeeded', 0))
+      const node = h.nodes.get(h.nodeRunId)
+      expect(node?.status).toBe('failed')
+      expect(node?.error?.category).toBe('output_contract_violation')
+      expect(h.reworks.listByRun(h.context.run.id)).toEqual([])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('triggers rework only after a valid test_result report', () => {
+    const calls: { reportNodeKey: string; output: Record<string, unknown> }[] = []
+    const h = setup({
+      onTestResult: (input) =>
+        calls.push({ reportNodeKey: input.reportNodeKey, output: input.output }),
+    })
+    try {
+      const output = {
+        pass: false,
+        failureReason: 'ui broken',
+        relatedTasks: ['task_1'],
+        impactScope: 'ui',
+        relatedArtifacts: [],
+      }
+      h.outputs.set('exe-1', output)
+      h.starter.bind('exe-1', h.nodeRunId)
+      h.bridge.onExecutionFinished(execution('exe-1', 'succeeded', 0))
+      expect(h.nodes.get(h.nodeRunId)?.status).toBe('succeeded')
+      expect(calls).toEqual([{ reportNodeKey: 'task_1', output }])
     } finally {
       h.close()
     }

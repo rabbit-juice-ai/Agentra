@@ -50,7 +50,7 @@ describe('migration v9 · workflow runtime tables', () => {
   it('creates workflow_runs / branch_runs / node_runs with indexes', () => {
     const db = openMigrated()
     try {
-      expect(currentUserVersion(db)).toBe(11)
+      expect(currentUserVersion(db)).toBe(12)
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
           name: string
@@ -141,7 +141,7 @@ describe('migration v9 · workflow runtime tables', () => {
     const db = openMigrated()
     try {
       const second = migrate(db)
-      expect(second).toEqual({ from: 11, to: 11, applied: [] })
+      expect(second).toEqual({ from: 12, to: 12, applied: [] })
 
       // v9 自身的 SQL 也必须幂等（CREATE … IF NOT EXISTS），重放一次再回滚
       const v9 = MIGRATIONS.find((migration) => migration.version === 9)
@@ -216,6 +216,111 @@ describe('migration v11 · approvals', () => {
           )
           .run(NOW),
       ).toThrow(/CHECK constraint failed/)
+    } finally {
+      db.close()
+    }
+  })
+})
+
+describe('migration v12 · rework_requests', () => {
+  it('rebuilds approvals with a rework FK and creates the idempotent rework table', () => {
+    const db = openDatabase(tempDb())
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 11),
+      )
+      insertWork(db)
+      const versionId = insertTemplateAndVersion(db)
+      db.prepare(
+        `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, started_at, runtime_state_json, created_at, updated_at)
+         VALUES ('run-1', 'work-1', ?, 'running', ?, '{}', ?, ?)`,
+      ).run(versionId, NOW, NOW, NOW)
+      db.prepare(
+        `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, status, attempt, input_snapshot_json, created_at, updated_at)
+         VALUES ('node-approval', 'run-1', 'approval', 'waiting_approval', 1, '{}', ?, ?),
+                ('node-task', 'run-1', 'task_1', 'succeeded', 1, '{}', ?, ?)`,
+      ).run(NOW, NOW, NOW, NOW)
+      db.prepare(
+        `INSERT INTO approvals (id, workflow_run_id, node_run_id, target_node_run_id, approval_type,
+           status, requested_by, round, requested_at)
+         VALUES ('apv-1', 'run-1', 'node-approval', 'node-task', 'after_execute', 'changes_requested',
+                 'system', 1, ?)`,
+      ).run(NOW)
+
+      const result = migrate(db)
+      expect(result).toEqual({
+        from: 11,
+        to: 12,
+        applied: ['phase4_rework_requests'],
+      })
+
+      // 重建后 approvals 行逐列保留
+      const approval = db.prepare("SELECT * FROM approvals WHERE id = 'apv-1'").get() as Record<
+        string,
+        unknown
+      >
+      expect(approval.target_node_run_id).toBe('node-task')
+      expect(approval.status).toBe('changes_requested')
+      expect(approval.rework_request_id).toBeNull()
+
+      const columns = (
+        db.prepare('PRAGMA table_info(rework_requests)').all() as { name: string }[]
+      ).map((column) => column.name)
+      expect(columns).toEqual(
+        expect.arrayContaining([
+          'workflow_run_id',
+          'branch_run_id',
+          'target_node_run_id',
+          'trigger_type',
+          'trigger_approval_id',
+          'test_report_json',
+          'round',
+          'max_rounds',
+          'status',
+          'rework_node_run_id',
+          'created_by',
+        ]),
+      )
+
+      const insert = db.prepare(
+        `INSERT INTO rework_requests (id, workflow_run_id, target_node_run_id, trigger_type,
+           trigger_approval_id, round, max_rounds, status, created_by, created_at, updated_at)
+         VALUES (?, 'run-1', 'node-task', 'request_changes', 'apv-1', ?, 2, 'requested', 'approval', ?, ?)`,
+      )
+      insert.run('rw-1', 1, NOW, NOW)
+      expect(() => insert.run('rw-2', 1, NOW, NOW)).toThrow(/UNIQUE constraint failed/)
+      insert.run('rw-2', 2, NOW, NOW)
+
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO rework_requests (id, workflow_run_id, target_node_run_id, trigger_type,
+               round, max_rounds, status, created_by, created_at, updated_at)
+             VALUES ('rw-orphan', 'run-1', 'node-missing', 'test_failure', 1, 2, 'requested', 'system', ?, ?)`,
+          )
+          .run(NOW, NOW),
+      ).toThrow(/FOREIGN KEY constraint failed/)
+
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO rework_requests (id, workflow_run_id, target_node_run_id, trigger_type,
+               round, max_rounds, status, created_by, created_at, updated_at)
+             VALUES ('rw-bad', 'run-1', 'node-task', 'nope', 3, 2, 'requested', 'system', ?, ?)`,
+          )
+          .run(NOW, NOW),
+      ).toThrow(/CHECK constraint failed/)
+
+      // v12 的核心：approvals.rework_request_id 现在真的受 FK 约束
+      expect(() =>
+        db
+          .prepare("UPDATE approvals SET rework_request_id = 'rw-missing' WHERE id = 'apv-1'")
+          .run(),
+      ).toThrow(/FOREIGN KEY constraint failed/)
+      expect(() =>
+        db.prepare("UPDATE approvals SET rework_request_id = 'rw-1' WHERE id = 'apv-1'").run(),
+      ).not.toThrow()
     } finally {
       db.close()
     }

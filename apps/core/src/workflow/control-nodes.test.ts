@@ -17,11 +17,14 @@ import {
   completeConditionNode,
   completeEndNode,
   completeJoinNode,
+  completeSplitNode,
+  completeStartNode,
   enterHumanApproval,
 } from './control-nodes'
+import { allowAllResourcePorts, defaultDispatchGates } from './dispatch-gates'
 import { ROOT_BRANCH_KEY, resolveBranchKeys } from './graph'
 import { PublishedDefinitionProvider } from './published-definition-provider'
-import { ensureBranchRuns } from './scheduler'
+import { ensureBranchRuns, WorkflowScheduler } from './scheduler'
 
 const NOW = '2026-11-01T00:00:00.000Z'
 const dirs: string[] = []
@@ -543,6 +546,7 @@ describe('HumanApproval 运行时', () => {
         .get() as Record<string, unknown>
       expect(row.status).toBe('pending')
       expect(row.approval_type).toBe('after_execute')
+      expect(row.target_node_run_id).toBe('nrn-task_1')
       expect(row.decided_by).toBeNull()
       expect(row.decided_at).toBeNull()
     } finally {
@@ -556,6 +560,10 @@ describe('HumanApproval 运行时', () => {
       h.setRunning('approval')
       enterHumanApproval(h.deps, h.nodeRunId('approval'))
       expect(h.nodes.get(h.nodeRunId('approval'))?.status).toBe('waiting_approval')
+      const row = h.db
+        .prepare("SELECT target_node_run_id FROM approvals WHERE node_run_id = 'nrn-approval'")
+        .get() as { target_node_run_id: string | null }
+      expect(row.target_node_run_id).toBeNull()
       const executions = h.db.prepare('SELECT COUNT(*) AS n FROM executions').get() as { n: number }
       expect(executions.n).toBe(0)
     } finally {
@@ -648,5 +656,104 @@ describe('HumanApproval 运行时', () => {
     } finally {
       h.close()
     }
+  })
+
+  describe('ParallelSplit 运行时', () => {
+    it('activates every split branch on success', () => {
+      const h = setup(definitionJoin())
+      try {
+        h.setRunning('split_1')
+        completeSplitNode(h.deps, h.nodeRunId('split_1'))
+        expect(h.nodes.get(h.nodeRunId('split_1'))?.status).toBe('succeeded')
+        expect(h.branches.getByKey(h.runId, 'split_1/a')?.status).toBe('active')
+        expect(h.branches.getByKey(h.runId, 'split_1/b')?.status).toBe('active')
+        expect(h.branches.getByKey(h.runId, ROOT_BRANCH_KEY)?.status).toBe('active')
+      } finally {
+        h.close()
+      }
+    })
+  })
+
+  describe('Join 的 skipped 规则', () => {
+    it('does not block on skipped upstream and becomes skipped itself', () => {
+      const h = setup(definitionJoin())
+      try {
+        h.setRunning('a')
+        h.setSucceeded('a')
+        h.setRunning('b')
+        h.nodes.transition(h.nodeRunId('b'), ['running'], 'skipped', NOW)
+        h.setRunning('join')
+        completeJoinNode(h.deps, h.nodeRunId('join'))
+        expect(h.nodes.get(h.nodeRunId('join'))?.status).toBe('skipped')
+      } finally {
+        h.close()
+      }
+    })
+
+    it('still waits when a skipped upstream is mixed with a pending one', () => {
+      const h = setup(definitionJoin())
+      try {
+        h.setRunning('a')
+        h.nodes.transition(h.nodeRunId('a'), ['running'], 'skipped', NOW)
+        h.setRunning('join')
+        completeJoinNode(h.deps, h.nodeRunId('join'))
+        expect(h.nodes.get(h.nodeRunId('join'))?.status).toBe('running')
+      } finally {
+        h.close()
+      }
+    })
+  })
+
+  describe('并行图端到端（真实 Scheduler + 控制节点）', () => {
+    it('runs split → parallel tasks → join → end and completes the run exactly once', async () => {
+      const h = setup(definitionJoin())
+      try {
+        const scheduler = new WorkflowScheduler({
+          runs: h.runs,
+          branches: h.branches,
+          nodes: h.nodes,
+          definitions: h.deps.definitions,
+          gates: defaultDispatchGates(allowAllResourcePorts()),
+          onNodeStarted: (context) => {
+            const nodeRunId = context.nodeRun.id
+            switch (context.node.type) {
+              case 'start':
+                completeStartNode(h.deps, nodeRunId)
+                break
+              case 'parallel_split':
+                completeSplitNode(h.deps, nodeRunId)
+                break
+              case 'join':
+                completeJoinNode(h.deps, nodeRunId)
+                break
+              case 'end':
+                completeEndNode(h.deps, nodeRunId)
+                break
+              case 'agent_task':
+                h.nodes.transition(nodeRunId, ['running'], 'succeeded', NOW, {
+                  outputSnapshot: {},
+                })
+                break
+              default:
+                throw new Error(`unexpected node type ${context.node.type}`)
+            }
+          },
+          now: () => NOW,
+        })
+
+        await scheduler.runUntilIdle(h.runId)
+
+        expect(h.runs.get(h.runId)?.status).toBe('completed')
+        expect(h.events).toEqual([{ type: 'workflow.completed', runId: h.runId }])
+        for (const key of ['start', 'split_1', 'a', 'b', 'join', 'end']) {
+          expect(h.nodes.get(h.nodeRunId(key))?.status).toBe('succeeded')
+        }
+        for (const key of [ROOT_BRANCH_KEY, 'split_1/a', 'split_1/b']) {
+          expect(h.branches.getByKey(h.runId, key)?.status).toBe('completed')
+        }
+      } finally {
+        h.close()
+      }
+    })
   })
 })

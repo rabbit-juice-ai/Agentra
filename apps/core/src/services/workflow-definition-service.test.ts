@@ -298,7 +298,13 @@ describe('阶段 3 边界', () => {
     service.deprecate(draft.id)
 
     // 阶段 4 的 v9/v11 会建运行表与审批表；但定义层操作不得写入任何运行记录。
-    for (const table of ['workflow_runs', 'branch_runs', 'node_runs', 'approvals']) {
+    for (const table of [
+      'workflow_runs',
+      'branch_runs',
+      'node_runs',
+      'approvals',
+      'rework_requests',
+    ]) {
       const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }
       expect(row.count).toBe(0)
     }

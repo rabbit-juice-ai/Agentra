@@ -519,6 +519,71 @@ CREATE TABLE IF NOT EXISTS approvals (
 CREATE INDEX IF NOT EXISTS idx_approvals_status_requested ON approvals(status, requested_at);
 `
 
+const PHASE_4_REWORK_REQUESTS = `
+-- 阶段 4 S4-6：ReworkRequest（DATABASE §2.7.1）+ approvals.rework_request_id 补 FK。
+-- SQLite 不支持 ADD CONSTRAINT，approvals 必须重建；rework_requests 先建，重建后的
+-- approvals 才能引用它。数据按原列逐行复制，由运行器的 foreign_key_check 校验。
+CREATE TABLE IF NOT EXISTS rework_requests (
+  id TEXT PRIMARY KEY,
+  workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  branch_run_id TEXT REFERENCES branch_runs(id) ON DELETE SET NULL,
+  target_node_run_id TEXT NOT NULL REFERENCES node_runs(id) ON DELETE CASCADE,
+  trigger_type TEXT NOT NULL CHECK (trigger_type IN ('request_changes', 'test_failure')),
+  trigger_approval_id TEXT REFERENCES approvals(id) ON DELETE SET NULL,
+  test_report_json TEXT,
+  round INTEGER NOT NULL CHECK (round >= 1),
+  max_rounds INTEGER NOT NULL DEFAULT 2 CHECK (max_rounds >= 0),
+  status TEXT NOT NULL CHECK (
+    status IN ('requested', 'in_rework', 'completed', 'cancelled', 'exhausted')
+  ),
+  rework_node_run_id TEXT REFERENCES node_runs(id) ON DELETE SET NULL,
+  created_by TEXT NOT NULL CHECK (created_by IN ('system', 'approval', 'user')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (target_node_run_id, round)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rework_requests_run_status
+  ON rework_requests(workflow_run_id, status);
+CREATE INDEX IF NOT EXISTS idx_rework_requests_target
+  ON rework_requests(target_node_run_id, round);
+
+CREATE TABLE approvals_v12 (
+  id TEXT PRIMARY KEY,
+  workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  node_run_id TEXT NOT NULL REFERENCES node_runs(id) ON DELETE CASCADE,
+  target_node_run_id TEXT REFERENCES node_runs(id) ON DELETE SET NULL,
+  approval_type TEXT NOT NULL CHECK (approval_type IN ('before_execute', 'after_execute')),
+  status TEXT NOT NULL CHECK (
+    status IN ('pending', 'approved', 'changes_requested', 'rejected', 'cancelled')
+  ),
+  requested_by TEXT NOT NULL,
+  decided_by TEXT,
+  decision_comment TEXT,
+  decision_payload_json TEXT,
+  round INTEGER NOT NULL DEFAULT 1 CHECK (round >= 1),
+  rework_request_id TEXT REFERENCES rework_requests(id) ON DELETE SET NULL,
+  requested_at TEXT NOT NULL,
+  decided_at TEXT,
+  UNIQUE (node_run_id, round)
+);
+
+INSERT INTO approvals_v12 (
+  id, workflow_run_id, node_run_id, target_node_run_id, approval_type, status,
+  requested_by, decided_by, decision_comment, decision_payload_json, round,
+  rework_request_id, requested_at, decided_at
+)
+SELECT id, workflow_run_id, node_run_id, target_node_run_id, approval_type, status,
+       requested_by, decided_by, decision_comment, decision_payload_json, round,
+       rework_request_id, requested_at, decided_at
+FROM approvals;
+
+DROP TABLE approvals;
+ALTER TABLE approvals_v12 RENAME TO approvals;
+
+CREATE INDEX IF NOT EXISTS idx_approvals_status_requested ON approvals(status, requested_at);
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -598,6 +663,14 @@ export const MIGRATIONS: Migration[] = [
     name: 'phase4_approvals',
     up: (db) => {
       db.exec(PHASE_4_APPROVALS)
+    },
+  },
+  {
+    version: 12,
+    name: 'phase4_rework_requests',
+    rebuildsTables: true,
+    up: (db) => {
+      db.exec(PHASE_4_REWORK_REQUESTS)
     },
   },
 ]

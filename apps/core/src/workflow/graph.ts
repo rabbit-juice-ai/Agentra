@@ -67,7 +67,7 @@ export type NodeStateView = {
   output: Record<string, unknown> | null
 }
 
-export type EdgeDisposition = 'taken' | 'not_taken' | 'pending' | 'failed'
+export type EdgeDisposition = 'taken' | 'not_taken' | 'pending' | 'failed' | 'skipped'
 
 /**
  * 一条入边的运行期处置：
@@ -82,11 +82,30 @@ export function edgeDisposition(
 ): EdgeDisposition {
   const source = states.get(edge.source)
   if (!source || !isTerminalNodeStatus(source.status)) return 'pending'
+  if (source.status === 'skipped') return 'skipped'
   if (source.status !== 'succeeded') return 'failed'
   if (edge.when === undefined) return 'taken'
   const when = source.output?.when
   if (typeof when !== 'boolean') return 'pending'
   return when === edge.when ? 'taken' : 'not_taken'
+}
+
+/**
+ * 该测试节点的失败是否由下游 Condition 的 falseBranch=rework 消费。
+ * 若是，返工由 Condition 触发（它会把自己也纳入返工区域重新求值），
+ * 桥接层不得再自动触发一次，否则会留下一个不会被重新求值的 Condition。
+ */
+export function isTestReportConsumedByCondition(
+  definition: WorkflowDefinition,
+  testNodeKey: string,
+): boolean {
+  return definition.nodes.some(
+    (node) =>
+      node.type === 'condition' &&
+      typeof node.config.falseBranch === 'object' &&
+      node.config.falseBranch.kind === 'rework' &&
+      node.config.falseBranch.reportNodeKey === testNodeKey,
+  )
 }
 
 export type ReadinessResult = {
@@ -159,8 +178,11 @@ export function evaluateReadiness(
     }
 
     const taken = dispositions.filter((item) => item.disposition === 'taken').length
+    const skipped = dispositions.filter((item) => item.disposition === 'skipped').length
     if (node.type === 'join') {
-      if (taken !== incoming.length) {
+      // skipped 不阻塞 join：全部入边要么 taken、要么 skipped 即可进入 join 运行时，
+      // 由运行时决定 join 自身是否 skipped（all_success 前提不成立）。
+      if (taken + skipped !== incoming.length) {
         pending.set(node.key, 'join_waiting_all_success')
         continue
       }

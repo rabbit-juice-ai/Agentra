@@ -57,6 +57,52 @@ function definition(
   } as unknown as WorkflowDefinition
 }
 
+function parallelDefinition(): WorkflowDefinition {
+  return {
+    schemaVersion: 1,
+    nodes: [
+      { key: 'start', type: 'start', label: '', position: { x: 0, y: 0 }, config: {} },
+      { key: 'split_1', type: 'parallel_split', label: '', position: { x: 0, y: 1 }, config: {} },
+      {
+        key: 'ui',
+        type: 'agent_task',
+        label: '',
+        position: { x: 0, y: 2 },
+        config: { assignmentSelector: { workRole: 'dev' }, taskPrompt: 'ui' },
+      },
+      {
+        key: 'api',
+        type: 'agent_task',
+        label: '',
+        position: { x: 1, y: 2 },
+        config: { assignmentSelector: { workRole: 'dev' }, taskPrompt: 'api' },
+      },
+      {
+        key: 'join',
+        type: 'join',
+        label: '',
+        position: { x: 0, y: 3 },
+        config: { pairWith: 'split_1' },
+      },
+      { key: 'end', type: 'end', label: '', position: { x: 0, y: 4 }, config: {} },
+    ],
+    edges: [
+      { key: 'e1', source: 'start', target: 'split_1' },
+      { key: 'e2', source: 'split_1', target: 'ui', branchKey: 'ui' },
+      { key: 'e3', source: 'split_1', target: 'api', branchKey: 'api' },
+      { key: 'e4', source: 'ui', target: 'join' },
+      { key: 'e5', source: 'api', target: 'join' },
+      { key: 'e6', source: 'join', target: 'end' },
+    ],
+    settings: {
+      defaults: { timeoutSeconds: 1800, maxAttempts: 1 },
+      reworkPolicy: { maxRounds: 2 },
+      failureStrategy: 'fail_branch',
+      concurrency: { maxParallelNodes: 4 },
+    },
+  } as unknown as WorkflowDefinition
+}
+
 function setup(options: { repositoryPath?: string | null } = {}): {
   db: Database
   service: WorkflowRunService
@@ -137,6 +183,26 @@ describe('WorkflowRunService', () => {
       expect(counts(h.db)).toEqual({ runs: 1, branches: 1, nodes: 3 })
       expect(h.branches.listByRun(run.id)[0]?.branchKey).toBe('root')
       expect(h.nodes.listByRun(run.id).every((node) => node.status === 'blocked')).toBe(true)
+    } finally {
+      h.close()
+    }
+  })
+
+  it('links every NodeRun to the BranchRun of its parallel region', () => {
+    const h = setup()
+    try {
+      const versionId = h.createVersion(parallelDefinition())
+      const run = h.service.createRun({ workId: 'work-1', workflowVersionId: versionId })
+      const branches = new Map(
+        h.branches.listByRun(run.id).map((branch) => [branch.branchKey, branch.id]),
+      )
+      const nodeBranches = new Map(
+        h.nodes.listByRun(run.id).map((node) => [node.workflowNodeKey, node.branchRunId]),
+      )
+      expect(nodeBranches.get('ui')).toBe(branches.get('split_1/ui'))
+      expect(nodeBranches.get('api')).toBe(branches.get('split_1/api'))
+      expect(nodeBranches.get('join')).toBe(branches.get('root'))
+      expect(nodeBranches.get('end')).toBe(branches.get('root'))
     } finally {
       h.close()
     }

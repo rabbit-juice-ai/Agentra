@@ -1,6 +1,12 @@
 import type { WorkflowDefinition } from '@agentra/workflow-schema'
 import { describe, expect, it } from 'vitest'
-import { evaluateReadiness, type NodeStateView, ROOT_BRANCH_KEY, resolveBranchKeys } from './graph'
+import {
+  evaluateReadiness,
+  isTestReportConsumedByCondition,
+  type NodeStateView,
+  ROOT_BRANCH_KEY,
+  resolveBranchKeys,
+} from './graph'
 import type { NodeRunStatus } from './state-machine'
 
 function parallelDefinition(): WorkflowDefinition {
@@ -175,6 +181,31 @@ describe('evaluateReadiness · join', () => {
     state.set('backend', { status: 'succeeded', output: null })
     expect(evaluateReadiness(definition, state).ready).toContain('join_1')
   })
+
+  it('does not block on skipped upstream (join runtime decides its own terminal state)', () => {
+    const definition = parallelDefinition()
+    const state = allBlocked(definition)
+    for (const key of ['start', 'prd', 'split_1', 'ui']) {
+      state.set(key, { status: 'succeeded', output: null })
+    }
+    state.set('backend', { status: 'skipped', output: null })
+
+    const result = evaluateReadiness(definition, state)
+    expect(result.ready).toContain('join_1')
+    expect(result.failedPredecessors.has('join_1')).toBe(false)
+  })
+
+  it('still waits when one upstream is skipped and another is pending', () => {
+    const definition = parallelDefinition()
+    const state = allBlocked(definition)
+    for (const key of ['start', 'prd', 'split_1']) {
+      state.set(key, { status: 'succeeded', output: null })
+    }
+    state.set('ui', { status: 'skipped', output: null })
+    state.set('backend', { status: 'running', output: null })
+
+    expect(evaluateReadiness(definition, state).ready).not.toContain('join_1')
+  })
 })
 
 describe('evaluateReadiness · condition 出边', () => {
@@ -201,5 +232,46 @@ describe('evaluateReadiness · condition 出边', () => {
     const result = evaluateReadiness(definition, state)
     expect(result.ready).not.toContain('end_1')
     expect(result.pending.get('end_1')).toContain('condition_outcome_missing')
+  })
+})
+
+describe('isTestReportConsumedByCondition', () => {
+  it('recognises a condition that owns the test report rework', () => {
+    const definition = {
+      schemaVersion: 1,
+      nodes: [
+        { key: 'start', type: 'start', label: '', position: { x: 0, y: 0 }, config: {} },
+        { key: 'test_1', type: 'agent_task', label: '', position: { x: 0, y: 1 }, config: {} },
+        {
+          key: 'cond',
+          type: 'condition',
+          label: '',
+          position: { x: 0, y: 2 },
+          config: {
+            predicate: {
+              kind: 'comparison',
+              op: '==',
+              left: { kind: 'field', path: 'nodes.test_1.status' },
+              right: { kind: 'literal', value: 'succeeded' },
+            },
+            falseBranch: { kind: 'rework', reportNodeKey: 'test_1' },
+          },
+        },
+        { key: 'end', type: 'end', label: '', position: { x: 0, y: 3 }, config: {} },
+      ],
+      edges: [
+        { key: 'e1', source: 'start', target: 'test_1' },
+        { key: 'e2', source: 'test_1', target: 'cond' },
+        { key: 'e3', source: 'cond', target: 'end', when: true },
+      ],
+      settings: {
+        defaults: { timeoutSeconds: 1800, maxAttempts: 1 },
+        reworkPolicy: { maxRounds: 2 },
+        failureStrategy: 'fail_branch',
+        concurrency: { maxParallelNodes: 4 },
+      },
+    } as unknown as WorkflowDefinition
+    expect(isTestReportConsumedByCondition(definition, 'test_1')).toBe(true)
+    expect(isTestReportConsumedByCondition(definition, 'other')).toBe(false)
   })
 })

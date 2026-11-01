@@ -17,6 +17,8 @@ export type ControlEventSink = {
 
 export type ReworkTrigger = {
   request(input: { runId: string; nodeRunId: string; nodeKey: string; reportNodeKey: string }): void
+  /** Condition 重新求值为 true：上一轮由它触发的返工完成。 */
+  onConditionCompleted?(nodeRunId: string): void
 }
 
 export type ControlNodeDeps = {
@@ -62,6 +64,14 @@ function latestStates(deps: ControlNodeDeps, runId: string): Map<string, Conditi
   return latest
 }
 
+/** Start 运行时：无副作用，直接把 running 收尾为 succeeded。 */
+export function completeStartNode(deps: ControlNodeDeps, nodeRunId: string): void {
+  const { nodeRun, node } = load(deps, nodeRunId)
+  if (node.type !== 'start') throw new Error(`node ${node.key} is not a start node`)
+  const now = (deps.now ?? (() => new Date().toISOString()))()
+  deps.nodes.transition(nodeRun.id, ['running'], 'succeeded', now)
+}
+
 /** Condition 运行时：求值 → 写 output.when；求值异常 → 节点 failed（不按 false 处理）。 */
 export function completeConditionNode(deps: ControlNodeDeps, nodeRunId: string): void {
   const { nodeRun, run, definition, node } = load(deps, nodeRunId)
@@ -79,6 +89,7 @@ export function completeConditionNode(deps: ControlNodeDeps, nodeRunId: string):
     return
   }
 
+  let triggerRework = false
   if (!result.value) {
     const falseBranch = node.config.falseBranch
     if (typeof falseBranch === 'object' && falseBranch.kind === 'rework') {
@@ -97,12 +108,7 @@ export function completeConditionNode(deps: ControlNodeDeps, nodeRunId: string):
         )
         return
       }
-      deps.reworkTrigger.request({
-        runId: run.id,
-        nodeRunId: nodeRun.id,
-        nodeKey: node.key,
-        reportNodeKey: falseBranch.reportNodeKey,
-      })
+      triggerRework = true
     } else if (!definition.edges.some((edge) => edge.source === node.key && edge.when === false)) {
       deps.nodes.fail(
         nodeRun.id,
@@ -118,8 +124,48 @@ export function completeConditionNode(deps: ControlNodeDeps, nodeRunId: string):
     }
   }
 
-  deps.nodes.transition(nodeRun.id, ['running'], 'succeeded', now, {
+  const succeeded = deps.nodes.transition(nodeRun.id, ['running'], 'succeeded', now, {
     outputSnapshot: { when: result.value },
+  })
+  if (!succeeded) return
+  if (result.value) {
+    // 返工后 Condition 再次求值为 true：此时本轮返工才算完成。
+    deps.reworkTrigger?.onConditionCompleted?.(nodeRun.id)
+    return
+  }
+  if (triggerRework) {
+    // 先让 Condition 自身进入 succeeded，再重置「target → Condition」区域；
+    // 否则 Condition 仍处于 running，返工无法为它创建新 attempt。
+    const falseBranch = node.config.falseBranch
+    if (typeof falseBranch === 'object' && falseBranch.kind === 'rework') {
+      deps.reworkTrigger?.request({
+        runId: run.id,
+        nodeRunId: nodeRun.id,
+        nodeKey: node.key,
+        reportNodeKey: falseBranch.reportNodeKey,
+      })
+    }
+  }
+}
+
+/** ParallelSplit 运行时：split 成功时激活各分支（ensureBranchRuns 只建 blocked）。 */
+export function completeSplitNode(deps: ControlNodeDeps, nodeRunId: string): void {
+  const { nodeRun, run, definition, node } = load(deps, nodeRunId)
+  if (node.type !== 'parallel_split')
+    throw new Error(`node ${node.key} is not a parallel_split node`)
+  const now = (deps.now ?? (() => new Date().toISOString()))()
+
+  transaction(deps.db, () => {
+    if (!deps.nodes.transition(nodeRun.id, ['running'], 'succeeded', now)) return
+    const branchEdges = definition.edges.filter(
+      (edge) => edge.source === node.key && edge.branchKey !== undefined,
+    )
+    for (const edge of branchEdges) {
+      const branch = deps.branches.getByKey(run.id, `${node.key}/${edge.branchKey}`)
+      if (branch?.status === 'blocked') {
+        deps.branches.transition(branch.id, ['blocked'], 'active', now)
+      }
+    }
   })
 }
 
@@ -130,13 +176,12 @@ export function completeJoinNode(deps: ControlNodeDeps, nodeRunId: string): void
   const now = (deps.now ?? (() => new Date().toISOString()))()
   const states = latestStates(deps, run.id)
   const incoming = definition.edges.filter((edge) => edge.target === node.key)
+  const sources = incoming.map((edge) => edge.source)
 
-  const failedSources = incoming
-    .map((edge) => edge.source)
-    .filter((source) => {
-      const state = states.get(source)
-      return state?.status === 'failed' || state?.status === 'cancelled'
-    })
+  const failedSources = sources.filter((source) => {
+    const state = states.get(source)
+    return state?.status === 'failed' || state?.status === 'cancelled'
+  })
   if (failedSources.length > 0) {
     deps.nodes.fail(
       nodeRun.id,
@@ -152,9 +197,29 @@ export function completeJoinNode(deps: ControlNodeDeps, nodeRunId: string): void
     return
   }
 
-  const allSucceeded = incoming.every((edge) => states.get(edge.source)?.status === 'succeeded')
-  if (!allSucceeded) return
-  deps.nodes.transition(nodeRun.id, ['running'], 'succeeded', now)
+  const allSucceeded = sources.every((source) => states.get(source)?.status === 'succeeded')
+  const allDisposed = sources.every((source) => {
+    const status = states.get(source)?.status
+    return status === 'succeeded' || status === 'skipped'
+  })
+  if (!allDisposed) return
+
+  // F-1：join 成功即代表该 split 的全部支线都走到了 join，分支任务完成。
+  // 与 join 迁移同事务，避免「join succeeded 但分支仍 active」的中间态。
+  transaction(deps.db, () => {
+    if (
+      !deps.nodes.transition(nodeRun.id, ['running'], allSucceeded ? 'succeeded' : 'skipped', now)
+    ) {
+      return
+    }
+    if (!allSucceeded) return
+    const splitKey = node.config.pairWith
+    for (const branch of deps.branches.listByRun(run.id)) {
+      if (!branch.branchKey.startsWith(`${splitKey}/`)) continue
+      if (branch.status !== 'active' && branch.status !== 'paused') continue
+      deps.branches.transition(branch.id, [branch.status], 'completed', now)
+    }
+  })
 }
 
 /** C-9：全部分支终止后才终结 Run；任一 failed → failed，否则 completed。 */
@@ -222,7 +287,10 @@ export function enterHumanApproval(deps: ControlNodeDeps, nodeRunId: string): vo
       .sort((left, right) => right.attempt - left.attempt)[0]
     deps.approvals.requestForNode(nodeRun.id, {
       approvalType: node.config.target.phase,
-      targetNodeRunId: targetNode?.id ?? null,
+      // DATABASE §2.7：before_execute 决策发生时任务尚未执行，target_node_run_id 必须为 NULL；
+      // 只有 after_execute 才指向被审任务的最新 attempt。
+      targetNodeRunId:
+        node.config.target.phase === 'after_execute' ? (targetNode?.id ?? null) : null,
       requestedBy: 'system',
     })
   })

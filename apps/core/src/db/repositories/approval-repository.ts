@@ -21,6 +21,7 @@ export type ApprovalRecord = {
   requestedBy: string
   decidedBy: string | null
   decisionComment: string | null
+  reworkRequestId: string | null
   round: number
   requestedAt: string
   decidedAt: string | null
@@ -36,6 +37,7 @@ type ApprovalRow = {
   requested_by: string
   decided_by: string | null
   decision_comment: string | null
+  rework_request_id: string | null
   round: number
   requested_at: string
   decided_at: string | null
@@ -52,6 +54,7 @@ function toRecord(row: ApprovalRow): ApprovalRecord {
     requestedBy: row.requested_by,
     decidedBy: row.decided_by,
     decisionComment: row.decision_comment,
+    reworkRequestId: row.rework_request_id,
     round: row.round,
     requestedAt: row.requested_at,
     decidedAt: row.decided_at,
@@ -119,10 +122,19 @@ export class ApprovalRepository {
     return row ? toRecord(row) : null
   }
 
-  nextRound(nodeRunId: string): number {
+  /**
+   * 审批轮次按「同一 Run 的同一审批节点」累计：返工后重新进入会创建新的 NodeRun attempt，
+   * 若按 node_run_id 统计会从 1 重新开始，破坏 DATABASE §2.7 的 round 语义。
+   */
+  nextRoundForNodeKey(workflowRunId: string, workflowNodeKey: string): number {
     const row = this.db
-      .prepare('SELECT COALESCE(MAX(round), 0) + 1 AS next FROM approvals WHERE node_run_id = ?')
-      .get(nodeRunId) as { next: number }
+      .prepare(
+        `SELECT COALESCE(MAX(a.round), 0) + 1 AS next
+         FROM approvals a
+         JOIN node_runs n ON n.id = a.node_run_id
+         WHERE a.workflow_run_id = ? AND n.workflow_node_key = ?`,
+      )
+      .get(workflowRunId, workflowNodeKey) as { next: number }
     return row.next
   }
 
@@ -131,6 +143,14 @@ export class ApprovalRepository {
       .prepare('SELECT * FROM approvals WHERE workflow_run_id = ? ORDER BY requested_at ASC')
       .all(workflowRunId) as ApprovalRow[]
     return rows.map(toRecord)
+  }
+
+  /** 关联 request_changes 产生的 ReworkRequest（同一事务内调用）。 */
+  linkReworkRequest(id: string, reworkRequestId: string): boolean {
+    const result = this.db
+      .prepare('UPDATE approvals SET rework_request_id = ? WHERE id = ?')
+      .run(reworkRequestId, id)
+    return Number(result.changes) > 0
   }
 
   /** CAS：只有 pending 能进入终态；返回 false 表示已被并发决策。 */
