@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import { PROTOCOL_VERSION } from '@agentra/protocol'
 import { agentraHome, agentraPaths, createLogger, ensureDirs, isDirectRun } from '@agentra/shared'
+import { assertCoreSocketAvailable } from './core-instance-guard'
 import { DaemonClient } from './daemon/daemon-client'
 import { ensureDaemon } from './daemon-launcher'
 import { openDatabase } from './db/database'
@@ -35,6 +36,18 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const paths = agentraPaths(home)
   ensureDirs(paths)
   const logger = createLogger('core')
+
+  // Core 单实例守卫：已有活 Core 就拒绝启动，绝不 unlink 掉别人的 socket。
+  // 产品路径由 Electron 单实例锁保护；这里覆盖 dev:core / QA 脚本 / 非 Electron 部署。
+  try {
+    await assertCoreSocketAvailable(paths.coreSocket)
+  } catch (error) {
+    logger.error('core refused to start: another instance is live', {
+      socket: paths.coreSocket,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    process.exit(1)
+  }
 
   // 启动链：Core 负责 Daemon 存活（探活优先，附着已有实例）。
   const daemon = await ensureDaemon(paths, env)

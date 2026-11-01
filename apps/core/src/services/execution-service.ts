@@ -78,6 +78,8 @@ export type ExecutionServiceDeps = {
   hub: CoreEventHub
   scratchRoot: string
   logger?: ExecutionServiceLogger
+  /** 执行进入终态后的回调（S4-4 工作流桥接用）。回调异常不得影响执行状态落库。 */
+  onExecutionFinished?: (execution: Execution) => void
   now?: () => string
 }
 
@@ -113,6 +115,7 @@ export class ExecutionService {
   private readonly locks: WorkdirLockService
   private readonly scratchRoot: string
   private readonly logger: ExecutionServiceLogger | undefined
+  private readonly onExecutionFinished: ((execution: Execution) => void) | undefined
   private readonly now: () => string
 
   constructor(deps: ExecutionServiceDeps) {
@@ -130,10 +133,26 @@ export class ExecutionService {
     this.locks = deps.locks
     this.scratchRoot = deps.scratchRoot
     this.logger = deps.logger
+    this.onExecutionFinished = deps.onExecutionFinished
     this.now = deps.now ?? (() => new Date().toISOString())
   }
 
   async start(params: ExecutionStartParams): Promise<Execution> {
+    return this.startInternal(params, null)
+  }
+
+  /**
+   * 工作流节点专用入口：把 Execution 绑定到 NodeRun（executions.node_run_id）。
+   * 不暴露为 RPC —— 只有 Core 内部的 WorkflowExecutionBridge 调用。
+   */
+  async startForNode(nodeRunId: string, params: ExecutionStartParams): Promise<Execution> {
+    return this.startInternal(params, nodeRunId)
+  }
+
+  private async startInternal(
+    params: ExecutionStartParams,
+    nodeRunId: string | null,
+  ): Promise<Execution> {
     const prompt = params.prompt.trim()
     if (prompt.length === 0) {
       throw new RpcMethodError('INVALID_PARAMS', 'prompt must not be blank')
@@ -215,7 +234,7 @@ export class ExecutionService {
         updatedAt: now,
         lastActiveAt: now,
       })
-      this.executions.create(execution)
+      this.executions.create(execution, nodeRunId)
       // D-1：同一事务内把 Session 绑到 Assignment（阶段 1 scratch 模式没有 assignment，保持 NULL）。
       if (assignment) this.sessions.bindAssignment(sessionId, assignment.id, now)
       this.appendSystemLog(
@@ -398,6 +417,11 @@ export class ExecutionService {
     return this.get(execution.id)
   }
 
+  /** executionId → node_run_id（工作流桥接用）。 */
+  getNodeRunId(executionId: string): string | null {
+    return this.executions.getNodeRunId(executionId)
+  }
+
   get(executionId: string): Execution {
     const execution = this.executions.get(executionId)
     if (!execution) {
@@ -551,6 +575,21 @@ export class ExecutionService {
       payload.timestamp,
     )
     this.hub.publish(event)
+    if (isTerminalExecutionState(payload.status)) this.notifyExecutionFinished(payload.executionId)
+  }
+
+  private notifyExecutionFinished(executionId: string): void {
+    if (!this.onExecutionFinished) return
+    const execution = this.executions.get(executionId)
+    if (!execution) return
+    try {
+      this.onExecutionFinished(execution)
+    } catch (error) {
+      this.logger?.warn('onExecutionFinished callback failed', {
+        executionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
 
   private handleExited(event: RuntimeEvent): void {
@@ -586,6 +625,7 @@ export class ExecutionService {
       payload.timestamp,
     )
     this.hub.publish(event)
+    this.notifyExecutionFinished(payload.executionId)
   }
 
   /**

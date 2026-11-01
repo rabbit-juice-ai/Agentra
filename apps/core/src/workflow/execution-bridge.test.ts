@@ -1,0 +1,326 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import type { Execution } from '@agentra/protocol'
+import type { WorkflowDefinition } from '@agentra/workflow-schema'
+import { afterEach, describe, expect, it } from 'vitest'
+import { type Database, openDatabase } from '../db/database'
+import { migrate } from '../db/migrations'
+import { AssignmentRepository } from '../db/repositories/assignment-repository'
+import { BranchRunRepository } from '../db/repositories/branch-run-repository'
+import { NodeRunRepository } from '../db/repositories/node-run-repository'
+import { WorkRepository } from '../db/repositories/work-repository'
+import { WorkflowRepository } from '../db/repositories/workflow-repository'
+import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
+import { WorkflowDefinitionService } from '../services/workflow-definition-service'
+import { WorktreeService } from '../services/worktree-service'
+import { WorkflowAssignmentResolver } from './assignment-resolver'
+import type { DispatchContext } from './dispatch-gates'
+import { type ExecutionStarter, WorkflowExecutionBridge } from './execution-bridge'
+import { PublishedDefinitionProvider } from './published-definition-provider'
+import { WorkflowRunService } from './run-service'
+
+const NOW = '2026-11-01T00:00:00.000Z'
+const dirs: string[] = []
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+const CAPABILITIES = {
+  streaming: 'native',
+  structuredEvents: 'native',
+  interrupt: 'native',
+  resume: 'native',
+  checkpoint: 'unsupported',
+  permissionRequests: 'unsupported',
+  sessionPersistence: 'native',
+  workingDirectory: 'native',
+  toolControl: 'native',
+} as const
+
+function execution(
+  id: string,
+  status: Execution['status'],
+  exitCode: number | null = null,
+): Execution {
+  return {
+    id,
+    sessionId: 'ses-1',
+    providerId: 'prov-1',
+    agentId: 'agent-1',
+    externalExecutionId: null,
+    processId: null,
+    status,
+    workingDirectory: '/tmp/w',
+    startedAt: NOW,
+    endedAt: NOW,
+    exitCode,
+    capabilities: { ...CAPABILITIES },
+    createdAt: NOW,
+    updatedAt: NOW,
+  }
+}
+
+function definition(): WorkflowDefinition {
+  return {
+    schemaVersion: 1,
+    nodes: [
+      { key: 'start', type: 'start', label: '', position: { x: 0, y: 0 }, config: {} },
+      {
+        key: 'task_1',
+        type: 'agent_task',
+        label: '',
+        position: { x: 0, y: 1 },
+        config: {
+          assignmentSelector: { workRole: 'dev' },
+          taskPrompt: 'do it',
+          outputContract: { profile: 'test_result' },
+          retryPolicy: { maxAttempts: 2 },
+        },
+      },
+      { key: 'end', type: 'end', label: '', position: { x: 0, y: 2 }, config: {} },
+    ],
+    edges: [
+      { key: 'e1', source: 'start', target: 'task_1' },
+      { key: 'e2', source: 'task_1', target: 'end' },
+    ],
+    settings: {
+      defaults: { timeoutSeconds: 1800, maxAttempts: 1 },
+      reworkPolicy: { maxRounds: 2 },
+      failureStrategy: 'fail_branch',
+      concurrency: { maxParallelNodes: 4 },
+    },
+  } as unknown as WorkflowDefinition
+}
+
+class FakeStarter implements ExecutionStarter {
+  readonly calls: { nodeRunId: string; params: Record<string, unknown> }[] = []
+  private readonly map = new Map<string, string>()
+
+  async startForNode(
+    nodeRunId: string,
+    params: { agentId: string; workId: string; prompt: string; worktreeId?: string },
+  ): Promise<Execution> {
+    this.calls.push({ nodeRunId, params })
+    const id = `exe-${this.calls.length}`
+    this.map.set(id, nodeRunId)
+    return execution(id, 'running')
+  }
+
+  getNodeRunId(executionId: string): string | null {
+    return this.map.get(executionId) ?? null
+  }
+
+  /** 测试辅助：把已存在的执行直接绑定到 NodeRun（不经过 startForNode）。 */
+  bind(executionId: string, nodeRunId: string): void {
+    this.map.set(executionId, nodeRunId)
+  }
+}
+
+function setup(): {
+  db: Database
+  bridge: WorkflowExecutionBridge
+  starter: FakeStarter
+  outputs: Map<string, Record<string, unknown>>
+  context: DispatchContext
+  nodes: NodeRunRepository
+  nodeRunId: string
+  close: () => void
+} {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentra-bridge-'))
+  dirs.push(dir)
+  const db = openDatabase(path.join(dir, 'agentra.db'))
+  migrate(db)
+  db.prepare(
+    `INSERT INTO works (id, name, description, objective, status, priority, root_path,
+       repository_path, settings_json, created_at, updated_at, completed_at)
+     VALUES ('work-1', 'W', '', '', 'active', 'normal', '/tmp/w', NULL, '{}', ?, ?, NULL)`,
+  ).run(NOW, NOW)
+  db.prepare(
+    `INSERT INTO agent_profiles (id, name, role, description, system_prompt, skills_json,
+       default_provider_id, max_concurrency, status, created_at, updated_at, archived_at,
+       tool_permissions_json)
+     VALUES ('agent-1', 'A', 'dev', '', '', '[]', NULL, 1, 'active', ?, ?, NULL,
+       '{"version":1,"allow":["Read"],"deny":[]}')`,
+  ).run(NOW, NOW)
+  db.prepare(
+    `INSERT INTO assignments (id, work_id, agent_id, team_id, work_role, task_scope, status,
+       concurrency_limit, context_ref, created_at, updated_at)
+     VALUES ('as-1', 'work-1', 'agent-1', NULL, 'dev', '', 'active', NULL, NULL, ?, ?)`,
+  ).run(NOW, NOW)
+
+  const workRepo = new WorkRepository(db)
+  const assignmentRepo = new AssignmentRepository(db)
+  const workflowRepo = new WorkflowRepository(db)
+  const definitions = new PublishedDefinitionProvider(workflowRepo)
+  const definitionService = new WorkflowDefinitionService(db, workflowRepo, () => NOW)
+  const template = definitionService.createTemplate({ name: 't' })
+  const draft = definitionService.createDraft(template.id, definition())
+  definitionService.publish(draft.id)
+
+  const runs = new WorkflowRunRepository(db)
+  const branches = new BranchRunRepository(db)
+  const nodes = new NodeRunRepository(db)
+  const resolver = new WorkflowAssignmentResolver(assignmentRepo)
+  const runService = new WorkflowRunService(
+    db,
+    runs,
+    branches,
+    nodes,
+    workRepo,
+    definitions,
+    resolver,
+    () => NOW,
+  )
+  const run = runService.createRun({ workId: 'work-1', workflowVersionId: draft.id })
+  const nodeRun = nodes.listByRun(run.id).find((node) => node.workflowNodeKey === 'task_1')
+  if (!nodeRun) throw new Error('missing task node run')
+  nodes.transition(nodeRun.id, ['blocked'], 'ready', NOW)
+  nodes.transition(nodeRun.id, ['ready'], 'running', NOW)
+  const branch = branches.listByRun(run.id)[0]
+  if (!branch) throw new Error('missing root branch')
+
+  const starter = new FakeStarter()
+  const outputs = new Map<string, Record<string, unknown>>()
+  const bridge = new WorkflowExecutionBridge({
+    runs,
+    nodes,
+    works: workRepo,
+    worktrees: new WorktreeService(
+      db,
+      workRepo,
+      assignmentRepo,
+      path.join(dir, 'worktrees'),
+      () => NOW,
+    ),
+    definitions,
+    resolver,
+    executions: starter,
+    outputs: (executionId) => outputs.get(executionId) ?? null,
+    now: () => NOW,
+  })
+
+  return {
+    db,
+    bridge,
+    starter,
+    outputs,
+    nodes,
+    nodeRunId: nodeRun.id,
+    context: {
+      run,
+      nodeRun,
+      node: definition().nodes.find((node) => node.key === 'task_1') as never,
+      branch,
+      branchKey: 'root',
+      definition: definition(),
+    },
+    close: () => db.close(),
+  }
+}
+
+describe('WorkflowExecutionBridge · 启动', () => {
+  it('binds the execution to the NodeRun via startForNode', async () => {
+    const h = setup()
+    try {
+      await h.bridge.onNodeStarted(h.context)
+      expect(h.starter.calls).toHaveLength(1)
+      expect(h.starter.calls[0]?.nodeRunId).toBe(h.nodeRunId)
+      expect(h.starter.calls[0]?.params).toMatchObject({ agentId: 'agent-1', workId: 'work-1' })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('fails the node with assignment_inactive instead of rebinding when the assignment is paused', async () => {
+    const h = setup()
+    try {
+      h.db.prepare("UPDATE assignments SET status = 'paused' WHERE id = 'as-1'").run()
+      await h.bridge.onNodeStarted(h.context)
+      expect(h.starter.calls).toHaveLength(0)
+      const node = h.nodes.get(h.nodeRunId)
+      expect(node?.status).toBe('failed')
+      expect(node?.error?.category).toBe('assignment_inactive')
+    } finally {
+      h.close()
+    }
+  })
+})
+
+describe('WorkflowExecutionBridge · 完成与输出契约', () => {
+  it('succeeds the node when the execution succeeded and the contract is satisfied', () => {
+    const h = setup()
+    try {
+      const output = {
+        pass: true,
+        failureReason: '',
+        relatedTasks: [],
+        impactScope: 'none',
+        relatedArtifacts: [],
+      }
+      h.outputs.set('exe-1', output)
+      h.starter.bind('exe-1', h.nodeRunId)
+      h.bridge.onExecutionFinished(execution('exe-1', 'succeeded', 0))
+      const node = h.nodes.get(h.nodeRunId)
+      expect(node?.status).toBe('succeeded')
+      expect(node?.outputSnapshot).toEqual(output)
+    } finally {
+      h.close()
+    }
+  })
+
+  it('fails the node with output_contract_violation when output is missing (no rework)', () => {
+    const h = setup()
+    try {
+      h.starter.bind('exe-1', h.nodeRunId)
+      h.bridge.onExecutionFinished(execution('exe-1', 'succeeded', 0))
+      const node = h.nodes.get(h.nodeRunId)
+      expect(node?.status).toBe('failed')
+      expect(node?.error?.category).toBe('output_contract_violation')
+      expect(h.nodes.listByRunAndKey(h.context.run.id, 'task_1')).toHaveLength(1)
+    } finally {
+      h.close()
+    }
+  })
+})
+
+describe('WorkflowExecutionBridge · NodeRun 级重试', () => {
+  it('creates the next attempt while under maxAttempts', () => {
+    const h = setup()
+    try {
+      h.starter.bind('exe-1', h.nodeRunId)
+      h.bridge.onExecutionFinished(execution('exe-1', 'failed', 1))
+      const attempts = h.nodes.listByRunAndKey(h.context.run.id, 'task_1')
+      expect(attempts).toHaveLength(2)
+      expect(attempts[0]?.status).toBe('failed')
+      expect(attempts[1]?.status).toBe('ready')
+      expect(attempts[1]?.attempt).toBe(2)
+    } finally {
+      h.close()
+    }
+  })
+
+  it('does not create a further attempt once maxAttempts is reached', () => {
+    const h = setup()
+    try {
+      const second = h.nodes.create(
+        {
+          id: 'nrn-attempt-2',
+          workflowRunId: h.context.run.id,
+          workflowNodeKey: 'task_1',
+          status: 'running',
+          attempt: 2,
+        },
+        NOW,
+      )
+      h.starter.bind('exe-1', second.id)
+      h.bridge.onExecutionFinished(execution('exe-1', 'failed', 1))
+      expect(h.nodes.get(second.id)?.status).toBe('failed')
+      // 已达 maxAttempts=2：不再创建 attempt 3
+      expect(h.nodes.listByRunAndKey(h.context.run.id, 'task_1')).toHaveLength(2)
+    } finally {
+      h.close()
+    }
+  })
+})

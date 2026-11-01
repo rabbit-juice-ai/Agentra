@@ -68,6 +68,33 @@ function latestAttempts(nodes: NodeRunRecord[]): Map<string, NodeRunRecord> {
   return latest
 }
 
+/** 为一次 Run 建立分支实例：root（active）+ 每个 split 的 `<split>/<branchKey>`（blocked）。幂等。 */
+export function ensureBranchRuns(
+  branches: BranchRunRepository,
+  runId: string,
+  definition: WorkflowDefinition,
+  now: string,
+): BranchRunRecord[] {
+  const branchKeys = new Set<string>([ROOT_BRANCH_KEY])
+  for (const key of resolveBranchKeys(definition).values()) branchKeys.add(key)
+
+  const existing = new Map(branches.listByRun(runId).map((branch) => [branch.branchKey, branch]))
+  for (const branchKey of branchKeys) {
+    if (existing.has(branchKey)) continue
+    const created = branches.create(
+      {
+        id: newId('brn'),
+        workflowRunId: runId,
+        branchKey,
+        status: branchKey === ROOT_BRANCH_KEY ? 'active' : 'blocked',
+      },
+      now,
+    )
+    existing.set(branchKey, created)
+  }
+  return [...existing.values()]
+}
+
 /**
  * 调度核心：只做「依赖计算 → blocked→ready → 闸门判定 → ready→running」。
  *
@@ -224,27 +251,7 @@ export class WorkflowScheduler {
    * 由 ParallelSplit 处理器在 split 成功时激活）。幂等。
    */
   ensureBranches(runId: string, definition: WorkflowDefinition): BranchRunRecord[] {
-    const now = this.now()
-    const branchKeys = new Set<string>([ROOT_BRANCH_KEY])
-    for (const key of resolveBranchKeys(definition).values()) branchKeys.add(key)
-
-    const existing = new Map(
-      this.branches.listByRun(runId).map((branch) => [branch.branchKey, branch]),
-    )
-    for (const branchKey of branchKeys) {
-      if (existing.has(branchKey)) continue
-      const created = this.branches.create(
-        {
-          id: newId('brn'),
-          workflowRunId: runId,
-          branchKey,
-          status: branchKey === ROOT_BRANCH_KEY ? 'active' : 'blocked',
-        },
-        now,
-      )
-      existing.set(branchKey, created)
-    }
-    return [...existing.values()]
+    return ensureBranchRuns(this.branches, runId, definition, this.now())
   }
 
   /** 暂停分支：只改状态（CAS active → paused），调度闸门随即拒绝该分支的派发。 */

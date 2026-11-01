@@ -447,6 +447,52 @@ CREATE INDEX IF NOT EXISTS idx_node_runs_run_key_attempt
   ON node_runs(workflow_run_id, workflow_node_key, attempt);
 `
 
+const PHASE_4_EXECUTION_NODE_FK = `
+-- 阶段 4 S4-4：executions.node_run_id 补外键 + 每个 NodeRun 至多一条执行（attempt 模型：
+-- 每次 attempt 一条 NodeRun，因此 1:1）。SQLite 不支持 ADD CONSTRAINT，只能重建表。
+-- 数据保全：按原列逐行复制，随后由 foreign_key_check 与迁移测试双重校验。
+CREATE TABLE executions_v10 (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES agent_sessions(id),
+  node_run_id TEXT REFERENCES node_runs(id) ON DELETE SET NULL,
+  provider_id TEXT NOT NULL REFERENCES runtime_providers(id),
+  external_execution_id TEXT,
+  process_id INTEGER,
+  status TEXT NOT NULL CHECK (
+    status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled', 'crashed')
+  ),
+  working_directory TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT,
+  exit_code INTEGER,
+  capabilities_snapshot_json TEXT NOT NULL,
+  recovery_state_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+INSERT INTO executions_v10 (
+  id, session_id, node_run_id, provider_id, external_execution_id, process_id, status,
+  working_directory, started_at, ended_at, exit_code, capabilities_snapshot_json,
+  recovery_state_json, created_at, updated_at
+)
+SELECT id, session_id, node_run_id, provider_id, external_execution_id, process_id, status,
+       working_directory, started_at, ended_at, exit_code, capabilities_snapshot_json,
+       recovery_state_json, created_at, updated_at
+FROM executions;
+
+DROP TABLE executions;
+ALTER TABLE executions_v10 RENAME TO executions;
+
+CREATE INDEX IF NOT EXISTS idx_executions_status_updated_at ON executions(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_executions_session ON executions(session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_executions_node_run
+  ON executions(node_run_id) WHERE node_run_id IS NOT NULL;
+-- 重建会丢掉 v7 的部分索引，必须原样恢复（队列查询依赖它）
+CREATE INDEX IF NOT EXISTS idx_executions_pending_created
+  ON executions(status, created_at, id) WHERE status = 'pending';
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -510,6 +556,15 @@ export const MIGRATIONS: Migration[] = [
     name: 'phase4_workflow_runtime',
     up: (db) => {
       db.exec(PHASE_4_WORKFLOW_RUNTIME)
+    },
+  },
+  {
+    version: 10,
+    name: 'phase4_execution_node_run_fk',
+    // 重建表：foreign_keys 必须在事务外关闭，运行器负责开关与 foreign_key_check。
+    rebuildsTables: true,
+    up: (db) => {
+      db.exec(PHASE_4_EXECUTION_NODE_FK)
     },
   },
 ]

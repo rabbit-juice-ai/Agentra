@@ -50,7 +50,7 @@ describe('migration v9 · workflow runtime tables', () => {
   it('creates workflow_runs / branch_runs / node_runs with indexes', () => {
     const db = openMigrated()
     try {
-      expect(currentUserVersion(db)).toBe(9)
+      expect(currentUserVersion(db)).toBe(10)
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
           name: string
@@ -141,7 +141,7 @@ describe('migration v9 · workflow runtime tables', () => {
     const db = openMigrated()
     try {
       const second = migrate(db)
-      expect(second).toEqual({ from: 9, to: 9, applied: [] })
+      expect(second).toEqual({ from: 10, to: 10, applied: [] })
 
       // v9 自身的 SQL 也必须幂等（CREATE … IF NOT EXISTS），重放一次再回滚
       const v9 = MIGRATIONS.find((migration) => migration.version === 9)

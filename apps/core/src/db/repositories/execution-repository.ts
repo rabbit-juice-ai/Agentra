@@ -85,7 +85,7 @@ export type FinishExecutionPatch = {
 export class ExecutionRepository {
   constructor(private readonly db: Database) {}
 
-  create(execution: Execution): void {
+  create(execution: Execution, nodeRunId: string | null = null): void {
     const capabilities = serializeJsonColumn(
       ProviderCapabilities,
       execution.capabilities,
@@ -97,12 +97,12 @@ export class ExecutionRepository {
           id, session_id, node_run_id, provider_id, external_execution_id, process_id, status,
           working_directory, started_at, ended_at, exit_code, capabilities_snapshot_json,
           recovery_state_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         execution.id,
         execution.sessionId,
-        null,
+        nodeRunId,
         execution.providerId,
         execution.externalExecutionId,
         execution.processId,
@@ -112,9 +112,18 @@ export class ExecutionRepository {
         execution.endedAt,
         execution.exitCode,
         capabilities,
+        null,
         execution.createdAt,
         execution.updatedAt,
       )
+  }
+
+  /** executionId → node_run_id（工作流桥接完成回调需要反查）。 */
+  getNodeRunId(executionId: string): string | null {
+    const row = this.db
+      .prepare('SELECT node_run_id FROM executions WHERE id = ?')
+      .get(executionId) as { node_run_id: string | null } | undefined
+    return row?.node_run_id ?? null
   }
 
   get(id: string): Execution | null {
