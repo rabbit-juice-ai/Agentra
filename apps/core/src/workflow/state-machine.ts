@@ -81,7 +81,8 @@ const BRANCH_TRANSITIONS: Record<BranchRunStatus, readonly BranchRunStatus[]> = 
 const NODE_TRANSITIONS: Record<NodeRunStatus, readonly NodeRunStatus[]> = {
   blocked: ['ready', 'skipped', 'cancelled'],
   ready: ['running', 'blocked', 'skipped', 'cancelled'],
-  running: ['succeeded', 'failed', 'cancelled', 'reconciliation_required'],
+  // waiting_approval：HumanApproval 节点在任务执行/审批时点进入等待（S4-5）
+  running: ['waiting_approval', 'succeeded', 'failed', 'cancelled', 'reconciliation_required'],
   waiting_approval: [
     'succeeded',
     'changes_requested',

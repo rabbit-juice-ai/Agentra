@@ -70,6 +70,10 @@ export function validateOutputContract(
   return null
 }
 
+export type ExecutionBridgeLogger = {
+  warn(message: string, meta?: Record<string, unknown>): void
+}
+
 export type ExecutionBridgeDeps = {
   runs: WorkflowRunRepository
   nodes: NodeRunRepository
@@ -79,6 +83,7 @@ export type ExecutionBridgeDeps = {
   resolver: WorkflowAssignmentResolver
   executions: ExecutionStarter
   outputs?: OutputExtractor
+  logger?: ExecutionBridgeLogger
   now?: () => string
 }
 
@@ -177,6 +182,11 @@ export class WorkflowExecutionBridge {
     if (node === undefined || node.type !== 'agent_task') return
 
     const now = this.now()
+    if (execution.status === 'cancelled') {
+      const cancelled = this.deps.nodes.transition(nodeRun.id, ['running'], 'cancelled', now)
+      if (!cancelled) this.warnUnchanged(nodeRun.id, node.key, 'cancelled')
+      return
+    }
     if (execution.status !== 'succeeded') {
       this.retryOrFail(
         nodeRun,
@@ -192,7 +202,7 @@ export class WorkflowExecutionBridge {
     const output = this.deps.outputs?.(execution.id) ?? null
     const violation = validateOutputContract(node.config.outputContract, output)
     if (violation) {
-      this.deps.nodes.fail(
+      const marked = this.deps.nodes.fail(
         nodeRun.id,
         ['running'],
         {
@@ -203,16 +213,18 @@ export class WorkflowExecutionBridge {
         },
         now,
       )
+      if (!marked) this.warnUnchanged(nodeRun.id, node.key, 'output_contract_violation')
       return
     }
 
-    this.deps.nodes.transition(
+    const succeeded = this.deps.nodes.transition(
       nodeRun.id,
       ['running'],
       'succeeded',
       now,
       output ? { outputSnapshot: output } : undefined,
     )
+    if (!succeeded) this.warnUnchanged(nodeRun.id, node.key, 'succeeded')
   }
 
   private retryOrFail(
@@ -226,12 +238,13 @@ export class WorkflowExecutionBridge {
     if (node.type !== 'agent_task') return
     const maxAttempts =
       node.config.retryPolicy?.maxAttempts ?? definition.settings.defaults.maxAttempts
-    this.deps.nodes.fail(
+    const marked = this.deps.nodes.fail(
       nodeRun.id,
       ['running'],
       { category: 'internal', nodeKey: node.key, message, details },
       now,
     )
+    if (!marked) this.warnUnchanged(nodeRun.id, node.key, 'failed')
     if (nodeRun.attempt >= maxAttempts) return
 
     // NodeRun 级重试：每次 attempt 一条新 NodeRun（与 D4 模型一致），交给下一次 tick 派发。
@@ -255,7 +268,21 @@ export class WorkflowExecutionBridge {
     category: NodeFailureCategory,
     message: string,
   ): void {
-    this.deps.nodes.fail(nodeRun.id, ['running'], { category, nodeKey, message }, this.now())
+    const marked = this.deps.nodes.fail(
+      nodeRun.id,
+      ['running'],
+      { category, nodeKey, message },
+      this.now(),
+    )
+    if (!marked) this.warnUnchanged(nodeRun.id, nodeKey, category)
+  }
+
+  private warnUnchanged(nodeRunId: string, nodeKey: string, target: string): void {
+    this.deps.logger?.warn('node state changed concurrently; transition skipped', {
+      nodeRunId,
+      nodeKey,
+      target,
+    })
   }
 }
 

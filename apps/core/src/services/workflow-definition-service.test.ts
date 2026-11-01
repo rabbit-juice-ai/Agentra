@@ -297,14 +297,10 @@ describe('阶段 3 边界', () => {
     service.publish(draft.id)
     service.deprecate(draft.id)
 
-    // 阶段 4 的 v9 会建这三张表；但定义层操作不得写入任何运行记录。
-    for (const table of ['workflow_runs', 'branch_runs', 'node_runs']) {
+    // 阶段 4 的 v9/v11 会建运行表与审批表；但定义层操作不得写入任何运行记录。
+    for (const table of ['workflow_runs', 'branch_runs', 'node_runs', 'approvals']) {
       const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }
       expect(row.count).toBe(0)
     }
-    const approvals = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'approvals'")
-      .get()
-    expect(approvals).toBeUndefined()
   })
 })

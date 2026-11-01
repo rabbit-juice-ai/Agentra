@@ -14,6 +14,11 @@ import {
 import { buildClaudeArgs, FAKE_CLAUDE_PATH } from '@agentra/runtime-cli'
 import { ProviderCapabilities } from '@agentra/runtime-sdk'
 import { newId } from '@agentra/shared'
+import {
+  computeChecksum,
+  type WorkflowDefinition,
+  WorkflowDefinitionSchema,
+} from '@agentra/workflow-schema'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { RuntimeClient } from '../daemon/daemon-client'
 import { type Database, openDatabase } from '../db/database'
@@ -23,10 +28,17 @@ import { AssignmentRepository } from '../db/repositories/assignment-repository'
 import { AuditRepository } from '../db/repositories/audit-repository'
 import { ExecutionLogRepository } from '../db/repositories/execution-log-repository'
 import { ExecutionRepository } from '../db/repositories/execution-repository'
+import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
 import { TeamRepository } from '../db/repositories/team-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
+import { WorkflowRepository } from '../db/repositories/workflow-repository'
+import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
+import { WorkflowAssignmentResolver } from '../workflow/assignment-resolver'
+import { checkWorkflowConsistency } from '../workflow/consistency'
+import { WorkflowExecutionBridge } from '../workflow/execution-bridge'
+import { PublishedDefinitionProvider } from '../workflow/published-definition-provider'
 import { AgentService } from './agent-service'
 import { AssignmentService } from './assignment-service'
 import { CoreEventHub } from './event-hub'
@@ -195,6 +207,12 @@ type Harness = {
   sessions: SessionRepository
   worktrees: WorktreeService
   locks: WorkdirLockService
+  workflow?: {
+    bridge: WorkflowExecutionBridge
+    nodeRunId: string
+    nodes: NodeRunRepository
+  }
+  warnings: string[]
 }
 
 const dirs: string[] = []
@@ -204,6 +222,8 @@ async function harness(
     health?: 'healthy' | 'unavailable' | 'unauthenticated'
     executablePath?: string | null
     capabilities?: typeof CAPABILITIES
+    /** 真实接线：ExecutionService.cancel → WorkflowExecutionBridge（O-2 集成测试用）。 */
+    workflow?: boolean
   } = {},
 ): Promise<Harness> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentra-exec-'))
@@ -261,6 +281,8 @@ async function harness(
     role: 'engineer',
     toolPermissions: { version: 1, allow: ['Read'], deny: ['Bash'] },
   })
+  let workflowBridge: WorkflowExecutionBridge | null = null
+  const warnings: string[] = []
   const executions = new ExecutionService({
     db,
     runtime,
@@ -275,8 +297,82 @@ async function harness(
     logs: logRepository,
     hub,
     scratchRoot: path.join(dir, 'scratch'),
+    logger: {
+      info: () => {},
+      warn: (message, data) => warnings.push(`${message} ${JSON.stringify(data ?? {})}`),
+      error: (message, data) => warnings.push(`${message} ${JSON.stringify(data ?? {})}`),
+    },
     now: () => NOW,
+    ...(options.workflow
+      ? { onExecutionFinished: (execution) => workflowBridge?.onExecutionFinished(execution) }
+      : {}),
   })
+
+  let workflow: Harness['workflow']
+  if (options.workflow) {
+    const definition = {
+      schemaVersion: 1,
+      nodes: [
+        { key: 'start', type: 'start', label: '', position: { x: 0, y: 0 }, config: {} },
+        {
+          key: 'task_1',
+          type: 'agent_task',
+          label: '',
+          position: { x: 0, y: 1 },
+          config: { assignmentSelector: { workRole: 'dev' }, taskPrompt: 'do it' },
+        },
+        { key: 'end', type: 'end', label: '', position: { x: 0, y: 2 }, config: {} },
+      ],
+      edges: [
+        { key: 'e1', source: 'start', target: 'task_1' },
+        { key: 'e2', source: 'task_1', target: 'end' },
+      ],
+      settings: {
+        defaults: { timeoutSeconds: 1800, maxAttempts: 1 },
+        reworkPolicy: { maxRounds: 2 },
+        failureStrategy: 'fail_branch',
+        concurrency: { maxParallelNodes: 4 },
+      },
+    } as unknown as WorkflowDefinition
+    const parsedDefinition = WorkflowDefinitionSchema.parse(definition)
+    const definitionJson = JSON.stringify(parsedDefinition)
+    db.prepare(
+      `INSERT INTO works (id, name, description, objective, status, priority, root_path,
+         repository_path, settings_json, created_at, updated_at, completed_at)
+       VALUES ('work-1', 'W', '', '', 'active', 'normal', '/tmp/w', NULL, '{}', ?, ?, NULL)`,
+    ).run(NOW, NOW)
+    db.prepare(
+      `INSERT INTO workflow_templates (id, name, description, category, created_at, updated_at, archived_at)
+       VALUES ('wft-1', 'T', '', '', ?, ?, NULL)`,
+    ).run(NOW, NOW)
+    db.prepare(
+      `INSERT INTO workflow_versions (id, template_id, version, schema_version, definition_json, checksum, status, created_at, published_at)
+       VALUES ('wfv-1', 'wft-1', 1, 1, ?, ?, 'published', ?, ?)`,
+    ).run(definitionJson, computeChecksum(parsedDefinition), NOW, NOW)
+    db.prepare(
+      `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, started_at, runtime_state_json, created_at, updated_at)
+       VALUES ('run-1', 'work-1', 'wfv-1', 'running', ?, '{}', ?, ?)`,
+    ).run(NOW, NOW, NOW)
+    db.prepare(
+      `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, status, attempt, input_snapshot_json, created_at, updated_at)
+       VALUES ('nrn-task-1', 'run-1', 'task_1', 'running', 1, '{}', ?, ?)`,
+    ).run(NOW, NOW)
+
+    const workflowRepo = new WorkflowRepository(db)
+    const nodes = new NodeRunRepository(db)
+    workflowBridge = new WorkflowExecutionBridge({
+      runs: new WorkflowRunRepository(db),
+      nodes,
+      works: workRepository,
+      worktrees,
+      definitions: new PublishedDefinitionProvider(workflowRepo),
+      resolver: new WorkflowAssignmentResolver(assignmentRepository),
+      executions,
+      now: () => NOW,
+    })
+    workflow = { bridge: workflowBridge, nodeRunId: 'nrn-task-1', nodes }
+  }
+
   return {
     db,
     dir,
@@ -293,6 +389,8 @@ async function harness(
     logs: logRepository,
     repository: executionRepository,
     agentId: agent.id,
+    warnings,
+    ...(workflow ? { workflow } : {}),
   }
 }
 
@@ -464,6 +562,24 @@ describe('ExecutionService lifecycle RPCs', () => {
     expect(
       h.logs.list(execution.id).some((log) => log.content.includes('execution.cancel_requested')),
     ).toBe(true)
+  })
+
+  it('moves the bound NodeRun out of running when the execution is cancelled (O-2)', async () => {
+    const h = await harness({ workflow: true })
+    if (!h.workflow) throw new Error('missing workflow harness')
+    const execution = await h.executions.startForNode(h.workflow.nodeRunId, {
+      agentId: h.agentId,
+      prompt: 'hello',
+    })
+    expect(h.workflow.nodes.get(h.workflow.nodeRunId)?.status).toBe('running')
+
+    await h.executions.cancel({ executionId: execution.id })
+
+    expect(h.executions.get(execution.id).status).toBe('cancelled')
+    expect(h.workflow.nodes.get(h.workflow.nodeRunId)?.status).toBe('cancelled')
+    // C-03：取消后不得出现「终态节点仍挂着活跃执行」或「运行节点没有执行」。
+    expect(checkWorkflowConsistency(h.db)).toEqual([])
+    expect(h.warnings).toEqual([])
   })
 
   it('is idempotent when cancelling a terminal execution', async () => {

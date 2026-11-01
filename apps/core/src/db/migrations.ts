@@ -493,6 +493,32 @@ CREATE INDEX IF NOT EXISTS idx_executions_pending_created
   ON executions(status, created_at, id) WHERE status = 'pending';
 `
 
+const PHASE_4_APPROVALS = `
+-- 阶段 4 S4-5：最小审批决策内核（DATABASE §2.7 的 MVP 子集）。
+-- decided_by / decided_at / decision_comment 从第一天就建列，阶段 5 不再补迁移。
+CREATE TABLE IF NOT EXISTS approvals (
+  id TEXT PRIMARY KEY,
+  workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  node_run_id TEXT NOT NULL REFERENCES node_runs(id) ON DELETE CASCADE,
+  target_node_run_id TEXT REFERENCES node_runs(id) ON DELETE SET NULL,
+  approval_type TEXT NOT NULL CHECK (approval_type IN ('before_execute', 'after_execute')),
+  status TEXT NOT NULL CHECK (
+    status IN ('pending', 'approved', 'changes_requested', 'rejected', 'cancelled')
+  ),
+  requested_by TEXT NOT NULL,
+  decided_by TEXT,
+  decision_comment TEXT,
+  decision_payload_json TEXT,
+  round INTEGER NOT NULL DEFAULT 1 CHECK (round >= 1),
+  rework_request_id TEXT,
+  requested_at TEXT NOT NULL,
+  decided_at TEXT,
+  UNIQUE (node_run_id, round)
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_status_requested ON approvals(status, requested_at);
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -565,6 +591,13 @@ export const MIGRATIONS: Migration[] = [
     rebuildsTables: true,
     up: (db) => {
       db.exec(PHASE_4_EXECUTION_NODE_FK)
+    },
+  },
+  {
+    version: 11,
+    name: 'phase4_approvals',
+    up: (db) => {
+      db.exec(PHASE_4_APPROVALS)
     },
   },
 ]

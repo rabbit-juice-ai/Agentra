@@ -70,7 +70,10 @@ describe('migration v10 · executions.node_run_id 外键', () => {
       ).run(NOW, NOW)
 
       const before = db.prepare("SELECT * FROM executions WHERE id = 'exe-legacy'").get()
-      const result = migrate(db)
+      const result = migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 10),
+      )
       expect(result).toEqual({
         from: 9,
         to: 10,

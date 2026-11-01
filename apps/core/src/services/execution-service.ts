@@ -401,6 +401,8 @@ export class ExecutionService {
     this.publishState(execution.id, 'cancelled', previous, 'cancelled by user')
     this.locks.releaseByExecution(execution.id)
     void this.drainQueue(execution.agentId)
+    // S4-5 O-2：取消也是终态迁移，必须通知工作流桥接，否则 NodeRun 会停在 running。
+    this.notifyExecutionFinished(execution.id)
 
     try {
       await this.runtime.cancel(execution.id)

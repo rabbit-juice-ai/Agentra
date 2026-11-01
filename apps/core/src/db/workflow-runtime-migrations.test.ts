@@ -50,7 +50,7 @@ describe('migration v9 · workflow runtime tables', () => {
   it('creates workflow_runs / branch_runs / node_runs with indexes', () => {
     const db = openMigrated()
     try {
-      expect(currentUserVersion(db)).toBe(10)
+      expect(currentUserVersion(db)).toBe(11)
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
           name: string
@@ -141,7 +141,7 @@ describe('migration v9 · workflow runtime tables', () => {
     const db = openMigrated()
     try {
       const second = migrate(db)
-      expect(second).toEqual({ from: 10, to: 10, applied: [] })
+      expect(second).toEqual({ from: 11, to: 11, applied: [] })
 
       // v9 自身的 SQL 也必须幂等（CREATE … IF NOT EXISTS），重放一次再回滚
       const v9 = MIGRATIONS.find((migration) => migration.version === 9)
@@ -151,6 +151,71 @@ describe('migration v9 · workflow runtime tables', () => {
         v9.up(db)
         db.exec('ROLLBACK')
       }).not.toThrow()
+    } finally {
+      db.close()
+    }
+  })
+})
+
+describe('migration v11 · approvals', () => {
+  it('creates the approvals table with decision columns and unique(node_run_id, round)', () => {
+    const db = openMigrated()
+    try {
+      const columns = (db.prepare('PRAGMA table_info(approvals)').all() as { name: string }[]).map(
+        (column) => column.name,
+      )
+      expect(columns).toEqual(
+        expect.arrayContaining([
+          'workflow_run_id',
+          'node_run_id',
+          'target_node_run_id',
+          'approval_type',
+          'status',
+          'requested_by',
+          'decided_by',
+          'decided_at',
+          'decision_comment',
+          'round',
+        ]),
+      )
+
+      insertWork(db)
+      const versionId = insertTemplateAndVersion(db)
+      db.prepare(
+        `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, started_at, runtime_state_json, created_at, updated_at)
+         VALUES ('run-1', 'work-1', ?, 'running', ?, '{}', ?, ?)`,
+      ).run(versionId, NOW, NOW, NOW)
+      db.prepare(
+        `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, status, attempt, input_snapshot_json, created_at, updated_at)
+         VALUES ('node-1', 'run-1', 'approval', 'waiting_approval', 1, '{}', ?, ?)`,
+      ).run(NOW, NOW)
+
+      const insert = db.prepare(
+        `INSERT INTO approvals (id, workflow_run_id, node_run_id, target_node_run_id, approval_type,
+           status, requested_by, round, requested_at)
+         VALUES (?, 'run-1', 'node-1', NULL, 'before_execute', 'pending', 'system', ?, ?)`,
+      )
+      insert.run('apv-1', 1, NOW)
+      expect(() => insert.run('apv-2', 1, NOW)).toThrow(/UNIQUE constraint failed/)
+      insert.run('apv-2', 2, NOW)
+
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO approvals (id, workflow_run_id, node_run_id, approval_type, status, requested_by, round, requested_at)
+             VALUES ('apv-orphan', 'run-1', 'node-missing', 'before_execute', 'pending', 'system', 1, ?)`,
+          )
+          .run(NOW),
+      ).toThrow(/FOREIGN KEY constraint failed/)
+
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO approvals (id, workflow_run_id, node_run_id, approval_type, status, requested_by, round, requested_at)
+             VALUES ('apv-bad', 'run-1', 'node-1', 'before_execute', 'nope', 'system', 3, ?)`,
+          )
+          .run(NOW),
+      ).toThrow(/CHECK constraint failed/)
     } finally {
       db.close()
     }
