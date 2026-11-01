@@ -103,6 +103,22 @@ export function inputArtifactGate(port: InputArtifactPort): DispatchGate {
   }
 }
 
+/**
+ * A12 before_execute 门禁：保护中的 agent_task 在 pending 审批期间不得启动。
+ * protectedNodeKeys 由装配方在每次 tick 前根据 pending before_execute 审批计算。
+ */
+export function approvalGate(port: {
+  isBlockedByPendingApproval(context: DispatchContext): boolean
+}): DispatchGate {
+  return {
+    name: 'approval_before_execute',
+    check: (context) =>
+      port.isBlockedByPendingApproval(context)
+        ? { ok: false, reason: 'before_execute approval is pending' }
+        : { ok: true },
+  }
+}
+
 export type ResourcePorts = {
   agentCapacity: AgentCapacityPort
   providerAvailability: ProviderAvailabilityPort

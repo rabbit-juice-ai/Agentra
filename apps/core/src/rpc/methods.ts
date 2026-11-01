@@ -11,6 +11,15 @@ import {
   AgentListResult,
   AgentResult,
   AgentUpdateParams,
+  APPROVAL_DECIDE_METHOD,
+  APPROVAL_GET_METHOD,
+  APPROVAL_LIST_PENDING_METHOD,
+  ApprovalDecideParams,
+  ApprovalGetParams,
+  ApprovalGetResult,
+  ApprovalListPendingParams,
+  ApprovalListPendingResult,
+  ApprovalResult,
   ASSIGNMENT_COMPLETE_METHOD,
   ASSIGNMENT_CREATE_METHOD,
   ASSIGNMENT_GET_METHOD,
@@ -133,6 +142,7 @@ import {
 } from '@agentra/protocol'
 import { validateWorkflowDefinition } from '@agentra/workflow-schema'
 import type { AgentService } from '../services/agent-service'
+import type { ApprovalRpcService } from '../services/approval-rpc-service'
 import type { AssignmentService } from '../services/assignment-service'
 import type { CoreEventHub } from '../services/event-hub'
 import type { ExecutionService } from '../services/execution-service'
@@ -159,6 +169,7 @@ export type CoreMethodServices = {
   worktrees: WorktreeService
   workflows: WorkflowDefinitionService
   workflowRuns: WorkflowRunQueryService
+  approvals: ApprovalRpcService
 }
 
 /**
@@ -455,6 +466,18 @@ export function coreMethods(
         }
         return { valid: false, violations: outcome.violations }
       },
+    ),
+
+    [APPROVAL_DECIDE_METHOD]: defineMethod(ApprovalDecideParams, ApprovalResult, (params) => ({
+      approval: services.approvals.decide(params),
+    })),
+    [APPROVAL_GET_METHOD]: defineMethod(ApprovalGetParams, ApprovalGetResult, (params) =>
+      services.approvals.get(params.nodeRunId),
+    ),
+    [APPROVAL_LIST_PENDING_METHOD]: defineMethod(
+      ApprovalListPendingParams,
+      ApprovalListPendingResult,
+      (params) => ({ approvals: services.approvals.listPending(params.runId) }),
     ),
 
     [WORKFLOW_RUN_GET_METHOD]: defineMethod(

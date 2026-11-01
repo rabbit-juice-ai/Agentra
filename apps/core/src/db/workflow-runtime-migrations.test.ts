@@ -50,7 +50,7 @@ describe('migration v9 · workflow runtime tables', () => {
   it('creates workflow_runs / branch_runs / node_runs with indexes', () => {
     const db = openMigrated()
     try {
-      expect(currentUserVersion(db)).toBe(13)
+      expect(currentUserVersion(db)).toBe(14)
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
           name: string
@@ -141,7 +141,7 @@ describe('migration v9 · workflow runtime tables', () => {
     const db = openMigrated()
     try {
       const second = migrate(db)
-      expect(second).toEqual({ from: 13, to: 13, applied: [] })
+      expect(second).toEqual({ from: 14, to: 14, applied: [] })
 
       // v9 自身的 SQL 也必须幂等（CREATE … IF NOT EXISTS），重放一次再回滚
       const v9 = MIGRATIONS.find((migration) => migration.version === 9)
@@ -251,8 +251,8 @@ describe('migration v12/v13 · rework_requests + workflow_events', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 11,
-        to: 13,
-        applied: ['phase4_rework_requests', 'phase4_workflow_events'],
+        to: 14,
+        applied: ['phase4_rework_requests', 'phase4_workflow_events', 'phase5_artifacts'],
       })
 
       // 重建后 approvals 行逐列保留
@@ -311,6 +311,49 @@ describe('migration v12/v13 · rework_requests + workflow_events', () => {
           )
           .run(NOW, NOW),
       ).toThrow(/CHECK constraint failed/)
+
+      // v14：artifacts + artifact_versions（版本不可覆盖）
+      const artifactColumns = (
+        db.prepare('PRAGMA table_info(artifacts)').all() as { name: string }[]
+      ).map((column) => column.name)
+      expect(artifactColumns).toEqual(
+        expect.arrayContaining([
+          'work_id',
+          'node_run_id',
+          'assignment_id',
+          'artifact_type',
+          'name',
+          'storage_path',
+          'mime_type',
+          'created_by_type',
+        ]),
+      )
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO artifacts (id, work_id, artifact_type, name, storage_path, created_by_type, created_at)
+             VALUES ('art-x', 'work-1', 'markdown', 'PRD', '/tmp/a', 'system', ?)`,
+          )
+          .run(NOW),
+      ).not.toThrow()
+      db.prepare(
+        `INSERT INTO artifact_versions (id, artifact_id, version, storage_path, checksum, created_at)
+         VALUES ('artv-x', 'art-x', 1, '/tmp/a', 'sum', ?)`,
+      ).run(NOW)
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO artifact_versions (id, artifact_id, version, storage_path, checksum, created_at)
+             VALUES ('artv-x2', 'art-x', 1, '/tmp/a2', 'sum', ?)`,
+          )
+          .run(NOW),
+      ).toThrow(/UNIQUE constraint failed/)
+      expect(() =>
+        db.prepare("UPDATE artifact_versions SET checksum = 'x' WHERE id = 'artv-x'").run(),
+      ).toThrow(/immutable/)
+      expect(() => db.prepare("DELETE FROM artifact_versions WHERE id = 'artv-x'").run()).toThrow(
+        /cannot be deleted/,
+      )
 
       // v13：workflow_events 的 event_id 唯一 + FK
       db.prepare(

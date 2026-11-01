@@ -20,6 +20,7 @@ import type { RuntimeClient } from '../daemon/daemon-client'
 import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
 import { AgentRepository } from '../db/repositories/agent-repository'
+import { ApprovalRepository } from '../db/repositories/approval-repository'
 import { AssignmentRepository } from '../db/repositories/assignment-repository'
 import { AuditRepository } from '../db/repositories/audit-repository'
 import { BranchRunRepository } from '../db/repositories/branch-run-repository'
@@ -33,6 +34,7 @@ import { WorkRepository } from '../db/repositories/work-repository'
 import { WorkflowRepository } from '../db/repositories/workflow-repository'
 import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
 import { AgentService } from '../services/agent-service'
+import { ApprovalRpcService } from '../services/approval-rpc-service'
 import { AssignmentService } from '../services/assignment-service'
 import { CoreEventHub } from '../services/event-hub'
 import { ExecutionService } from '../services/execution-service'
@@ -42,6 +44,7 @@ import { WorkService } from '../services/work-service'
 import { WorkdirLockService } from '../services/workdir-lock-service'
 import { WorkflowDefinitionService } from '../services/workflow-definition-service'
 import { WorktreeService } from '../services/worktree-service'
+import { ApprovalService } from '../workflow/approval-service'
 import { WorkflowRunQueryService } from '../workflow/run-query-service'
 import { createDispatcher, type MethodTable } from './dispatcher'
 import { coreMethods } from './methods'
@@ -147,6 +150,15 @@ function harness(): {
       new WorkflowRunRepository(db),
       new BranchRunRepository(db),
       new NodeRunRepository(db),
+    ),
+    approvals: new ApprovalRpcService(
+      new ApprovalService(
+        db,
+        new ApprovalRepository(db),
+        new NodeRunRepository(db),
+        new BranchRunRepository(db),
+      ),
+      new ApprovalRepository(db),
     ),
   })
 

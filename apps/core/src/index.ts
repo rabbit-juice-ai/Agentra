@@ -25,6 +25,7 @@ import { WorkflowRunRepository } from './db/repositories/workflow-run-repository
 import { coreMethods } from './rpc/methods'
 import { startWsServer } from './rpc/ws-server'
 import { AgentService } from './services/agent-service'
+import { ApprovalRpcService } from './services/approval-rpc-service'
 import { AssignmentService } from './services/assignment-service'
 import { CoreEventHub } from './services/event-hub'
 import { ExecutionService } from './services/execution-service'
@@ -34,9 +35,10 @@ import { WorkService } from './services/work-service'
 import { WorkdirLockService } from './services/workdir-lock-service'
 import { WorkflowDefinitionService } from './services/workflow-definition-service'
 import { WorktreeService } from './services/worktree-service'
+import { createApprovalGateChecker } from './workflow/approval-gate'
 import { ApprovalService } from './workflow/approval-service'
 import { WorkflowAssignmentResolver } from './workflow/assignment-resolver'
-import { defaultDispatchGates } from './workflow/dispatch-gates'
+import { approvalGate, defaultDispatchGates } from './workflow/dispatch-gates'
 import { WorkflowEngine } from './workflow/engine'
 import { WorkflowEventRecorder } from './workflow/event-recorder'
 import { WorkflowExecutionBridge } from './workflow/execution-bridge'
@@ -203,7 +205,22 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     undefined,
     reworkService,
     auditRepository,
+    {
+      // S5-1：approval.decided 领域事件落 workflow_events；event_id 确定性，重复决策不重复写。
+      // occurredAt 用载荷值（决策时刻，注入时钟），不用 sink 执行时刻。
+      publish: (event) => {
+        workflowEventRepository.append({
+          eventId: `approval:${event.approvalId}:approval.decided:${event.round}`,
+          workflowRunId: event.runId,
+          nodeRunId: event.nodeRunId,
+          eventType: 'approval.decided',
+          payload: { decision: event.decision, round: event.round },
+          occurredAt: event.occurredAt,
+        })
+      },
+    },
   )
+  const approvalRpc = new ApprovalRpcService(approvalService, approvalRepository)
   const workflowBridge = new WorkflowExecutionBridge({
     runs: workflowRunRepository,
     nodes: nodeRunRepository,
@@ -214,24 +231,33 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     executions: executionService,
     logger,
   })
+  const approvalGateChecker = createApprovalGateChecker({
+    runs: workflowRunRepository,
+    nodes: nodeRunRepository,
+    approvals: approvalRepository,
+    definitions: publishedDefinitions,
+  })
   const workflowScheduler = new WorkflowScheduler({
     runs: workflowRunRepository,
     branches: branchRunRepository,
     nodes: nodeRunRepository,
     definitions: publishedDefinitions,
-    gates: defaultDispatchGates({
-      agentCapacity: createAgentCapacityPort({
-        resolver: workflowAssignmentResolver,
-        agents: agentRepository,
-        executions: executionRepository,
+    gates: [
+      approvalGate(approvalGateChecker),
+      ...defaultDispatchGates({
+        agentCapacity: createAgentCapacityPort({
+          resolver: workflowAssignmentResolver,
+          agents: agentRepository,
+          executions: executionRepository,
+        }),
+        providerAvailability: createProviderAvailabilityPort(registry),
+        workdirAvailability: createWorkdirAvailabilityPort({
+          works: workRepository,
+          locks,
+        }),
+        inputArtifacts: { isAvailable: () => true },
       }),
-      providerAvailability: createProviderAvailabilityPort(registry),
-      workdirAvailability: createWorkdirAvailabilityPort({
-        works: workRepository,
-        locks,
-      }),
-      inputArtifacts: { isAvailable: () => true },
-    }),
+    ],
     onNodeStarted: (context) => workflowEngine?.onNodeStarted(context),
     // S4-07：分支暂停时按 Provider 能力处置运行中 Execution（三档策略）。
     executionsRepo: executionRepository,
@@ -335,6 +361,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       worktrees,
       workflows: workflowService,
       workflowRuns: workflowRunQuery,
+      approvals: approvalRpc,
     }),
   )
   logger.info('core started', {

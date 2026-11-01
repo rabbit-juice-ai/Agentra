@@ -22,6 +22,14 @@ export type ReworkTrigger = {
   onConditionCompleted?(nodeRunId: string): void
 }
 
+/**
+ * S5-1：审批等待统一走 pauseBranch 的处置语义（QA 复验指出的两条暂停路径）。
+ * pauseBranch 包含三档 Provider 处置 + 审计；未接线时退化为 Repository 直调（旧行为）。
+ */
+export type BranchPausePort = {
+  pause(runId: string, branchKey: string, reason: string): Promise<boolean> | boolean
+}
+
 export type ControlNodeDeps = {
   db: Database
   runs: WorkflowRunRepository
@@ -30,6 +38,7 @@ export type ControlNodeDeps = {
   definitions: PublishedDefinitionProvider
   approvals: ApprovalService
   audit?: AuditRepository
+  branchPause?: BranchPausePort
   eventSink?: ControlEventSink
   reworkTrigger?: ReworkTrigger
   now?: () => string
@@ -271,16 +280,23 @@ export function completeEndNode(deps: ControlNodeDeps, nodeRunId: string): void 
 }
 
 /** HumanApproval 入口：进入 waiting_approval、只暂停当前分支、创建 pending 审批。 */
-export function enterHumanApproval(deps: ControlNodeDeps, nodeRunId: string): void {
+export async function enterHumanApproval(deps: ControlNodeDeps, nodeRunId: string): Promise<void> {
   const { nodeRun, run, node } = load(deps, nodeRunId)
   if (node.type !== 'human_approval')
     throw new Error(`node ${node.key} is not a human_approval node`)
   const now = (deps.now ?? (() => new Date().toISOString()))()
 
-  // 进入等待 + 暂停分支 + 建 pending 审批必须原子：否则会出现「等审批但无审批行」。
+  // 进入等待 + 建 pending 审批必须原子：否则会出现「等审批但无审批行」。
+  // 分支暂停统一走 branchPause（scheduler.pauseBranch，含三档处置与审计）；
+  // pauseBranch 内部先 CAS 状态再处置执行，与本事务的顺序保证一致（状态先落）。
+  const branch = nodeRun.branchRunId ? deps.branches.get(nodeRun.branchRunId) : null
+  const pendingPause =
+    branch && deps.branchPause
+      ? Promise.resolve(deps.branchPause.pause(run.id, branch.branchKey, 'waiting_approval'))
+      : null
   transaction(deps.db, () => {
     if (!deps.nodes.transition(nodeRun.id, ['running'], 'waiting_approval', now)) return
-    if (nodeRun.branchRunId) {
+    if (nodeRun.branchRunId && !deps.branchPause) {
       const branch = deps.branches.get(nodeRun.branchRunId)
       if (deps.branches.pause(nodeRun.branchRunId, 'waiting_approval', now)) {
         deps.audit?.append({
@@ -316,4 +332,5 @@ export function enterHumanApproval(deps: ControlNodeDeps, nodeRunId: string): vo
       requestedBy: 'system',
     })
   })
+  if (pendingPause) await pendingPause
 }

@@ -184,7 +184,23 @@ export {
   WorkListResult,
   WorkResult,
 } from './methods/work'
+export type {
+  Approval,
+  ApprovalDecisionValue,
+  ApprovalStatusValue,
+} from './methods/workflow'
 export {
+  APPROVAL_DECIDE_METHOD,
+  APPROVAL_GET_METHOD,
+  APPROVAL_LIST_PENDING_METHOD,
+  ApprovalDecideParams,
+  ApprovalDecisionEnum,
+  ApprovalGetParams,
+  ApprovalGetResult,
+  ApprovalListPendingParams,
+  ApprovalListPendingResult,
+  ApprovalResult,
+  ApprovalStatusEnum,
   WORKFLOW_RUN_GET_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,

@@ -567,6 +567,36 @@ describe('HumanApproval 运行时', () => {
     }
   })
 
+  it('routes the waiting_approval pause through the unified branchPause port', async () => {
+    const h = setup(definitionApproval())
+    try {
+      const pauses: { runId: string; branchKey: string; reason: string }[] = []
+      const deps = {
+        ...h.deps,
+        branchPause: {
+          pause: (runId: string, branchKey: string, reason: string) => {
+            pauses.push({ runId, branchKey, reason })
+            // 模拟 scheduler.pauseBranch：状态落库 + 处置
+            const branch = h.branches.getByKey(runId, branchKey)
+            if (branch) h.branches.pause(branch.id, reason, NOW)
+            return true
+          },
+        },
+      }
+      h.setRunning('approval')
+      await enterHumanApproval(deps, h.nodeRunId('approval'))
+      expect(pauses).toEqual([
+        { runId: h.runId, branchKey: ROOT_BRANCH_KEY, reason: 'waiting_approval' },
+      ])
+      expect(h.branches.getByKey(h.runId, ROOT_BRANCH_KEY)?.status).toBe('paused')
+      expect(h.nodes.get(h.nodeRunId('approval'))?.status).toBe('waiting_approval')
+      // 统一路径后不再写第二份暂停审计（pauseBranch 自己负责）
+      expect(h.audit.listByAction('workflow.branch.paused')).toHaveLength(0)
+    } finally {
+      h.close()
+    }
+  })
+
   it('before_execute pending creates no Execution (negative)', () => {
     const h = setup(definitionApprovalBeforeExecute())
     try {

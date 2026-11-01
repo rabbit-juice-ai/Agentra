@@ -20,6 +20,69 @@ export const WORKFLOW_VERSION_VALIDATE_METHOD = 'workflow.version.validate'
 /** S4-7：只读运行态查询（不是执行入口；恢复后的 reconciliation_required 必须可见）。 */
 export const WORKFLOW_RUN_GET_METHOD = 'workflow.run.get'
 
+/** S5-1：审批决策 API（领域事件 approval.decided 的协议入口）。 */
+export const APPROVAL_DECIDE_METHOD = 'approval.decide'
+export const APPROVAL_GET_METHOD = 'approval.get'
+export const APPROVAL_LIST_PENDING_METHOD = 'approval.listPending'
+
+export const ApprovalDecisionEnum = z.enum(['approve', 'request_changes', 'reject'])
+export type ApprovalDecisionValue = z.infer<typeof ApprovalDecisionEnum>
+
+export const ApprovalStatusEnum = z.enum([
+  'pending',
+  'approved',
+  'changes_requested',
+  'rejected',
+  'cancelled',
+])
+export type ApprovalStatusValue = z.infer<typeof ApprovalStatusEnum>
+
+export const Approval = z.object({
+  id: z.string().min(1),
+  workflowRunId: z.string().min(1),
+  nodeRunId: z.string().min(1),
+  targetNodeRunId: z.string().nullable(),
+  approvalType: z.string().min(1),
+  status: ApprovalStatusEnum,
+  requestedBy: z.string().min(1),
+  decidedBy: z.string().nullable(),
+  decisionComment: z.string().nullable(),
+  round: z.number().int().min(1),
+  reworkRequestId: z.string().nullable(),
+  requestedAt: IsoTimestamp,
+  decidedAt: IsoTimestamp.nullable(),
+})
+export type Approval = z.infer<typeof Approval>
+
+export const ApprovalDecideParamsSchema = z
+  .object({
+    nodeRunId: z.string().min(1),
+    decision: ApprovalDecisionEnum,
+    decidedBy: z.string().min(1),
+    /** request_changes 必填（A3）；approve/reject 可空。 */
+    comment: z.string().max(20_000).optional(),
+  })
+  .strict()
+export type ApprovalDecideParams = z.infer<typeof ApprovalDecideParams>
+
+export const ApprovalResultSchema = z.object({ approval: Approval })
+export type ApprovalResult = z.infer<typeof ApprovalResult>
+
+export const ApprovalGetParamsSchema = z.object({ nodeRunId: z.string().min(1) }).strict()
+export type ApprovalGetParams = z.infer<typeof ApprovalGetParams>
+
+export const ApprovalGetResultSchema = z.object({
+  approval: Approval.nullable(),
+  history: z.array(Approval),
+})
+export type ApprovalGetResult = z.infer<typeof ApprovalGetResult>
+
+export const ApprovalListPendingParamsSchema = z.object({ runId: z.string().min(1) }).strict()
+export type ApprovalListPendingParams = z.infer<typeof ApprovalListPendingParams>
+
+export const ApprovalListPendingResultSchema = z.object({ approvals: z.array(Approval) })
+export type ApprovalListPendingResult = z.infer<typeof ApprovalListPendingResult>
+
 export const WorkflowVersionStatus = z.enum(['draft', 'published', 'deprecated'])
 export type WorkflowVersionStatus = z.infer<typeof WorkflowVersionStatus>
 
@@ -181,3 +244,12 @@ export const WorkflowRunGetResult = z.object({
   nodes: z.array(WorkflowRunNode),
 })
 export type WorkflowRunGetResult = z.infer<typeof WorkflowRunGetResult>
+
+export {
+  ApprovalDecideParamsSchema as ApprovalDecideParams,
+  ApprovalGetParamsSchema as ApprovalGetParams,
+  ApprovalGetResultSchema as ApprovalGetResult,
+  ApprovalListPendingParamsSchema as ApprovalListPendingParams,
+  ApprovalListPendingResultSchema as ApprovalListPendingResult,
+  ApprovalResultSchema as ApprovalResult,
+}

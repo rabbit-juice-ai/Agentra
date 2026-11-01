@@ -38,7 +38,7 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 0,
-        to: 13,
+        to: 14,
         applied: [
           'phase1_agent_runtime',
           'phase1_tool_permissions_and_provider_auth',
@@ -53,9 +53,10 @@ describe('migrate', () => {
           'phase4_approvals',
           'phase4_rework_requests',
           'phase4_workflow_events',
+          'phase5_artifacts',
         ],
       })
-      expect(currentUserVersion(db)).toBe(13)
+      expect(currentUserVersion(db)).toBe(14)
     } finally {
       db.close()
     }
@@ -85,10 +86,10 @@ describe('migrate', () => {
     try {
       migrate(db)
       const second = migrate(db)
-      expect(second).toEqual({ from: 13, to: 13, applied: [] })
+      expect(second).toEqual({ from: 14, to: 14, applied: [] })
       const third = migrate(db, MIGRATIONS)
       expect(third.applied).toEqual([])
-      expect(currentUserVersion(db)).toBe(13)
+      expect(currentUserVersion(db)).toBe(14)
     } finally {
       db.close()
     }
@@ -102,7 +103,7 @@ describe('migrate', () => {
 
     const second = openDatabase(file)
     try {
-      expect(currentUserVersion(second)).toBe(13)
+      expect(currentUserVersion(second)).toBe(14)
       const journal = second.prepare('PRAGMA journal_mode').get() as { journal_mode: string }
       expect(journal.journal_mode).toBe('wal')
       const fk = second.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }
@@ -170,7 +171,7 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 2,
-        to: 13,
+        to: 14,
         applied: [
           'phase2_team_work_assignment',
           'phase2_worktree_and_workdir_locks',
@@ -183,6 +184,7 @@ describe('migrate', () => {
           'phase4_approvals',
           'phase4_rework_requests',
           'phase4_workflow_events',
+          'phase5_artifacts',
         ],
       })
 

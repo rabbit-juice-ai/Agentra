@@ -153,6 +153,30 @@ export class ApprovalRepository {
     return Number(result.changes) > 0
   }
 
+  /** 某审批节点的全部轮次（A6/A13 的 history 查询）。 */
+  listByNodeRun(nodeRunId: string): ApprovalRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM approvals WHERE node_run_id = ? ORDER BY round ASC, id ASC')
+      .all(nodeRunId) as ApprovalRow[]
+    return rows.map(toRecord)
+  }
+
+  /**
+   * A12 before_execute 门禁：某 Run 内全部 pending 的 before_execute 审批
+   * 及其保护目标 node key（经审批节点 config target 推导由调用方完成，
+   * 这里返回审批节点自身的 node key 集合）。
+   */
+  listPendingByRun(workflowRunId: string): ApprovalRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM approvals
+         WHERE workflow_run_id = ? AND status = 'pending'
+         ORDER BY requested_at ASC, id ASC`,
+      )
+      .all(workflowRunId) as ApprovalRow[]
+    return rows.map(toRecord)
+  }
+
   /** CAS：只有 pending 能进入终态；返回 false 表示已被并发决策。 */
   decide(
     id: string,

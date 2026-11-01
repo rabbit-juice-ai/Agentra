@@ -605,6 +605,60 @@ CREATE INDEX IF NOT EXISTS idx_workflow_events_run_time
   ON workflow_events(workflow_run_id, occurred_at, id);
 `
 
+const PHASE_5_ARTIFACTS = `
+-- 阶段 5 S5-2：Artifact 与版本（DATABASE §2.8）。
+-- 版本不可覆盖：artifact_versions 拒绝 UPDATE / DELETE；返工、重新提交均产生新版本。
+CREATE TABLE IF NOT EXISTS artifacts (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  node_run_id TEXT REFERENCES node_runs(id) ON DELETE SET NULL,
+  assignment_id TEXT REFERENCES assignments(id) ON DELETE SET NULL,
+  artifact_type TEXT NOT NULL CHECK (artifact_type IN ('markdown', 'text', 'code', 'image', 'other')),
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  -- DATABASE §2.8 冻结基线字段；当前语义是预留占位（恒为空串）：
+  -- 真实文件路径在 artifact_versions.storage_path（每版本一份）。
+  -- 主表路径语义若要启用，须走决策提案，不得顺手改。
+  storage_path TEXT NOT NULL,
+  mime_type TEXT,
+  created_by_type TEXT NOT NULL CHECK (created_by_type IN ('user', 'agent', 'system')),
+  created_by_id TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (work_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_work_created ON artifacts(work_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_artifacts_node_run ON artifacts(node_run_id);
+
+CREATE TABLE IF NOT EXISTS artifact_versions (
+  id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL CHECK (version >= 1),
+  storage_path TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  UNIQUE (artifact_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_versions_artifact ON artifact_versions(artifact_id, version);
+
+-- 版本不可覆盖：任何 UPDATE / DELETE 都拒绝（历史轮次保留不覆盖，D-011 规则 7）。
+CREATE TRIGGER IF NOT EXISTS trg_artifact_versions_immutable
+BEFORE UPDATE ON artifact_versions
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'artifact version is immutable; create a new version instead');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_artifact_versions_no_delete
+BEFORE DELETE ON artifact_versions
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'artifact version cannot be deleted');
+END;
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -699,6 +753,13 @@ export const MIGRATIONS: Migration[] = [
     name: 'phase4_workflow_events',
     up: (db) => {
       db.exec(PHASE_4_WORKFLOW_EVENTS)
+    },
+  },
+  {
+    version: 14,
+    name: 'phase5_artifacts',
+    up: (db) => {
+      db.exec(PHASE_5_ARTIFACTS)
     },
   },
 ]

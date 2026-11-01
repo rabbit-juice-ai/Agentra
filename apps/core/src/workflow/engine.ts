@@ -70,6 +70,11 @@ export class WorkflowEngine {
       definitions: deps.definitions,
       approvals: deps.approvals,
       ...(deps.audit ? { audit: deps.audit } : {}),
+      // S5-1 收尾：审批等待暂停统一走 scheduler.pauseBranch（三档处置 + 单一审计来源），
+      // 消除「waiting_approval 直调 Repository」与「pauseBranch」两条暂停路径的分歧。
+      branchPause: {
+        pause: (runId, branchKey, reason) => deps.scheduler.pauseBranch(runId, branchKey, reason),
+      },
       ...(deps.eventSink ? { eventSink: deps.eventSink } : {}),
       reworkTrigger: deps.rework,
       now: this.now,

@@ -30,6 +30,19 @@ const DECISION_STATUS = {
   reject: 'rejected',
 } as const
 
+/** A11/A13：approval.decided 领域事件（事件不重复由确定性 event_id 去重保证）。 */
+export type ApprovalEventSink = {
+  publish(event: {
+    approvalId: string
+    runId: string
+    nodeRunId: string
+    decision: ApprovalDecision
+    round: number
+    /** 事件时间 = 决策时刻（注入的 now），而非 sink 执行时刻；sink 必须使用载荷值。 */
+    occurredAt: string
+  }): void
+}
+
 export class ApprovalError extends Error {
   constructor(
     readonly code: 'NOT_FOUND' | 'INVALID_DECISION' | 'COMMENT_REQUIRED' | 'ALREADY_DECIDED',
@@ -53,6 +66,7 @@ export class ApprovalService {
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly rework?: ApprovalReworkPort,
     private readonly audit?: AuditRepository,
+    private readonly events?: ApprovalEventSink,
   ) {}
 
   requestForNode(
@@ -172,6 +186,14 @@ export class ApprovalService {
       const updated = this.approvals.get(pending.id)
       if (!updated)
         throw new ApprovalError('NOT_FOUND', `approval ${pending.id} missing after update`)
+      this.events?.publish({
+        approvalId: pending.id,
+        runId: nodeRun?.workflowRunId ?? pending.workflowRunId,
+        nodeRunId,
+        decision,
+        round: pending.round,
+        occurredAt: now,
+      })
       return updated
     })
   }
