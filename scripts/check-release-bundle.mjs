@@ -40,6 +40,7 @@ const REQUIRED_MARKERS = [
   // 阶段 5 S5-3：审批中心与 Artifact 面板是产品功能，两种构建都必须包含。
   { name: '审批中心页面', value: 'agentra-product-approvals' },
   { name: 'Artifact 面板', value: 'agentra-product-artifacts' },
+  { name: '运行状态/失败终态面板', value: 'agentra-product-run-failures' },
 ]
 
 function modeLabel(devConsole) {

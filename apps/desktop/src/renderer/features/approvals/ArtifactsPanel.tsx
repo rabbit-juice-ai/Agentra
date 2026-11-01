@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   buttonStyle,
   colors,
@@ -11,8 +11,11 @@ import { ApiError, api } from '../../services/api'
 
 /**
  * S5-3：Artifact 预览/下载接线。只读服务面走 artifact.preview / artifact.list
- * 显式 IPC；无通用透传，无删除/写入入口。UI 接线范围不含 Work 选择器（S5-3 的
- * 审批中心按 runId 查询，Work 归属视图由 Works 页承担）。
+ * 显式 IPC；无通用透传，无删除/写入入口。
+ *
+ * S5-3b：支持两种形态——
+ * - 独立 tab（交付物导航）：手输 Work ID（MVP 交互，CTO 裁定接受）；
+ * - Works 页嵌入：传入 `workId` prop，自动加载，无手输框。
  */
 export const ARTIFACTS_PANEL_MARKER = 'agentra-product-artifacts'
 
@@ -36,8 +39,9 @@ function decodeBase64(base64: string): string {
   }
 }
 
-export function ArtifactsPanel() {
-  const [workId, setWorkId] = useState('')
+export function ArtifactsPanel({ workId: fixedWorkId }: { workId?: string } = {}) {
+  const [manualWorkId, setManualWorkId] = useState('')
+  const workId = fixedWorkId ?? manualWorkId
   const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ name: string; version: number; content: string } | null>(
@@ -45,7 +49,7 @@ export function ArtifactsPanel() {
   )
   const [busy, setBusy] = useState(false)
 
-  const load = async (): Promise<void> => {
+  const load = useCallback(async (): Promise<void> => {
     if (workId.trim().length === 0) return
     setBusy(true)
     setError(null)
@@ -56,11 +60,12 @@ export function ArtifactsPanel() {
     } finally {
       setBusy(false)
     }
-  }
+  }, [workId])
 
+  // 嵌入形态：workId 变化自动加载；独立形态：用户点「加载」。
   useEffect(() => {
-    // 初始为空；Work 归属的 Artifact 列表在 Works 页也可复用本面板。
-  }, [])
+    if (fixedWorkId !== undefined && fixedWorkId.trim().length > 0) void load()
+  }, [fixedWorkId, load])
 
   const showPreview = async (artifactId: string, version?: number): Promise<void> => {
     setBusy(true)
@@ -83,23 +88,28 @@ export function ArtifactsPanel() {
   return (
     <div data-agentra-page={ARTIFACTS_PANEL_MARKER}>
       <h2 style={sectionTitleStyle}>Artifact 交付物</h2>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 12 }}>
-        <div>
-          <label style={labelStyle} htmlFor="artifact-work-id">
-            Work ID
-          </label>
-          <input
-            id="artifact-work-id"
-            style={{ ...inputStyle, width: 280 }}
-            value={workId}
-            onChange={(event) => setWorkId(event.target.value)}
-            placeholder="输入 Work ID 加载其交付物"
-          />
+      {fixedWorkId === undefined && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 12 }}>
+          <div>
+            <label style={labelStyle} htmlFor="artifact-work-id">
+              Work ID
+            </label>
+            <input
+              id="artifact-work-id"
+              style={{ ...inputStyle, width: 280 }}
+              value={manualWorkId}
+              onChange={(event) => setManualWorkId(event.target.value)}
+              placeholder="输入 Work ID 加载其交付物"
+            />
+          </div>
+          <button type="button" style={buttonStyle} onClick={() => void load()} disabled={busy}>
+            加载
+          </button>
         </div>
-        <button type="button" style={buttonStyle} onClick={() => void load()} disabled={busy}>
-          加载
-        </button>
-      </div>
+      )}
+      {fixedWorkId !== undefined && (
+        <p style={{ color: colors.muted, fontSize: 12, margin: '0 0 8px' }}>Work {fixedWorkId}</p>
+      )}
 
       {error && (
         <div
@@ -133,7 +143,9 @@ export function ArtifactsPanel() {
       )}
 
       {artifacts.length === 0 ? (
-        <div style={{ color: colors.muted, fontSize: 13 }}>尚未加载任何交付物。</div>
+        <div style={{ color: colors.muted, fontSize: 13 }}>
+          {workId.trim().length > 0 ? '该 Work 暂无交付物。' : '尚未加载任何交付物。'}
+        </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {artifacts.map((artifact) => (

@@ -4,6 +4,7 @@ import path from 'node:path'
 import {
   PROTOCOL_VERSION,
   WORKFLOW_RUN_GET_METHOD,
+  WORKFLOW_RUN_LIST_BY_WORK_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,
   WORKFLOW_TEMPLATE_GET_METHOD,
@@ -410,6 +411,52 @@ describe('阶段 3 隔离断言', () => {
         WORKFLOW_VERSION_VALIDATE_METHOD,
       ]),
     )
+  })
+
+  describe('workflow.run.listByWork', () => {
+    it('lists runs of a work in descending creation order and rejects nothing for empty works', async () => {
+      const h = harness()
+      try {
+        h.db
+          .prepare(
+            `INSERT INTO works (id, name, description, objective, status, priority, root_path,
+           repository_path, settings_json, created_at, updated_at, completed_at)
+         VALUES ('work-1', 'W', '', '', 'active', 'normal', '/tmp/w', NULL, '{}', ?, ?, NULL)`,
+          )
+          .run(NOW, NOW)
+        h.db
+          .prepare(
+            `INSERT INTO workflow_templates (id, name, description, category, created_at, updated_at, archived_at)
+         VALUES ('wft-1', 'T', '', '', ?, ?, NULL)`,
+          )
+          .run(NOW, NOW)
+        h.db
+          .prepare(
+            `INSERT INTO workflow_versions (id, template_id, version, schema_version, definition_json, checksum, status, created_at, published_at)
+         VALUES ('wfv-1', 'wft-1', 1, 1, '{"schemaVersion":1,"nodes":[],"edges":[]}', 'sum', 'published', ?, ?)`,
+          )
+          .run(NOW, NOW)
+        h.db
+          .prepare(
+            `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, started_at, runtime_state_json, created_at, updated_at)
+         VALUES ('run-1', 'work-1', 'wfv-1', 'running', ?, '{}', ?, ?),
+                ('run-2', 'work-1', 'wfv-1', 'completed', ?, '{}', ?, ?)`,
+          )
+          .run(NOW, NOW, NOW, NOW, NOW, NOW)
+
+        const response = await h.dispatch(WORKFLOW_RUN_LIST_BY_WORK_METHOD, { workId: 'work-1' })
+        expect(response.ok).toBe(true)
+        if (!response.ok) return
+        const result = response.result as { runs: { id: string; status: string }[] }
+        // listByWork 按 created_at DESC 排序：run-2 先出现
+        expect(result.runs.map((run) => run.id)).toEqual(['run-2', 'run-1'])
+
+        const empty = await h.dispatch(WORKFLOW_RUN_LIST_BY_WORK_METHOD, { workId: 'work-empty' })
+        expect(empty).toMatchObject({ ok: true, result: { runs: [] } })
+      } finally {
+        h.db.close()
+      }
+    })
   })
 
   describe('workflow.run.get', () => {

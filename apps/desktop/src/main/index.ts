@@ -63,6 +63,7 @@ import {
   WORK_PAUSE_METHOD,
   WORK_RESUME_METHOD,
   WORKFLOW_RUN_GET_METHOD,
+  WORKFLOW_RUN_LIST_BY_WORK_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,
   WORKFLOW_TEMPLATE_GET_METHOD,
@@ -77,6 +78,7 @@ import {
   WORKTREE_LIST_METHOD,
   WORKTREE_REMOVE_METHOD,
   WorkflowRunGetResult,
+  WorkflowRunListByWorkResult,
   WorkflowTemplateListResult,
   WorkflowTemplateResult,
   WorkflowVersionListResult,
@@ -302,6 +304,9 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:workflow-run-get', (_event, params: unknown) =>
     callCore(WORKFLOW_RUN_GET_METHOD, params, WorkflowRunGetResult),
+  )
+  ipcMain.handle('agentra:workflow-run-list-by-work', (_event, params: unknown) =>
+    callCore(WORKFLOW_RUN_LIST_BY_WORK_METHOD, params, WorkflowRunListByWorkResult),
   )
   ipcMain.handle('agentra:artifact-list', (_event, params: unknown) =>
     callCore(ARTIFACT_LIST_METHOD, params, ArtifactListResult),

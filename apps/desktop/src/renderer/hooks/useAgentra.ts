@@ -44,8 +44,25 @@ export function useAgentra() {
   const [banner, setBanner] = useState<string | null>(null)
 
   const reportError = useCallback((error: unknown) => {
-    if (error instanceof ApiError) setBanner(`${error.code}: ${error.message}`)
-    else setBanner(error instanceof Error ? error.message : String(error))
+    if (error instanceof ApiError) {
+      // 阶段 5 第 181 行：CLI 不可用/未认证是用户可自行修复的状态，
+      // banner 给出可执行的提示，而不是只透传错误码（Core 拦截在阶段 1 已实现）。
+      if (error.code === 'CLI_UNAVAILABLE') {
+        setBanner(
+          'CLI 不可用：未发现可用的 Claude Code 可执行文件。请安装 Claude Code（或设置 AGENTRA_CLAUDE_PATH 指向可执行文件）后重试。',
+        )
+        return
+      }
+      if (error.code === 'CLI_NOT_AUTHENTICATED') {
+        setBanner(
+          'CLI 未认证：已找到 Claude Code 但登录态不可用。请在终端执行登录命令（Provider 面板可复制）后重试。',
+        )
+        return
+      }
+      setBanner(`${error.code}: ${error.message}`)
+      return
+    }
+    setBanner(error instanceof Error ? error.message : String(error))
   }, [])
 
   const refreshAgents = useCallback(async () => {

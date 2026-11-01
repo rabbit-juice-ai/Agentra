@@ -131,6 +131,8 @@ export const api = {
     (await unwrap(window.agentra.decideApproval(params))).approval,
   getApproval: async (nodeRunId: string) => await unwrap(window.agentra.getApproval({ nodeRunId })),
   getWorkflowRun: async (runId: string) => await unwrap(window.agentra.getWorkflowRun({ runId })),
+  listWorkflowRunsByWork: async (workId: string) =>
+    (await unwrap(window.agentra.listWorkflowRunsByWork({ workId }))).runs,
   listArtifacts: async (workId: string) =>
     (await unwrap(window.agentra.listArtifacts({ workId }))).artifacts,
   previewArtifact: async (artifactId: string, version?: number) =>

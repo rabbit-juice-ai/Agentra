@@ -29,6 +29,11 @@ export class WorkflowRunQueryService {
     private readonly nodes: NodeRunRepository,
   ) {}
 
+  /** S5-3b：某 Work 的全部 Run（按创建时间倒序，供 UI 定位失败终态）。 */
+  listByWork(workId: string): WorkflowRunRecord[] {
+    return this.runs.listByWork(workId)
+  }
+
   get(runId: string): WorkflowRunView {
     const run = this.runs.get(runId)
     if (!run) throw new WorkflowRunQueryError('NOT_FOUND', `workflow run ${runId} not found`)

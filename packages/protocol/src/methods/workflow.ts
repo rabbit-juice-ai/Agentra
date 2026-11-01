@@ -19,6 +19,8 @@ export const WORKFLOW_VERSION_VALIDATE_METHOD = 'workflow.version.validate'
 
 /** S4-7：只读运行态查询（不是执行入口；恢复后的 reconciliation_required 必须可见）。 */
 export const WORKFLOW_RUN_GET_METHOD = 'workflow.run.get'
+/** S5-3b：按 Work 列出 Run（只读；供失败终态呈现定位 Run，不是执行入口）。 */
+export const WORKFLOW_RUN_LIST_BY_WORK_METHOD = 'workflow.run.listByWork'
 
 /** S5-1：审批决策 API（领域事件 approval.decided 的协议入口）。 */
 /** S5-3：Artifact 只读服务面（预览/元数据；创建走 Core 内部，不做通用透传）。 */
@@ -239,6 +241,14 @@ export const WorkflowRunNode = z.object({
 export type WorkflowRunNode = z.infer<typeof WorkflowRunNode>
 
 export const WorkflowRunGetParams = z.object({ runId: z.string().min(1) }).strict()
+
+export const WorkflowRunListByWorkParams = z.object({ workId: z.string().min(1) }).strict()
+export type WorkflowRunListByWorkParams = z.infer<typeof WorkflowRunListByWorkParams>
+
+export const WorkflowRunListByWorkResult = z.object({
+  runs: z.array(WorkflowRun),
+})
+export type WorkflowRunListByWorkResult = z.infer<typeof WorkflowRunListByWorkResult>
 export type WorkflowRunGetParams = z.infer<typeof WorkflowRunGetParams>
 
 export const WorkflowRunGetResult = z.object({

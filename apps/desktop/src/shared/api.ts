@@ -41,6 +41,8 @@ import type {
   WorkCreateParams,
   WorkflowRunGetParams,
   WorkflowRunGetResult,
+  WorkflowRunListByWorkParams,
+  WorkflowRunListByWorkResult,
   WorkflowTemplateCreateParams,
   WorkflowTemplateGetParams,
   WorkflowTemplateIdParams,
@@ -161,6 +163,9 @@ export type AgentraApi = {
     params: ApprovalListPendingParams,
   ): Promise<RpcResult<ApprovalListPendingResult>>
   getWorkflowRun(params: WorkflowRunGetParams): Promise<RpcResult<WorkflowRunGetResult>>
+  listWorkflowRunsByWork(
+    params: WorkflowRunListByWorkParams,
+  ): Promise<RpcResult<WorkflowRunListByWorkResult>>
   listArtifacts(params: ArtifactListParams): Promise<RpcResult<ArtifactListResult>>
   previewArtifact(params: ArtifactPreviewParams): Promise<RpcResult<ArtifactPreviewResult>>
 

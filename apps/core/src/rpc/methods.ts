@@ -1,3 +1,4 @@
+import type {} from '@agentra/protocol'
 import {
   AGENT_ARCHIVE_METHOD,
   AGENT_CREATE_METHOD,
@@ -101,6 +102,7 @@ import {
   WORK_RESUME_METHOD,
   WORK_TERMINATE_METHOD,
   WORKFLOW_RUN_GET_METHOD,
+  WORKFLOW_RUN_LIST_BY_WORK_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,
   WORKFLOW_TEMPLATE_GET_METHOD,
@@ -118,6 +120,8 @@ import {
   type Work as WorkDto,
   WorkflowRunGetParams,
   WorkflowRunGetResult,
+  WorkflowRunListByWorkParams,
+  WorkflowRunListByWorkResult,
   WorkflowTemplateCreateParams,
   WorkflowTemplateGetParams,
   WorkflowTemplateIdParams,
@@ -483,6 +487,12 @@ export function coreMethods(
     ),
     [ARTIFACT_LIST_METHOD]: defineMethod(ArtifactListParams, ArtifactListResult, (params) =>
       services.artifacts.listByWork(params.workId),
+    ),
+
+    [WORKFLOW_RUN_LIST_BY_WORK_METHOD]: defineMethod(
+      WorkflowRunListByWorkParams,
+      WorkflowRunListByWorkResult,
+      (params) => ({ runs: services.workflowRuns.listByWork(params.workId) }),
     ),
 
     [APPROVAL_DECIDE_METHOD]: defineMethod(ApprovalDecideParams, ApprovalResult, (params) => ({

@@ -8,6 +8,8 @@ import type {
   Worktree,
 } from '@agentra/protocol'
 import { useEffect, useState } from 'react'
+import { ArtifactsPanel } from '../features/approvals/ArtifactsPanel'
+import { RunFailuresPanel } from '../features/approvals/RunFailuresPanel'
 import { StatusBadge } from './StatusBadge'
 import {
   buttonStyle,
@@ -467,6 +469,15 @@ export function WorksPage({
             <p style={{ fontSize: 13, color: colors.muted, margin: 0 }}>选择左侧 Work 查看详情。</p>
           )}
         </section>
+
+        {/* 阶段 5 S5-3b：选中 Work 的交付物 + 运行状态/失败终态呈现。
+            RunFailuresPanel 自带 Work 为空时不渲染；这里传入当前选中 Work。 */}
+        {selected && (
+          <section>
+            <ArtifactsPanel workId={selected.id} />
+            <RunFailuresPanel workId={selected.id} />
+          </section>
+        )}
       </div>
     </div>
   )
