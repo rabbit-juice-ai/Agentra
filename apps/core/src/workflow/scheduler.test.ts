@@ -5,6 +5,7 @@ import type { WorkflowDefinition } from '@agentra/workflow-schema'
 import { afterEach, describe, expect, it } from 'vitest'
 import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
+import { AuditRepository } from '../db/repositories/audit-repository'
 import { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { WorkflowRepository } from '../db/repositories/workflow-repository'
@@ -76,6 +77,7 @@ type Harness = {
   runs: WorkflowRunRepository
   branches: BranchRunRepository
   nodes: NodeRunRepository
+  audit: AuditRepository
   definitions: PublishedDefinitionProvider
   scheduler: WorkflowScheduler
   runId: string
@@ -129,6 +131,7 @@ function harness(): Harness {
   const runs = new WorkflowRunRepository(db)
   const branches = new BranchRunRepository(db)
   const nodes = new NodeRunRepository(db)
+  const audit = new AuditRepository(db)
   const definitions = new PublishedDefinitionProvider(repo)
 
   runs.create({ id: 'run-1', workId: 'work-1', workflowVersionId: draft.id }, now())
@@ -146,6 +149,7 @@ function harness(): Harness {
       nodes,
       definitions,
       gates: overrides.gates ?? defaultDispatchGates(overrides.ports ?? allowAllResourcePorts()),
+      audit,
       logger: overrides.logger,
       onNodeStarted:
         overrides.onNodeStarted ??
@@ -159,6 +163,8 @@ function harness(): Harness {
   const scheduler = makeScheduler()
   scheduler.ensureBranches('run-1', definition())
   for (const node of definition().nodes) {
+    // 公平调度按 NodeRun (created_at, id) 排序；让 harness 的创建顺序与定义顺序一致。
+    advance(1)
     nodes.create({ id: `nr-${node.key}`, workflowRunId: 'run-1', workflowNodeKey: node.key }, now())
   }
 
@@ -167,6 +173,7 @@ function harness(): Harness {
     runs,
     branches,
     nodes,
+    audit,
     scheduler,
     definitions,
     runId: 'run-1',
@@ -395,6 +402,19 @@ async function readyParallelBranches(h: Harness): Promise<void> {
   }
 }
 
+describe('WorkflowScheduler · 公平顺序', () => {
+  it('dispatches ready nodes in NodeRun (created_at, id) order', async () => {
+    const h = harness()
+    try {
+      await readyParallelBranches(h)
+      const result = await h.scheduler.tick(h.runId)
+      expect(result.startedAttempts).toEqual(['ui', 'backend'])
+    } finally {
+      h.close()
+    }
+  })
+})
+
 describe('WorkflowScheduler · 同 tick 内暂停（F-3）', () => {
   it('pausing a branch inside onNodeStarted blocks later nodes of the same tick (S-12)', async () => {
     const h = harness()
@@ -485,9 +505,62 @@ describe('WorkflowScheduler · 失败兜底可观测性（O-1）', () => {
       expect(node?.status).toBe('cancelled')
       expect(warns).toHaveLength(1)
       expect(warns[0]?.message).toContain('failed to transition to failed')
-      expect(warns[0]?.meta).toEqual({ nodeKey: 'start', nodeRunId: 'nr-start' })
+      expect(warns[0]?.meta).toEqual({
+        runId: 'run-1',
+        branchRunId: null,
+        nodeKey: 'start',
+        nodeRunId: 'nr-start',
+      })
     } finally {
       h.close()
     }
+  })
+
+  describe('WorkflowScheduler · 审计', () => {
+    it('writes actor/action/target for branch and run pause/resume', () => {
+      const h = harness()
+      try {
+        const branch = h.branches.getByKey('run-1', 'split_1/ui')
+        if (!branch) throw new Error('missing branch')
+        h.branches.transition(branch.id, ['blocked'], 'active', h.now())
+        expect(
+          h.scheduler.pauseBranch('run-1', 'split_1/ui', 'user_paused', {
+            type: 'user',
+            id: 'user-1',
+          }),
+        ).toBe(true)
+        expect(
+          h.scheduler.resumeBranch('run-1', 'split_1/ui', { type: 'user', id: 'user-1' }),
+        ).toBe(true)
+        expect(h.scheduler.pauseRun('run-1')).toBe(true)
+        expect(h.scheduler.resumeRun('run-1')).toBe(true)
+
+        const pausedBranch = h.audit.listByAction('workflow.branch.paused')
+        expect(pausedBranch).toHaveLength(1)
+        expect(pausedBranch[0]).toMatchObject({
+          actorType: 'user',
+          actorId: 'user-1',
+          targetType: 'branch_run',
+          details: { runId: 'run-1', branchKey: 'split_1/ui', reason: 'user_paused' },
+        })
+        expect(h.audit.listByAction('workflow.branch.resumed')[0]).toMatchObject({
+          actorType: 'user',
+          actorId: 'user-1',
+          targetType: 'branch_run',
+        })
+        expect(h.audit.listByAction('workflow.run.paused')[0]).toMatchObject({
+          actorType: 'system',
+          targetType: 'workflow_run',
+          targetId: 'run-1',
+        })
+        expect(h.audit.listByAction('workflow.run.resumed')[0]).toMatchObject({
+          actorType: 'system',
+          targetType: 'workflow_run',
+          targetId: 'run-1',
+        })
+      } finally {
+        h.close()
+      }
+    })
   })
 })

@@ -40,6 +40,7 @@ import { defaultDispatchGates } from './workflow/dispatch-gates'
 import { WorkflowEngine } from './workflow/engine'
 import { WorkflowEventRecorder } from './workflow/event-recorder'
 import { WorkflowExecutionBridge } from './workflow/execution-bridge'
+import { WorkflowFairDispatcher } from './workflow/fair-dispatcher'
 import {
   createAgentCapacityPort,
   createProviderAvailabilityPort,
@@ -159,6 +160,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     sessions: sessionRepository,
     executions: executionRepository,
     logs: executionLogRepository,
+    nodeRuns: nodeRunRepository,
     hub,
     scratchRoot: paths.scratch,
     logger,
@@ -190,6 +192,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     reworks: reworkRequestRepository,
     approvals: approvalRepository,
     definitions: publishedDefinitions,
+    audit: auditRepository,
     events: { publish: (event) => workflowEventRecorder.publishRework(event) },
   })
   const approvalService = new ApprovalService(
@@ -199,6 +202,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     branchRunRepository,
     undefined,
     reworkService,
+    auditRepository,
   )
   const workflowBridge = new WorkflowExecutionBridge({
     runs: workflowRunRepository,
@@ -229,6 +233,19 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       inputArtifacts: { isAvailable: () => true },
     }),
     onNodeStarted: (context) => workflowEngine?.onNodeStarted(context),
+    agentResolver: (context) => {
+      try {
+        return workflowAssignmentResolver.resolveForNode(context.run.workId, context.node).agentId
+      } catch {
+        return null
+      }
+    },
+    audit: auditRepository,
+    logger,
+  })
+  const workflowFairDispatcher = new WorkflowFairDispatcher({
+    runs: workflowRunRepository,
+    scheduler: workflowScheduler,
     logger,
   })
   workflowEngine = new WorkflowEngine({
@@ -238,7 +255,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     nodes: nodeRunRepository,
     definitions: publishedDefinitions,
     approvals: approvalService,
+    audit: auditRepository,
     scheduler: workflowScheduler,
+    dispatcher: workflowFairDispatcher,
     bridge: workflowBridge,
     rework: reworkService,
     runService: workflowRunService,
@@ -254,6 +273,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     workflowScheduler,
     (execution) => workflowEngine?.onExecutionFinished(execution),
     logger,
+    workflowFairDispatcher,
   )
 
   // 上次运行遗留的排队任务：丢弃并标记，不自动恢复（从未启动过进程，补跑等于静默产生副作用）。

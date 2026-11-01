@@ -1,5 +1,6 @@
 import type { Execution } from '@agentra/protocol'
 import type { Database } from '../db/database'
+import type { AuditRepository } from '../db/repositories/audit-repository'
 import type { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import type { NodeRunRepository } from '../db/repositories/node-run-repository'
 import type { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
@@ -17,11 +18,13 @@ import {
 } from './control-nodes'
 import type { DispatchContext } from './dispatch-gates'
 import type { WorkflowExecutionBridge } from './execution-bridge'
+import type { WorkflowFairDispatcher } from './fair-dispatcher'
 import type { PublishedDefinitionProvider } from './published-definition-provider'
 import type { CreateWorkflowRunInput, WorkflowRunService } from './run-service'
 import type { WorkflowScheduler } from './scheduler'
 
 export type WorkflowEngineLogger = {
+  info?(message: string, meta?: Record<string, unknown>): void
   warn(message: string, meta?: Record<string, unknown>): void
 }
 
@@ -32,7 +35,10 @@ export type WorkflowEngineDeps = {
   nodes: NodeRunRepository
   definitions: PublishedDefinitionProvider
   approvals: ApprovalService
+  audit?: AuditRepository
   scheduler: WorkflowScheduler
+  /** 生产装配使用公平调度器；未提供时退化为单 Run tick。 */
+  dispatcher?: WorkflowFairDispatcher
   bridge: WorkflowExecutionBridge
   rework: ReworkTrigger
   runService: WorkflowRunService
@@ -63,6 +69,7 @@ export class WorkflowEngine {
       nodes: deps.nodes,
       definitions: deps.definitions,
       approvals: deps.approvals,
+      ...(deps.audit ? { audit: deps.audit } : {}),
       ...(deps.eventSink ? { eventSink: deps.eventSink } : {}),
       reworkTrigger: deps.rework,
       now: this.now,
@@ -71,11 +78,20 @@ export class WorkflowEngine {
 
   /** 内部创建 Run；不暴露 RPC（执行入口仍属后续装配批次）。 */
   createRun(input: CreateWorkflowRunInput) {
-    return this.deps.runService.createRun(input)
+    const run = this.deps.runService.createRun(input)
+    void this.kick(run.id)
+    return run
   }
 
   async onNodeStarted(context: DispatchContext): Promise<void> {
     const nodeRunId = context.nodeRun.id
+    this.deps.logger?.info?.('workflow node started', {
+      runId: context.run.id,
+      branchRunId: context.nodeRun.branchRunId,
+      nodeRunId,
+      nodeKey: context.node.key,
+      nodeType: context.node.type,
+    })
     switch (context.node.type) {
       case 'start':
         completeStartNode(this.controlDeps, nodeRunId)
@@ -108,12 +124,23 @@ export class WorkflowEngine {
     if (!nodeRunId) return
     const nodeRun = this.deps.nodes.get(nodeRunId)
     if (!nodeRun) return
+    this.deps.logger?.info?.('workflow execution finished', {
+      executionId: execution.id,
+      runId: nodeRun.workflowRunId,
+      branchRunId: nodeRun.branchRunId,
+      nodeRunId: nodeRun.id,
+      nodeKey: nodeRun.workflowNodeKey,
+    })
     void this.kick(nodeRun.workflowRunId)
   }
 
   async kick(runId: string): Promise<void> {
     try {
-      await this.deps.scheduler.runUntilIdle(runId)
+      if (this.deps.dispatcher) {
+        await this.deps.dispatcher.tickAll()
+      } else {
+        await this.deps.scheduler.runUntilIdle(runId)
+      }
     } catch (error) {
       this.deps.logger?.warn('workflow engine tick failed', {
         runId,

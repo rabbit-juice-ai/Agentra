@@ -1,5 +1,6 @@
 import { newId } from '@agentra/shared'
 import type { WorkflowDefinition } from '@agentra/workflow-schema'
+import type { AuditRepository } from '../db/repositories/audit-repository'
 import type { BranchRunRecord, BranchRunRepository } from '../db/repositories/branch-run-repository'
 import type { NodeRunRecord, NodeRunRepository } from '../db/repositories/node-run-repository'
 import type {
@@ -21,13 +22,31 @@ export type TickResult = {
    */
   startedAttempts: string[]
   /** 资源/分支闸门拒绝的节点与原因（保持 ready，不启动）。 */
-  skippedGates: { nodeKey: string; gate: string; reason: string }[]
+  skippedGates: { nodeKey: string; gate: string; reason: string; agentId?: string }[]
   /** 有失败前驱、无法就绪的节点。 */
   failedPredecessors: Record<string, string[]>
+  /** 本 tick 真正 CAS 成功的启动明细（含 nodeRunId / branchRunId / agentId）。 */
+  startedNodes: {
+    runId: string
+    nodeKey: string
+    nodeRunId: string
+    branchRunId: string | null
+    agentId: string | null
+  }[]
 }
 
 export type SchedulerLogger = {
   warn(message: string, meta?: Record<string, unknown>): void
+}
+
+export type TickOptions = {
+  /**
+   * 公平调度：同一 tick 内每个 Agent 最多启动的节点数。
+   * 由 FairDispatcher 逐 Run 调用时共享 startsByAgent，保证多 Run 轮转。
+   */
+  maxStartsPerAgent?: number
+  /** 同一轮公平调度内各 Agent 已启动数；由调用方跨 Run 共享。 */
+  startsByAgent?: Map<string, number>
 }
 
 export type SchedulerDeps = {
@@ -42,6 +61,10 @@ export type SchedulerDeps = {
    * 这里刻意没有默认值：漏传一次就会让资源闸门全部失效，且没有任何运行时信号。
    */
   gates: DispatchGate[]
+  /** 公平调度：解析节点所属 Agent；解析失败返回 null（不参与 per-agent 限额）。 */
+  agentResolver?: (context: DispatchContext) => string | null
+  /** 暂停/恢复审计（actor/action/target）。 */
+  audit?: AuditRepository
   /** 失败兜底路径的可观测性（如 nodes.fail() 因状态被并发改走而未生效）。 */
   logger?: SchedulerLogger
   /**
@@ -57,6 +80,7 @@ const EMPTY_RESULT: TickResult = {
   startedAttempts: [],
   skippedGates: [],
   failedPredecessors: {},
+  startedNodes: [],
 }
 
 function latestAttempts(nodes: NodeRunRecord[]): Map<string, NodeRunRecord> {
@@ -109,6 +133,8 @@ export class WorkflowScheduler {
   private readonly nodes: NodeRunRepository
   private readonly definitions: PublishedDefinitionProvider
   private readonly gates: DispatchGate[]
+  private readonly agentResolver: ((context: DispatchContext) => string | null) | undefined
+  private readonly audit: AuditRepository | undefined
   private readonly onNodeStarted: NodeStartHandler | undefined
   private readonly logger: SchedulerLogger | undefined
   private readonly now: () => string
@@ -124,13 +150,15 @@ export class WorkflowScheduler {
     this.nodes = deps.nodes
     this.definitions = deps.definitions
     this.gates = deps.gates
+    this.agentResolver = deps.agentResolver
+    this.audit = deps.audit
     this.onNodeStarted = deps.onNodeStarted
     this.logger = deps.logger
     this.now = deps.now ?? (() => new Date().toISOString())
   }
 
   /** 一次调度推进：可重复调用，直到 TickResult 为空。 */
-  async tick(runId: string): Promise<TickResult> {
+  async tick(runId: string, options: TickOptions = {}): Promise<TickResult> {
     const now = this.now()
     const run = this.runs.get(runId)
     if (run === null || run.status !== 'running') return { ...EMPTY_RESULT }
@@ -154,11 +182,20 @@ export class WorkflowScheduler {
 
     const after = latestAttempts(this.nodes.listByRun(runId))
     const startedAttempts: string[] = []
+    const startedNodes: TickResult['startedNodes'] = []
     const skippedGates: TickResult['skippedGates'] = []
 
-    for (const definitionNode of definition.nodes) {
-      const nodeRun = after.get(definitionNode.key)
-      if (nodeRun === undefined || nodeRun.status !== 'ready') continue
+    const nodesByKey = new Map(definition.nodes.map((node) => [node.key, node]))
+    const readyRuns = [...after.values()]
+      .filter((node) => node.status === 'ready')
+      .sort(
+        (left, right) =>
+          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+      )
+
+    for (const nodeRun of readyRuns) {
+      const definitionNode = nodesByKey.get(nodeRun.workflowNodeKey)
+      if (definitionNode === undefined) continue
 
       const branchKey = branchKeys.get(definitionNode.key) ?? ROOT_BRANCH_KEY
 
@@ -190,6 +227,22 @@ export class WorkflowScheduler {
         definition,
       }
 
+      const agentId = this.agentResolver?.(context) ?? null
+      const usedByAgent = agentId ? (options.startsByAgent?.get(agentId) ?? 0) : 0
+      if (
+        agentId !== null &&
+        options.maxStartsPerAgent !== undefined &&
+        usedByAgent >= options.maxStartsPerAgent
+      ) {
+        skippedGates.push({
+          nodeKey: definitionNode.key,
+          gate: 'agent_rotation',
+          reason: `agent ${agentId} reached per-pass start limit`,
+          agentId,
+        })
+        continue
+      }
+
       let denied: { gate: string; reason: string } | null = null
       for (const gate of this.gates) {
         const result = gate.check(context)
@@ -206,6 +259,16 @@ export class WorkflowScheduler {
       // CAS：并发下只有一个调度者能把 ready 推到 running（与重读同一同步块）
       if (!this.nodes.transition(nodeRun.id, ['ready'], 'running', now)) continue
       startedAttempts.push(definitionNode.key)
+      startedNodes.push({
+        runId,
+        nodeKey: definitionNode.key,
+        nodeRunId: nodeRun.id,
+        branchRunId: nodeRun.branchRunId,
+        agentId,
+      })
+      if (agentId !== null && options.startsByAgent) {
+        options.startsByAgent.set(agentId, (options.startsByAgent.get(agentId) ?? 0) + 1)
+      }
 
       try {
         await this.onNodeStarted?.(context)
@@ -224,6 +287,8 @@ export class WorkflowScheduler {
         )
         if (!marked) {
           this.logger?.warn('node failed to transition to failed; state was changed concurrently', {
+            runId: runId,
+            branchRunId: nodeRun.branchRunId,
             nodeKey: definitionNode.key,
             nodeRunId: nodeRun.id,
           })
@@ -236,6 +301,7 @@ export class WorkflowScheduler {
       startedAttempts,
       skippedGates,
       failedPredecessors: Object.fromEntries(readiness.failedPredecessors),
+      startedNodes,
     }
   }
 
@@ -259,27 +325,90 @@ export class WorkflowScheduler {
   }
 
   /** 暂停分支：只改状态（CAS active → paused），调度闸门随即拒绝该分支的派发。 */
-  pauseBranch(runId: string, branchKey: string, reason: string): boolean {
+  pauseBranch(
+    runId: string,
+    branchKey: string,
+    reason: string,
+    actor: { type: 'user' | 'agent' | 'system'; id?: string } = { type: 'system' },
+  ): boolean {
     const branch = this.branches.getByKey(runId, branchKey)
     if (!branch) return false
-    return this.branches.pause(branch.id, reason, this.now())
+    const paused = this.branches.pause(branch.id, reason, this.now())
+    if (paused) {
+      this.audit?.append({
+        actorType: actor.type,
+        actorId: actor.id ?? null,
+        action: 'workflow.branch.paused',
+        targetType: 'branch_run',
+        targetId: branch.id,
+        details: { runId, branchKey, reason, from: 'active', to: 'paused' },
+        now: this.now(),
+      })
+    }
+    return paused
   }
 
   /** 恢复分支：CAS paused → active；下一次 tick 会重新计算依赖并派发。 */
-  resumeBranch(runId: string, branchKey: string): boolean {
+  resumeBranch(
+    runId: string,
+    branchKey: string,
+    actor: { type: 'user' | 'agent' | 'system'; id?: string } = { type: 'system' },
+  ): boolean {
     const branch = this.branches.getByKey(runId, branchKey)
     if (!branch) return false
-    return this.branches.resume(branch.id, this.now())
+    const resumed = this.branches.resume(branch.id, this.now())
+    if (resumed) {
+      this.audit?.append({
+        actorType: actor.type,
+        actorId: actor.id ?? null,
+        action: 'workflow.branch.resumed',
+        targetType: 'branch_run',
+        targetId: branch.id,
+        details: { runId, branchKey, from: 'paused', to: 'active' },
+        now: this.now(),
+      })
+    }
+    return resumed
   }
 
   /** Work 级暂停：Run 迁移 running → paused，所有分支都不再派发（不改分支自身状态）。 */
-  pauseRun(runId: string): boolean {
-    return this.runs.transition(runId, ['running'], 'paused', this.now())
+  pauseRun(
+    runId: string,
+    actor: { type: 'user' | 'agent' | 'system'; id?: string } = { type: 'system' },
+  ): boolean {
+    const paused = this.runs.transition(runId, ['running'], 'paused', this.now())
+    if (paused) {
+      this.audit?.append({
+        actorType: actor.type,
+        actorId: actor.id ?? null,
+        action: 'workflow.run.paused',
+        targetType: 'workflow_run',
+        targetId: runId,
+        details: { from: 'running', to: 'paused' },
+        now: this.now(),
+      })
+    }
+    return paused
   }
 
   /** Work 级恢复：paused → running，下一次 tick 重新计算依赖。 */
-  resumeRun(runId: string): boolean {
-    return this.runs.transition(runId, ['paused'], 'running', this.now())
+  resumeRun(
+    runId: string,
+    actor: { type: 'user' | 'agent' | 'system'; id?: string } = { type: 'system' },
+  ): boolean {
+    const resumed = this.runs.transition(runId, ['paused'], 'running', this.now())
+    if (resumed) {
+      this.audit?.append({
+        actorType: actor.type,
+        actorId: actor.id ?? null,
+        action: 'workflow.run.resumed',
+        targetType: 'workflow_run',
+        targetId: runId,
+        details: { from: 'paused', to: 'running' },
+        now: this.now(),
+      })
+    }
+    return resumed
   }
 
   get(runId: string): WorkflowRunRecord | null {

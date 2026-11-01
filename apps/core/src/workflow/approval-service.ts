@@ -6,6 +6,7 @@ import type {
   ApprovalRepository,
   ApprovalType,
 } from '../db/repositories/approval-repository'
+import type { AuditRepository } from '../db/repositories/audit-repository'
 import type { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import type { NodeRunRepository } from '../db/repositories/node-run-repository'
 
@@ -18,6 +19,7 @@ export type ApprovalReworkPort = {
     approvalId: string
     approvalNodeRunId: string
     targetNodeRunId: string | null
+    decidedBy?: string
   }): { id: string } | null
   onApprovalReentered?(nodeRunId: string): string[]
 }
@@ -50,6 +52,7 @@ export class ApprovalService {
     private readonly branches: BranchRunRepository,
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly rework?: ApprovalReworkPort,
+    private readonly audit?: AuditRepository,
   ) {}
 
   requestForNode(
@@ -135,7 +138,25 @@ export class ApprovalService {
           )
         }
         if (decision === 'approve' && nodeRun.branchRunId) {
-          this.branches.resume(nodeRun.branchRunId, now)
+          const branch = this.branches.get(nodeRun.branchRunId)
+          if (this.branches.resume(nodeRun.branchRunId, now)) {
+            this.audit?.append({
+              actorType: 'user',
+              actorId: input.decidedBy,
+              action: 'workflow.branch.resumed',
+              targetType: 'branch_run',
+              targetId: nodeRun.branchRunId,
+              details: {
+                runId: nodeRun.workflowRunId,
+                branchKey: branch?.branchKey ?? null,
+                reason: 'approval_approved',
+                approvalId: pending.id,
+                from: 'paused',
+                to: 'active',
+              },
+              now,
+            })
+          }
         }
         if (decision === 'request_changes' && this.rework) {
           this.rework.requestForApprovalChange({
@@ -143,6 +164,7 @@ export class ApprovalService {
             approvalId: pending.id,
             approvalNodeRunId: nodeRunId,
             targetNodeRunId: pending.targetNodeRunId,
+            decidedBy: input.decidedBy,
           })
         }
       }

@@ -1,6 +1,7 @@
 import type { WorkflowDefinition, WorkflowNode } from '@agentra/workflow-schema'
 import type { Database } from '../db/database'
 import { transaction } from '../db/database'
+import type { AuditRepository } from '../db/repositories/audit-repository'
 import type { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import type { NodeRunRecord, NodeRunRepository } from '../db/repositories/node-run-repository'
 import type {
@@ -28,6 +29,7 @@ export type ControlNodeDeps = {
   nodes: NodeRunRepository
   definitions: PublishedDefinitionProvider
   approvals: ApprovalService
+  audit?: AuditRepository
   eventSink?: ControlEventSink
   reworkTrigger?: ReworkTrigger
   now?: () => string
@@ -278,7 +280,27 @@ export function enterHumanApproval(deps: ControlNodeDeps, nodeRunId: string): vo
   // 进入等待 + 暂停分支 + 建 pending 审批必须原子：否则会出现「等审批但无审批行」。
   transaction(deps.db, () => {
     if (!deps.nodes.transition(nodeRun.id, ['running'], 'waiting_approval', now)) return
-    if (nodeRun.branchRunId) deps.branches.pause(nodeRun.branchRunId, 'waiting_approval', now)
+    if (nodeRun.branchRunId) {
+      const branch = deps.branches.get(nodeRun.branchRunId)
+      if (deps.branches.pause(nodeRun.branchRunId, 'waiting_approval', now)) {
+        deps.audit?.append({
+          actorType: 'system',
+          actorId: null,
+          action: 'workflow.branch.paused',
+          targetType: 'branch_run',
+          targetId: nodeRun.branchRunId,
+          details: {
+            runId: run.id,
+            branchKey: branch?.branchKey ?? null,
+            reason: 'waiting_approval',
+            nodeRunId: nodeRun.id,
+            from: 'active',
+            to: 'paused',
+          },
+          now,
+        })
+      }
+    }
 
     const targetKey = node.config.target.nodeKey
     const targetNode = deps.nodes

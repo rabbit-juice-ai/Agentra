@@ -6,6 +6,7 @@ import {
 } from '../db/repositories/execution-repository'
 import type { NodeRunRecord, NodeRunRepository } from '../db/repositories/node-run-repository'
 import type { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
+import type { WorkflowFairDispatcher } from './fair-dispatcher'
 import type { WorkflowScheduler } from './scheduler'
 
 export type RecoveryLogger = {
@@ -47,6 +48,7 @@ export class WorkflowRecoveryService {
     private readonly scheduler: WorkflowScheduler,
     private readonly onExecutionFinished?: (execution: Execution) => void,
     private readonly logger?: RecoveryLogger,
+    private readonly dispatcher?: WorkflowFairDispatcher,
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
@@ -108,11 +110,24 @@ export class WorkflowRecoveryService {
 
       if (run.status !== 'running') continue
       try {
-        await this.scheduler.runUntilIdle(run.id)
-        report.runsKicked.push(run.id)
+        if (this.dispatcher) {
+          report.runsKicked.push(run.id)
+        } else {
+          await this.scheduler.runUntilIdle(run.id)
+          report.runsKicked.push(run.id)
+        }
       } catch (error) {
         this.logger?.warn('workflow recovery tick failed', {
           runId: run.id,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    if (this.dispatcher && report.runsKicked.length > 0) {
+      try {
+        await this.dispatcher.tickAll()
+      } catch (error) {
+        this.logger?.warn('workflow recovery fair dispatch failed', {
           error: error instanceof Error ? error.message : String(error),
         })
       }

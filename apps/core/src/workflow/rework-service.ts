@@ -3,6 +3,7 @@ import type { WorkflowDefinition, WorkflowNode } from '@agentra/workflow-schema'
 import type { Database } from '../db/database'
 import { transaction } from '../db/database'
 import type { ApprovalRepository } from '../db/repositories/approval-repository'
+import type { AuditRepository } from '../db/repositories/audit-repository'
 import type { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import type { NodeRunRecord, NodeRunRepository } from '../db/repositories/node-run-repository'
 import type {
@@ -59,9 +60,12 @@ export type ReworkServiceDeps = {
   reworks: ReworkRequestRepository
   approvals: ApprovalRepository
   definitions: PublishedDefinitionProvider
+  audit?: AuditRepository
   events?: ReworkEventSink
   now?: () => string
 }
+
+type ReworkActor = { type: 'user' | 'agent' | 'system'; id?: string }
 
 type RequestOneInput = {
   run: WorkflowRunRecord
@@ -72,6 +76,7 @@ type RequestOneInput = {
   triggerApprovalId: string | null
   testReport: Record<string, unknown> | null
   createdBy: 'system' | 'approval' | 'user'
+  actor: ReworkActor
 }
 
 function latestAttempt(nodes: NodeRunRepository, runId: string, key: string): NodeRunRecord | null {
@@ -226,6 +231,7 @@ export class ReworkService {
           triggerApprovalId: null,
           testReport: report,
           createdBy: 'system',
+          actor: { type: 'system' },
         },
         events,
       )
@@ -243,6 +249,7 @@ export class ReworkService {
     approvalId: string
     approvalNodeRunId: string
     targetNodeRunId: string | null
+    decidedBy?: string
   }): ReworkRequestRecord | null {
     if (input.targetNodeRunId === null) return null
     const run = this.requireRun(input.runId)
@@ -269,6 +276,7 @@ export class ReworkService {
       triggerApprovalId: input.approvalId,
       testReport: null,
       createdBy: 'approval',
+      actor: input.decidedBy ? { type: 'user', id: input.decidedBy } : { type: 'system' },
     })
     if (record.status === 'in_rework' || record.status === 'requested') {
       this.deps.approvals.linkReworkRequest(input.approvalId, record.id)
@@ -428,6 +436,14 @@ export class ReworkService {
         `rework request ${requestId} changed concurrently`,
       )
     }
+    this.auditAction(
+      'workflow.rework.started',
+      request,
+      { type: 'system' },
+      {
+        targetNodeKey: targetNode.workflowNodeKey,
+      },
+    )
     this.emit(
       {
         type: 'rework.started',
@@ -497,7 +513,10 @@ export class ReworkService {
         },
         this.now(),
       )
-      this.pauseBranchForExhaustion(input.targetNode.branchRunId)
+      this.pauseBranchForExhaustion(input.targetNode.branchRunId, exhausted, input.actor)
+      this.auditAction('workflow.rework.exhausted', exhausted, input.actor, {
+        targetNodeKey: input.targetNodeKey,
+      })
       this.emit(
         {
           type: 'rework.exhausted',
@@ -526,6 +545,9 @@ export class ReworkService {
       },
       this.now(),
     )
+    this.auditAction('workflow.rework.requested', created, input.actor, {
+      targetNodeKey: input.targetNodeKey,
+    })
     this.emit(
       {
         type: 'rework.requested',
@@ -551,6 +573,7 @@ export class ReworkService {
       if (!this.deps.reworks.transition(request.id, ['in_rework'], 'completed', this.now()))
         continue
       completed.push(request.id)
+      this.auditAction('workflow.rework.completed', request, { type: 'system' })
       events.push({
         type: 'rework.completed',
         runId,
@@ -629,9 +652,25 @@ export class ReworkService {
       resultId = branch.id
     } else if (branch.status === 'paused') {
       this.deps.branches.resume(branch.id, now)
+      this.auditAction(
+        'workflow.branch.resumed',
+        request,
+        { type: 'system' },
+        {
+          branchKey: branch.branchKey,
+        },
+      )
       resultId = branch.id
     } else if (branch.status === 'blocked') {
       this.deps.branches.transition(branch.id, ['blocked'], 'active', now)
+      this.auditAction(
+        'workflow.branch.activated',
+        request,
+        { type: 'system' },
+        {
+          branchKey: branch.branchKey,
+        },
+      )
       resultId = branch.id
     } else {
       const suffix = `${request.round}-${request.id.slice(-8)}`
@@ -650,11 +689,55 @@ export class ReworkService {
     return resultId
   }
 
-  private pauseBranchForExhaustion(branchRunId: string | null): void {
+  private pauseBranchForExhaustion(
+    branchRunId: string | null,
+    request: ReworkRequestRecord,
+    actor: ReworkActor,
+  ): void {
     if (branchRunId === null) return
     const branch = this.deps.branches.get(branchRunId)
-    if (branch?.status === 'active')
-      this.deps.branches.pause(branch.id, 'rework_exhausted', this.now())
+    if (branch?.status !== 'active') return
+    if (!this.deps.branches.pause(branch.id, 'rework_exhausted', this.now())) return
+    this.deps.audit?.append({
+      actorType: actor.type,
+      actorId: actor.id ?? null,
+      action: 'workflow.branch.paused',
+      targetType: 'branch_run',
+      targetId: branch.id,
+      details: {
+        runId: request.workflowRunId,
+        branchKey: branch.branchKey,
+        reason: 'rework_exhausted',
+        reworkRequestId: request.id,
+        from: 'active',
+        to: 'paused',
+      },
+      now: this.now(),
+    })
+  }
+
+  private auditAction(
+    action: string,
+    request: ReworkRequestRecord,
+    actor: ReworkActor,
+    extra: Record<string, unknown> = {},
+  ): void {
+    this.deps.audit?.append({
+      actorType: actor.type,
+      actorId: actor.id ?? null,
+      action,
+      targetType: 'rework_request',
+      targetId: request.id,
+      details: {
+        runId: request.workflowRunId,
+        branchRunId: request.branchRunId,
+        targetNodeRunId: request.targetNodeRunId,
+        round: request.round,
+        triggerType: request.triggerType,
+        ...extra,
+      },
+      now: this.now(),
+    })
   }
 
   private approvalNodeKey(approvalId: string): string | null {

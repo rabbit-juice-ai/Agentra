@@ -239,6 +239,7 @@ async function harness(
   const agentRepository = new AgentRepository(db)
   const sessionRepository = new SessionRepository(db)
   const executionRepository = new ExecutionRepository(db)
+  const nodeRunRepository = new NodeRunRepository(db)
   const logRepository = new ExecutionLogRepository(db)
   const runtime = new FakeRuntimeClient()
   const hub = new CoreEventHub()
@@ -295,6 +296,7 @@ async function harness(
     sessions: sessionRepository,
     executions: executionRepository,
     logs: logRepository,
+    nodeRuns: nodeRunRepository,
     hub,
     scratchRoot: path.join(dir, 'scratch'),
     logger: {
@@ -359,7 +361,7 @@ async function harness(
     ).run(NOW, NOW)
 
     const workflowRepo = new WorkflowRepository(db)
-    const nodes = new NodeRunRepository(db)
+    const nodes = nodeRunRepository
     workflowBridge = new WorkflowExecutionBridge({
       runs: new WorkflowRunRepository(db),
       nodes,
@@ -580,6 +582,25 @@ describe('ExecutionService lifecycle RPCs', () => {
     // C-03：取消后不得出现「终态节点仍挂着活跃执行」或「运行节点没有执行」。
     expect(checkWorkflowConsistency(h.db)).toEqual([])
     expect(h.warnings).toEqual([])
+  })
+
+  it('carries runId / branchRunId / nodeRunId in process_started diagnostics', async () => {
+    const h = await harness({ workflow: true })
+    if (!h.workflow) throw new Error('missing workflow harness')
+    const execution = await h.executions.startForNode(h.workflow.nodeRunId, {
+      agentId: h.agentId,
+      prompt: 'hello',
+    })
+    const log = h.logs
+      .list(execution.id)
+      .find((entry) => entry.content.includes('execution.process_started'))
+    if (!log) throw new Error('missing process_started log')
+    expect(JSON.parse(log.content)).toMatchObject({
+      event: 'execution.process_started',
+      runId: 'run-1',
+      branchRunId: null,
+      nodeRunId: 'nrn-task-1',
+    })
   })
 
   it('notifies the workflow bridge when reconcile marks a bound execution crashed', async () => {

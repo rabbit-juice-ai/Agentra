@@ -30,6 +30,7 @@ import {
   type ExecutionRepository,
   isTerminalExecutionState,
 } from '../db/repositories/execution-repository'
+import type { NodeRunRepository } from '../db/repositories/node-run-repository'
 import type { SessionRepository } from '../db/repositories/session-repository'
 import type { WorkRepository } from '../db/repositories/work-repository'
 import type { CoreEventHub } from './event-hub'
@@ -75,6 +76,8 @@ export type ExecutionServiceDeps = {
   sessions: SessionRepository
   executions: ExecutionRepository
   logs: ExecutionLogRepository
+  /** 可选：把 runId / branchRunId / nodeRunId 带进执行日志与诊断字段。 */
+  nodeRuns?: NodeRunRepository
   hub: CoreEventHub
   scratchRoot: string
   logger?: ExecutionServiceLogger
@@ -116,6 +119,7 @@ export class ExecutionService {
   private readonly scratchRoot: string
   private readonly logger: ExecutionServiceLogger | undefined
   private readonly onExecutionFinished: ((execution: Execution) => void) | undefined
+  private readonly nodeRuns: NodeRunRepository | undefined
   private readonly now: () => string
 
   constructor(deps: ExecutionServiceDeps) {
@@ -134,6 +138,7 @@ export class ExecutionService {
     this.scratchRoot = deps.scratchRoot
     this.logger = deps.logger
     this.onExecutionFinished = deps.onExecutionFinished
+    this.nodeRuns = deps.nodeRuns
     this.now = deps.now ?? (() => new Date().toISOString())
   }
 
@@ -287,7 +292,12 @@ export class ExecutionService {
           now,
         )
       })
-      this.logger?.info('execution queued', { executionId, agentId: agent.id, activeCount })
+      this.logger?.info('execution queued', {
+        executionId,
+        agentId: agent.id,
+        activeCount,
+        ...this.workflowContext(executionId),
+      })
       return this.get(executionId)
     }
 
@@ -322,7 +332,7 @@ export class ExecutionService {
       this.appendSystemLog(
         executionId,
         'execution.process_started',
-        { processId: handle.processId },
+        { processId: handle.processId, ...this.workflowContext(executionId) },
         handle.startedAt,
       )
       return this.get(executionId)
@@ -338,7 +348,11 @@ export class ExecutionService {
       this.sessions.end(job.sessionId, failedAt)
       this.appendSystemLog(executionId, 'execution.start_failed', { message }, failedAt)
       this.publishState(executionId, 'failed', 'pending', message)
-      this.logger?.error('execution start failed', { executionId, error: message })
+      this.logger?.error('execution start failed', {
+        executionId,
+        error: message,
+        ...this.workflowContext(executionId),
+      })
       throw error
     }
   }
@@ -397,7 +411,12 @@ export class ExecutionService {
     })
     this.sessions.end(execution.sessionId, now)
     this.queued.delete(execution.id)
-    this.appendSystemLog(execution.id, 'execution.cancel_requested', {}, now)
+    this.appendSystemLog(
+      execution.id,
+      'execution.cancel_requested',
+      this.workflowContext(execution.id),
+      now,
+    )
     this.publishState(execution.id, 'cancelled', previous, 'cancelled by user')
     this.locks.releaseByExecution(execution.id)
     void this.drainQueue(execution.agentId)
@@ -522,7 +541,10 @@ export class ExecutionService {
       )
       // 补记账：崩溃也是终态，工作流桥接必须收到，否则 NodeRun 会停在 running。
       this.notifyExecutionFinished(execution.id)
-      this.logger?.warn('execution reconciled as crashed', { executionId: execution.id })
+      this.logger?.warn('execution reconciled as crashed', {
+        executionId: execution.id,
+        ...this.workflowContext(execution.id),
+      })
     }
   }
 
@@ -582,6 +604,17 @@ export class ExecutionService {
     if (isTerminalExecutionState(payload.status)) this.notifyExecutionFinished(payload.executionId)
   }
 
+  /** 诊断字段：执行 → NodeRun → Run/Branch；缺失时只带已知 ID。 */
+  private workflowContext(executionId: string): Record<string, unknown> {
+    const nodeRunId = this.executions.getNodeRunId(executionId)
+    if (!nodeRunId) return {}
+    const nodeRun = this.nodeRuns?.get(nodeRunId)
+    return {
+      nodeRunId,
+      ...(nodeRun ? { runId: nodeRun.workflowRunId, branchRunId: nodeRun.branchRunId } : {}),
+    }
+  }
+
   private notifyExecutionFinished(executionId: string): void {
     if (!this.onExecutionFinished) return
     const execution = this.executions.get(executionId)
@@ -625,7 +658,12 @@ export class ExecutionService {
     this.appendSystemLog(
       payload.executionId,
       'execution.exited',
-      { exitCode: payload.exitCode, signal: payload.signal, reason: payload.reason },
+      {
+        exitCode: payload.exitCode,
+        signal: payload.signal,
+        reason: payload.reason,
+        ...this.workflowContext(payload.executionId),
+      },
       payload.timestamp,
     )
     this.hub.publish(event)
@@ -739,7 +777,7 @@ export class ExecutionService {
       this.appendSystemLog(
         execution.id,
         'execution.queue_discarded',
-        { reason: 'core_restart' },
+        { reason: 'core_restart', ...this.workflowContext(execution.id) },
         now,
       )
       // 排队执行被丢弃也是终态：桥接需要把 NodeRun 收尾（或按策略重试）。

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
 import { ApprovalRepository } from '../db/repositories/approval-repository'
+import { AuditRepository } from '../db/repositories/audit-repository'
 import { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { WorkflowRepository } from '../db/repositories/workflow-repository'
@@ -224,6 +225,7 @@ type Harness = {
   branches: BranchRunRepository
   nodes: NodeRunRepository
   approvals: ApprovalService
+  audit: AuditRepository
   events: { type: string; runId: string }[]
   reworks: { nodeKey: string; reportNodeKey: string }[]
   runId: string
@@ -255,7 +257,16 @@ function setup(definition: WorkflowDefinition): Harness {
   const runs = new WorkflowRunRepository(db)
   const branches = new BranchRunRepository(db)
   const nodes = new NodeRunRepository(db)
-  const approvals = new ApprovalService(db, new ApprovalRepository(db), nodes, branches, () => NOW)
+  const audit = new AuditRepository(db)
+  const approvals = new ApprovalService(
+    db,
+    new ApprovalRepository(db),
+    nodes,
+    branches,
+    () => NOW,
+    undefined,
+    audit,
+  )
   const run = runs.create({ id: 'run-1', workId: 'work-1', workflowVersionId: draft.id }, NOW)
   runs.transition('run-1', ['pending'], 'running', NOW)
   ensureBranchRuns(branches, run.id, definition, NOW)
@@ -283,6 +294,7 @@ function setup(definition: WorkflowDefinition): Harness {
     nodes,
     definitions,
     approvals,
+    audit,
     eventSink: { publish: (event) => events.push(event) },
     reworkTrigger: {
       request: (input) =>
@@ -298,6 +310,7 @@ function setup(definition: WorkflowDefinition): Harness {
     branches,
     nodes,
     approvals,
+    audit,
     events,
     reworks,
     runId: run.id,
@@ -618,6 +631,12 @@ describe('HumanApproval 运行时', () => {
       expect(decided.decidedAt).toBe(NOW)
       expect(h.nodes.get(h.nodeRunId('approval'))?.status).toBe('succeeded')
       expect(h.branches.getByKey(h.runId, ROOT_BRANCH_KEY)?.status).toBe('active')
+      expect(h.audit.listByAction('workflow.branch.resumed')[0]).toMatchObject({
+        actorType: 'user',
+        actorId: 'user-1',
+        targetType: 'branch_run',
+        details: { reason: 'approval_approved' },
+      })
     } finally {
       h.close()
     }

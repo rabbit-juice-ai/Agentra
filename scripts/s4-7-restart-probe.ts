@@ -279,6 +279,7 @@ async function recover(file: string): Promise<void> {
       schedulerFor(db, r, () => true),
       undefined,
       undefined,
+      undefined,
       () => NOW,
     )
     await recovery.recover()

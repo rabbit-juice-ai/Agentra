@@ -331,6 +331,7 @@ describe('S4-7 G · 返工重启恢复', () => {
         scheduler,
         undefined,
         undefined,
+        undefined,
         () => NOW,
       )
       const report = await recovery.recover()
@@ -374,6 +375,7 @@ describe('S4-7 G · 返工重启恢复', () => {
         r.nodes,
         new ExecutionRepository(db),
         scheduler,
+        undefined,
         undefined,
         undefined,
         () => NOW,

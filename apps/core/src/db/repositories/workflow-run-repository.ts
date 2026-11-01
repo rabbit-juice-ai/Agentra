@@ -129,6 +129,17 @@ export class WorkflowRunRepository {
     return rows.map(toRecord)
   }
 
+  /** 公平调度：所有 running Run，按 (created_at, id) 确定基础顺序。 */
+  listRunning(): WorkflowRunRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM workflow_runs WHERE status = 'running'
+         ORDER BY created_at ASC, id ASC`,
+      )
+      .all() as WorkflowRunRow[]
+    return rows.map(toRecord)
+  }
+
   listByWork(workId: string): WorkflowRunRecord[] {
     const rows = this.db
       .prepare('SELECT * FROM workflow_runs WHERE work_id = ? ORDER BY created_at DESC, id DESC')

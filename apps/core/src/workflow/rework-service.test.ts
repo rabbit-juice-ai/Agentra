@@ -7,6 +7,7 @@ import { type Database, openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
 import { ApprovalRepository } from '../db/repositories/approval-repository'
 import { AssignmentRepository } from '../db/repositories/assignment-repository'
+import { AuditRepository } from '../db/repositories/audit-repository'
 import { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { ReworkRequestRepository } from '../db/repositories/rework-request-repository'
@@ -205,6 +206,7 @@ type Harness = {
   nodes: NodeRunRepository
   reworks: ReworkRequestRepository
   approvals: ApprovalRepository
+  audit: AuditRepository
   approvalService: ApprovalService
   definitions: PublishedDefinitionProvider
   rework: ReworkService
@@ -251,6 +253,7 @@ function setup(definition: WorkflowDefinition): Harness {
   const nodes = new NodeRunRepository(db)
   const reworks = new ReworkRequestRepository(db)
   const approvals = new ApprovalRepository(db)
+  const audit = new AuditRepository(db)
   const events: ReworkEvent[] = []
   const rework = new ReworkService({
     db,
@@ -260,6 +263,7 @@ function setup(definition: WorkflowDefinition): Harness {
     reworks,
     approvals,
     definitions,
+    audit,
     events: { publish: (event) => events.push(event) },
     now: () => NOW,
   })
@@ -283,6 +287,7 @@ function setup(definition: WorkflowDefinition): Harness {
     nodes,
     reworks,
     approvals,
+    audit,
     approvalService,
     definitions,
     rework,
@@ -423,6 +428,8 @@ describe('ReworkPolicy · 触发与定向返工', () => {
         'rework.started',
         'rework.completed',
       ])
+      expect(h.audit.listByAction('workflow.rework.started')).toHaveLength(1)
+      expect(h.audit.listByAction('workflow.rework.completed')).toHaveLength(1)
     } finally {
       h.close()
     }
@@ -621,6 +628,12 @@ describe('ReworkPolicy · 轮次上限（C-7）', () => {
       expect(h.branches.getByKey(h.runId, 'root')?.status).toBe('paused')
       expect(h.runs.get(h.runId)?.status).toBe('running')
       expect(h.events.filter((event) => event.type === 'rework.exhausted')).toHaveLength(1)
+      expect(h.audit.listByAction('workflow.rework.requested')).toHaveLength(1)
+      expect(h.audit.listByAction('workflow.rework.exhausted')).toHaveLength(1)
+      expect(h.audit.listByAction('workflow.branch.paused')[0]).toMatchObject({
+        targetType: 'branch_run',
+        details: { reason: 'rework_exhausted' },
+      })
     } finally {
       h.close()
     }
@@ -675,6 +688,13 @@ describe('ReworkPolicy · request_changes 触发', () => {
       })
       const linked = h.approvals.get(firstApproval.id)
       expect(linked?.reworkRequestId).toBe(requests[0]?.id)
+      expect(h.audit.listByAction('workflow.rework.requested')[0]).toMatchObject({
+        actorType: 'user',
+        actorId: 'user-1',
+        targetType: 'rework_request',
+        targetId: requests[0]?.id,
+      })
+      expect(h.audit.listByAction('workflow.branch.resumed').length).toBeGreaterThanOrEqual(1)
       // 同一决策重复提交：approvals 不新增、ReworkRequest 不重复
       h.approvalService.decide(approvalRun.id, 'request_changes', {
         decidedBy: 'user-1',

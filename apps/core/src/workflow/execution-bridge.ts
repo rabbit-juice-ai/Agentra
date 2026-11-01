@@ -203,7 +203,7 @@ export class WorkflowExecutionBridge {
     const now = this.now()
     if (execution.status === 'cancelled') {
       const cancelled = this.deps.nodes.transition(nodeRun.id, ['running'], 'cancelled', now)
-      if (!cancelled) this.warnUnchanged(nodeRun.id, node.key, 'cancelled')
+      if (!cancelled) this.warnUnchanged(nodeRun, node.key, 'cancelled', execution.id)
       return
     }
     if (execution.status !== 'succeeded') {
@@ -232,7 +232,7 @@ export class WorkflowExecutionBridge {
         },
         now,
       )
-      if (!marked) this.warnUnchanged(nodeRun.id, node.key, 'output_contract_violation')
+      if (!marked) this.warnUnchanged(nodeRun, node.key, 'output_contract_violation', execution.id)
       return
     }
 
@@ -244,7 +244,7 @@ export class WorkflowExecutionBridge {
       output ? { outputSnapshot: output } : undefined,
     )
     if (!succeeded) {
-      this.warnUnchanged(nodeRun.id, node.key, 'succeeded')
+      this.warnUnchanged(nodeRun, node.key, 'succeeded', execution.id)
       return
     }
     // 契约通过后才允许触发返工；契约失败在上面的分支已经 failed 并 return。
@@ -288,7 +288,7 @@ export class WorkflowExecutionBridge {
       { category: 'internal', nodeKey: node.key, message, details },
       now,
     )
-    if (!marked) this.warnUnchanged(nodeRun.id, node.key, 'failed')
+    if (!marked) this.warnUnchanged(nodeRun, node.key, 'failed')
     if (nodeRun.attempt >= maxAttempts) return
 
     // NodeRun 级重试：每次 attempt 一条新 NodeRun（与 D4 模型一致），交给下一次 tick 派发。
@@ -318,14 +318,22 @@ export class WorkflowExecutionBridge {
       { category, nodeKey, message },
       this.now(),
     )
-    if (!marked) this.warnUnchanged(nodeRun.id, nodeKey, category)
+    if (!marked) this.warnUnchanged(nodeRun, nodeKey, category)
   }
 
-  private warnUnchanged(nodeRunId: string, nodeKey: string, target: string): void {
+  private warnUnchanged(
+    nodeRun: NodeRunRecord,
+    nodeKey: string,
+    target: string,
+    executionId?: string,
+  ): void {
     this.deps.logger?.warn('node state changed concurrently; transition skipped', {
-      nodeRunId,
+      runId: nodeRun.workflowRunId,
+      branchRunId: nodeRun.branchRunId,
+      nodeRunId: nodeRun.id,
       nodeKey,
       target,
+      ...(executionId ? { executionId } : {}),
     })
   }
 }
