@@ -17,6 +17,9 @@ export const WORKFLOW_VERSION_CREATE_DRAFT_METHOD = 'workflow.version.createDraf
 export const WORKFLOW_VERSION_PUBLISH_METHOD = 'workflow.version.publish'
 export const WORKFLOW_VERSION_VALIDATE_METHOD = 'workflow.version.validate'
 
+/** S4-7：只读运行态查询（不是执行入口；恢复后的 reconciliation_required 必须可见）。 */
+export const WORKFLOW_RUN_GET_METHOD = 'workflow.run.get'
+
 export const WorkflowVersionStatus = z.enum(['draft', 'published', 'deprecated'])
 export type WorkflowVersionStatus = z.infer<typeof WorkflowVersionStatus>
 
@@ -133,3 +136,48 @@ export const WorkflowVersionValidateResult = z.object({
   violations: z.array(WorkflowViolation),
 })
 export type WorkflowVersionValidateResult = z.infer<typeof WorkflowVersionValidateResult>
+
+export const WorkflowRun = z.object({
+  id: z.string().min(1),
+  workId: z.string().min(1),
+  workflowVersionId: z.string().min(1),
+  status: z.string().min(1),
+  startedAt: IsoTimestamp.nullable(),
+  endedAt: IsoTimestamp.nullable(),
+  createdAt: IsoTimestamp,
+  updatedAt: IsoTimestamp,
+})
+export type WorkflowRun = z.infer<typeof WorkflowRun>
+
+export const WorkflowRunBranch = z.object({
+  id: z.string().min(1),
+  branchKey: z.string().min(1),
+  status: z.string().min(1),
+  pauseReason: z.string().nullable(),
+  pausedAt: IsoTimestamp.nullable(),
+  resumedAt: IsoTimestamp.nullable(),
+})
+export type WorkflowRunBranch = z.infer<typeof WorkflowRunBranch>
+
+export const WorkflowRunNode = z.object({
+  id: z.string().min(1),
+  workflowNodeKey: z.string().min(1),
+  branchRunId: z.string().nullable(),
+  status: z.string().min(1),
+  attempt: z.number().int().min(1),
+  output: z.unknown().nullable(),
+  error: z.unknown().nullable(),
+  startedAt: IsoTimestamp.nullable(),
+  endedAt: IsoTimestamp.nullable(),
+})
+export type WorkflowRunNode = z.infer<typeof WorkflowRunNode>
+
+export const WorkflowRunGetParams = z.object({ runId: z.string().min(1) }).strict()
+export type WorkflowRunGetParams = z.infer<typeof WorkflowRunGetParams>
+
+export const WorkflowRunGetResult = z.object({
+  run: WorkflowRun,
+  branches: z.array(WorkflowRunBranch),
+  nodes: z.array(WorkflowRunNode),
+})
+export type WorkflowRunGetResult = z.infer<typeof WorkflowRunGetResult>

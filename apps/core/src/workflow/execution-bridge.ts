@@ -68,6 +68,13 @@ export function validateOutputContract(
       return `output field "${field.name}" does not match type ${field.type}`
     }
   }
+  // fail-closed：测试失败但说不出失败任务，是必须人工介入的状态，不能静默当作「无需返工」。
+  if (contract.profile === 'test_result' && output?.pass === false) {
+    const related = output.relatedTasks
+    if (!Array.isArray(related) || related.length === 0) {
+      return 'test_result pass=false requires at least one relatedTasks entry'
+    }
+  }
   return null
 }
 

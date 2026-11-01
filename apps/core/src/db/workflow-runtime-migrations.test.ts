@@ -50,7 +50,7 @@ describe('migration v9 · workflow runtime tables', () => {
   it('creates workflow_runs / branch_runs / node_runs with indexes', () => {
     const db = openMigrated()
     try {
-      expect(currentUserVersion(db)).toBe(12)
+      expect(currentUserVersion(db)).toBe(13)
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
           name: string
@@ -141,7 +141,7 @@ describe('migration v9 · workflow runtime tables', () => {
     const db = openMigrated()
     try {
       const second = migrate(db)
-      expect(second).toEqual({ from: 12, to: 12, applied: [] })
+      expect(second).toEqual({ from: 13, to: 13, applied: [] })
 
       // v9 自身的 SQL 也必须幂等（CREATE … IF NOT EXISTS），重放一次再回滚
       const v9 = MIGRATIONS.find((migration) => migration.version === 9)
@@ -222,7 +222,7 @@ describe('migration v11 · approvals', () => {
   })
 })
 
-describe('migration v12 · rework_requests', () => {
+describe('migration v12/v13 · rework_requests + workflow_events', () => {
   it('rebuilds approvals with a rework FK and creates the idempotent rework table', () => {
     const db = openDatabase(tempDb())
     try {
@@ -251,8 +251,8 @@ describe('migration v12 · rework_requests', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 11,
-        to: 12,
-        applied: ['phase4_rework_requests'],
+        to: 13,
+        applied: ['phase4_rework_requests', 'phase4_workflow_events'],
       })
 
       // 重建后 approvals 行逐列保留
@@ -311,6 +311,28 @@ describe('migration v12 · rework_requests', () => {
           )
           .run(NOW, NOW),
       ).toThrow(/CHECK constraint failed/)
+
+      // v13：workflow_events 的 event_id 唯一 + FK
+      db.prepare(
+        `INSERT INTO workflow_events (id, event_id, workflow_run_id, event_type, payload_json, occurred_at)
+         VALUES ('evt-1', 'run-1:workflow.completed', 'run-1', 'workflow.completed', '{}', ?)`,
+      ).run(NOW)
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO workflow_events (id, event_id, workflow_run_id, event_type, payload_json, occurred_at)
+             VALUES ('evt-2', 'run-1:workflow.completed', 'run-1', 'workflow.completed', '{}', ?)`,
+          )
+          .run(NOW),
+      ).toThrow(/UNIQUE constraint failed/)
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO workflow_events (id, event_id, workflow_run_id, event_type, payload_json, occurred_at)
+             VALUES ('evt-orphan', 'orphan', 'missing-run', 'workflow.completed', '{}', ?)`,
+          )
+          .run(NOW),
+      ).toThrow(/FOREIGN KEY constraint failed/)
 
       // v12 的核心：approvals.rework_request_id 现在真的受 FK 约束
       expect(() =>

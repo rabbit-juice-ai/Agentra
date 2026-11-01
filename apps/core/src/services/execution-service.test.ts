@@ -582,6 +582,25 @@ describe('ExecutionService lifecycle RPCs', () => {
     expect(h.warnings).toEqual([])
   })
 
+  it('notifies the workflow bridge when reconcile marks a bound execution crashed', async () => {
+    const h = await harness({ workflow: true })
+    if (!h.workflow) throw new Error('missing workflow harness')
+    const execution = await h.executions.startForNode(h.workflow.nodeRunId, {
+      agentId: h.agentId,
+      prompt: 'hello',
+    })
+    expect(h.workflow.nodes.get(h.workflow.nodeRunId)?.status).toBe('running')
+
+    // Daemon 重启后不知道这条执行：reconcile 必须补记账并通知桥接。
+    h.runtime.active = []
+    await h.executions.reconcile()
+
+    expect(h.executions.get(execution.id).status).toBe('crashed')
+    expect(h.workflow.nodes.get(h.workflow.nodeRunId)?.status).toBe('failed')
+    expect(checkWorkflowConsistency(h.db)).toEqual([])
+    expect(h.warnings.filter((warning) => warning.includes('node state changed'))).toEqual([])
+  })
+
   it('is idempotent when cancelling a terminal execution', async () => {
     const h = await harness()
     const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })

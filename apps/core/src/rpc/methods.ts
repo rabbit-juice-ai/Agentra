@@ -85,6 +85,7 @@ import {
   WORK_PAUSE_METHOD,
   WORK_RESUME_METHOD,
   WORK_TERMINATE_METHOD,
+  WORKFLOW_RUN_GET_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,
   WORKFLOW_TEMPLATE_GET_METHOD,
@@ -100,6 +101,8 @@ import {
   WORKTREE_REMOVE_METHOD,
   WorkCreateParams,
   type Work as WorkDto,
+  WorkflowRunGetParams,
+  WorkflowRunGetResult,
   WorkflowTemplateCreateParams,
   WorkflowTemplateGetParams,
   WorkflowTemplateIdParams,
@@ -142,6 +145,7 @@ import {
   type WorkflowDefinitionService,
 } from '../services/workflow-definition-service'
 import type { WorktreeService } from '../services/worktree-service'
+import { WorkflowRunQueryError, type WorkflowRunQueryService } from '../workflow/run-query-service'
 import type { MethodTable } from './dispatcher'
 
 export type CoreMethodServices = {
@@ -154,6 +158,7 @@ export type CoreMethodServices = {
   assignments: AssignmentService
   worktrees: WorktreeService
   workflows: WorkflowDefinitionService
+  workflowRuns: WorkflowRunQueryService
 }
 
 /**
@@ -449,6 +454,36 @@ export function coreMethods(
           throw new RpcMethodError('UNKNOWN_NODE_TYPE', outcome.message)
         }
         return { valid: false, violations: outcome.violations }
+      },
+    ),
+
+    [WORKFLOW_RUN_GET_METHOD]: defineMethod(
+      WorkflowRunGetParams,
+      WorkflowRunGetResult,
+      (params) => {
+        try {
+          const view = services.workflowRuns.get(params.runId)
+          return {
+            run: view.run,
+            branches: view.branches,
+            nodes: view.nodes.map((node) => ({
+              id: node.id,
+              workflowNodeKey: node.workflowNodeKey,
+              branchRunId: node.branchRunId,
+              status: node.status,
+              attempt: node.attempt,
+              output: node.outputSnapshot,
+              error: node.error,
+              startedAt: node.startedAt,
+              endedAt: node.endedAt,
+            })),
+          }
+        } catch (error) {
+          if (error instanceof WorkflowRunQueryError) {
+            throw new RpcMethodError('INVALID_PARAMS', error.message)
+          }
+          throw error
+        }
       },
     ),
 

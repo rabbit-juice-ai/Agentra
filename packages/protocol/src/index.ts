@@ -185,6 +185,7 @@ export {
   WorkResult,
 } from './methods/work'
 export {
+  WORKFLOW_RUN_GET_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,
   WORKFLOW_TEMPLATE_GET_METHOD,
@@ -195,6 +196,11 @@ export {
   WORKFLOW_VERSION_LIST_METHOD,
   WORKFLOW_VERSION_PUBLISH_METHOD,
   WORKFLOW_VERSION_VALIDATE_METHOD,
+  WorkflowRun,
+  WorkflowRunBranch,
+  WorkflowRunGetParams,
+  WorkflowRunGetResult,
+  WorkflowRunNode,
   WorkflowTemplate,
   WorkflowTemplateCreateParams,
   WorkflowTemplateGetParams,

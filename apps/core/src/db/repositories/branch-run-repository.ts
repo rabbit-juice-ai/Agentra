@@ -8,6 +8,10 @@ import type { Database } from '../database'
 export type BranchRunRecord = {
   id: string
   workflowRunId: string
+  /**
+   * root / `<split>/<branchKey>`；返工产生的分支带 `#rwk-<round>-<requestId 后 8 位>` 后缀。
+   * 与定义层 KeySchema 不同：运行期 branch_key 不是节点 key，不得用 KeySchema 校验。
+   */
   branchKey: string
   status: BranchRunStatus
   pauseReason: string | null

@@ -408,6 +408,8 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 CREATE TABLE IF NOT EXISTS branch_runs (
   id TEXT PRIMARY KEY,
   workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  -- 运行期 branch_key 允许返工后缀：<定义键>#rwk-<round>-<requestId 后 8 位>。
+  -- 定义层 KeySchema 只允许 [a-z0-9_-]；UI/RPC 不得用 KeySchema 校验 branch_runs.branch_key。
   branch_key TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active' CHECK (
     status IN ('active', 'paused', 'blocked', 'completed', 'failed', 'cancelled')
@@ -584,6 +586,25 @@ ALTER TABLE approvals_v12 RENAME TO approvals;
 CREATE INDEX IF NOT EXISTS idx_approvals_status_requested ON approvals(status, requested_at);
 `
 
+const PHASE_4_WORKFLOW_EVENTS = `
+-- 阶段 4 S4-7：工作流事件持久化。event_id 唯一是去重键；重复投递只保留第一条。
+CREATE TABLE IF NOT EXISTS workflow_events (
+  id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE,
+  workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  branch_run_id TEXT REFERENCES branch_runs(id) ON DELETE SET NULL,
+  node_run_id TEXT REFERENCES node_runs(id) ON DELETE SET NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  occurred_at TEXT NOT NULL,
+  correlation_id TEXT,
+  causation_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_events_run_time
+  ON workflow_events(workflow_run_id, occurred_at, id);
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -671,6 +692,13 @@ export const MIGRATIONS: Migration[] = [
     rebuildsTables: true,
     up: (db) => {
       db.exec(PHASE_4_REWORK_REQUESTS)
+    },
+  },
+  {
+    version: 13,
+    name: 'phase4_workflow_events',
+    up: (db) => {
+      db.exec(PHASE_4_WORKFLOW_EVENTS)
     },
   },
 ]

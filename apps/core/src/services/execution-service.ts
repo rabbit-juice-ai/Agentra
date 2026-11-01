@@ -520,6 +520,8 @@ export class ExecutionService {
         previous,
         'process not found in daemon after reconnect',
       )
+      // 补记账：崩溃也是终态，工作流桥接必须收到，否则 NodeRun 会停在 running。
+      this.notifyExecutionFinished(execution.id)
       this.logger?.warn('execution reconciled as crashed', { executionId: execution.id })
     }
   }
@@ -740,6 +742,8 @@ export class ExecutionService {
         { reason: 'core_restart' },
         now,
       )
+      // 排队执行被丢弃也是终态：桥接需要把 NodeRun 收尾（或按策略重试）。
+      this.notifyExecutionFinished(execution.id)
     }
     return queuedRows.length
   }

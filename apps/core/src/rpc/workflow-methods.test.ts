@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   PROTOCOL_VERSION,
+  WORKFLOW_RUN_GET_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,
   WORKFLOW_TEMPLATE_GET_METHOD,
@@ -21,13 +22,16 @@ import { migrate } from '../db/migrations'
 import { AgentRepository } from '../db/repositories/agent-repository'
 import { AssignmentRepository } from '../db/repositories/assignment-repository'
 import { AuditRepository } from '../db/repositories/audit-repository'
+import { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import { ExecutionLogRepository } from '../db/repositories/execution-log-repository'
 import { ExecutionRepository } from '../db/repositories/execution-repository'
+import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
 import { TeamRepository } from '../db/repositories/team-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { WorkflowRepository } from '../db/repositories/workflow-repository'
+import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
 import { AgentService } from '../services/agent-service'
 import { AssignmentService } from '../services/assignment-service'
 import { CoreEventHub } from '../services/event-hub'
@@ -38,6 +42,7 @@ import { WorkService } from '../services/work-service'
 import { WorkdirLockService } from '../services/workdir-lock-service'
 import { WorkflowDefinitionService } from '../services/workflow-definition-service'
 import { WorktreeService } from '../services/worktree-service'
+import { WorkflowRunQueryService } from '../workflow/run-query-service'
 import { createDispatcher, type MethodTable } from './dispatcher'
 import { coreMethods } from './methods'
 
@@ -138,6 +143,11 @@ function harness(): {
       () => NOW,
     ),
     workflows: new WorkflowDefinitionService(db, new WorkflowRepository(db), () => NOW),
+    workflowRuns: new WorkflowRunQueryService(
+      new WorkflowRunRepository(db),
+      new BranchRunRepository(db),
+      new NodeRunRepository(db),
+    ),
   })
 
   const dispatch = async (method: string, params: unknown): Promise<RpcEnvelope> => {
@@ -361,11 +371,13 @@ describe('阶段 3 工作流定义 RPC', () => {
 })
 
 describe('阶段 3 隔离断言', () => {
-  it('exposes no workflow.run.* (or equivalent execution entry) method', () => {
+  it('exposes only the read-only workflow.run.get query, no execution entry', () => {
     const { methods } = harness()
     const names = Object.keys(methods)
-    expect(names.filter((name) => name.startsWith('workflow.run'))).toEqual([])
-    expect(names.filter((name) => name.includes('.run'))).toEqual([])
+    expect(names).toContain(WORKFLOW_RUN_GET_METHOD)
+    for (const forbidden of ['workflow.run.start', 'workflow.run.create', 'workflow.run.cancel']) {
+      expect(names).not.toContain(forbidden)
+    }
     expect(names).toEqual(
       expect.arrayContaining([
         WORKFLOW_TEMPLATE_LIST_METHOD,
@@ -380,5 +392,69 @@ describe('阶段 3 隔离断言', () => {
         WORKFLOW_VERSION_VALIDATE_METHOD,
       ]),
     )
+  })
+
+  describe('workflow.run.get', () => {
+    it('returns run / branches / nodes including reconciliation_required', async () => {
+      const h = harness()
+      try {
+        h.db
+          .prepare(
+            `INSERT INTO workflow_templates (id, name, description, category, created_at, updated_at, archived_at)
+         VALUES ('wft-1', 'T', '', '', ?, ?, NULL)`,
+          )
+          .run(NOW, NOW)
+        h.db
+          .prepare(
+            `INSERT INTO workflow_versions (id, template_id, version, schema_version, definition_json, checksum, status, created_at, published_at)
+         VALUES ('wfv-1', 'wft-1', 1, 1, '{"schemaVersion":1,"nodes":[],"edges":[]}', 'sum', 'published', ?, ?)`,
+          )
+          .run(NOW, NOW)
+        h.db
+          .prepare(
+            `INSERT INTO works (id, name, description, objective, status, priority, root_path,
+           repository_path, settings_json, created_at, updated_at, completed_at)
+         VALUES ('work-1', 'W', '', '', 'active', 'normal', '/tmp/w', NULL, '{}', ?, ?, NULL)`,
+          )
+          .run(NOW, NOW)
+        h.db
+          .prepare(
+            `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, started_at, runtime_state_json, created_at, updated_at)
+         VALUES ('run-1', 'work-1', 'wfv-1', 'running', ?, '{}', ?, ?)`,
+          )
+          .run(NOW, NOW, NOW)
+        h.db
+          .prepare(
+            `INSERT INTO branch_runs (id, workflow_run_id, branch_key, status, created_at, updated_at)
+         VALUES ('br-1', 'run-1', 'root', 'active', ?, ?)`,
+          )
+          .run(NOW, NOW)
+        h.db
+          .prepare(
+            `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, branch_run_id, status, attempt, input_snapshot_json, created_at, updated_at)
+         VALUES ('nrn-1', 'run-1', 'task_1', 'br-1', 'reconciliation_required', 1, '{}', ?, ?)`,
+          )
+          .run(NOW, NOW)
+
+        const response = await h.dispatch(WORKFLOW_RUN_GET_METHOD, { runId: 'run-1' })
+        expect(response.ok).toBe(true)
+        if (!response.ok) return
+        const result = response.result as {
+          run: { id: string; status: string }
+          branches: { branchKey: string }[]
+          nodes: { workflowNodeKey: string; status: string }[]
+        }
+        expect(result.run).toMatchObject({ id: 'run-1', status: 'running' })
+        expect(result.branches.map((branch) => branch.branchKey)).toEqual(['root'])
+        expect(result.nodes).toEqual([
+          expect.objectContaining({ workflowNodeKey: 'task_1', status: 'reconciliation_required' }),
+        ])
+
+        const missing = await h.dispatch(WORKFLOW_RUN_GET_METHOD, { runId: 'missing' })
+        expect(missing).toMatchObject({ ok: false, error: { code: 'INVALID_PARAMS' } })
+      } finally {
+        h.db.close()
+      }
+    })
   })
 })

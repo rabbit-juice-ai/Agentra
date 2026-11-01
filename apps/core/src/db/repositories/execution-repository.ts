@@ -126,6 +126,28 @@ export class ExecutionRepository {
     return row?.node_run_id ?? null
   }
 
+  /** 某个 NodeRun 当前的非终态执行（工作流恢复对账用）。 */
+  findActiveByNodeRun(nodeRunId: string): Execution | null {
+    const row = this.db
+      .prepare(
+        `${SELECT_EXECUTION} WHERE e.node_run_id = ? AND e.status IN ('pending', 'running')
+         ORDER BY e.created_at DESC LIMIT 1`,
+      )
+      .get(nodeRunId) as ExecutionRow | undefined
+    return row ? toExecution(row) : null
+  }
+
+  /** 某个 NodeRun 最近一条执行（恢复时判断是否已终态但未记账）。 */
+  findLatestByNodeRun(nodeRunId: string): Execution | null {
+    const row = this.db
+      .prepare(
+        `${SELECT_EXECUTION} WHERE e.node_run_id = ?
+         ORDER BY e.created_at DESC, e.id DESC LIMIT 1`,
+      )
+      .get(nodeRunId) as ExecutionRow | undefined
+    return row ? toExecution(row) : null
+  }
+
   get(id: string): Execution | null {
     const row = this.db.prepare(`${SELECT_EXECUTION} WHERE e.id = ?`).get(id) as
       | ExecutionRow

@@ -7,15 +7,21 @@ import { ensureDaemon } from './daemon-launcher'
 import { openDatabase } from './db/database'
 import { migrate } from './db/migrations'
 import { AgentRepository } from './db/repositories/agent-repository'
+import { ApprovalRepository } from './db/repositories/approval-repository'
 import { AssignmentRepository } from './db/repositories/assignment-repository'
 import { AuditRepository } from './db/repositories/audit-repository'
+import { BranchRunRepository } from './db/repositories/branch-run-repository'
 import { ExecutionLogRepository } from './db/repositories/execution-log-repository'
 import { ExecutionRepository } from './db/repositories/execution-repository'
+import { NodeRunRepository } from './db/repositories/node-run-repository'
 import { ProviderRepository } from './db/repositories/provider-repository'
+import { ReworkRequestRepository } from './db/repositories/rework-request-repository'
 import { SessionRepository } from './db/repositories/session-repository'
 import { TeamRepository } from './db/repositories/team-repository'
 import { WorkRepository } from './db/repositories/work-repository'
+import { WorkflowEventRepository } from './db/repositories/workflow-event-repository'
 import { WorkflowRepository } from './db/repositories/workflow-repository'
+import { WorkflowRunRepository } from './db/repositories/workflow-run-repository'
 import { coreMethods } from './rpc/methods'
 import { startWsServer } from './rpc/ws-server'
 import { AgentService } from './services/agent-service'
@@ -28,6 +34,23 @@ import { WorkService } from './services/work-service'
 import { WorkdirLockService } from './services/workdir-lock-service'
 import { WorkflowDefinitionService } from './services/workflow-definition-service'
 import { WorktreeService } from './services/worktree-service'
+import { ApprovalService } from './workflow/approval-service'
+import { WorkflowAssignmentResolver } from './workflow/assignment-resolver'
+import { defaultDispatchGates } from './workflow/dispatch-gates'
+import { WorkflowEngine } from './workflow/engine'
+import { WorkflowEventRecorder } from './workflow/event-recorder'
+import { WorkflowExecutionBridge } from './workflow/execution-bridge'
+import {
+  createAgentCapacityPort,
+  createProviderAvailabilityPort,
+  createWorkdirAvailabilityPort,
+} from './workflow/ports'
+import { PublishedDefinitionProvider } from './workflow/published-definition-provider'
+import { WorkflowRecoveryService } from './workflow/recovery-service'
+import { ReworkService } from './workflow/rework-service'
+import { WorkflowRunQueryService } from './workflow/run-query-service'
+import { WorkflowRunService } from './workflow/run-service'
+import { WorkflowScheduler } from './workflow/scheduler'
 
 const VERSION = '0.1.0'
 
@@ -73,6 +96,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const executionRepository = new ExecutionRepository(db)
   const executionLogRepository = new ExecutionLogRepository(db)
   const workflowRepository = new WorkflowRepository(db)
+  const workflowRunRepository = new WorkflowRunRepository(db)
+  const branchRunRepository = new BranchRunRepository(db)
+  const nodeRunRepository = new NodeRunRepository(db)
+  const reworkRequestRepository = new ReworkRequestRepository(db)
+  const approvalRepository = new ApprovalRepository(db)
+  const workflowEventRepository = new WorkflowEventRepository(db)
 
   const hub = new CoreEventHub()
   const runtime = new DaemonClient(paths.daemonSocket, logger)
@@ -112,6 +141,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     sessionRepository,
   )
   const workflowService = new WorkflowDefinitionService(db, workflowRepository)
+  const workflowRunQuery = new WorkflowRunQueryService(
+    workflowRunRepository,
+    branchRunRepository,
+    nodeRunRepository,
+  )
+  let workflowEngine: WorkflowEngine | undefined
   const executionService = new ExecutionService({
     db,
     runtime,
@@ -127,7 +162,99 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     hub,
     scratchRoot: paths.scratch,
     logger,
+    onExecutionFinished: (execution) => workflowEngine?.onExecutionFinished(execution),
   })
+
+  // ---- Workflow Engine 内部装配（S4-7；执行入口仍不暴露 RPC） ----
+  const workflowAssignmentResolver = new WorkflowAssignmentResolver(assignmentRepository)
+  const publishedDefinitions = new PublishedDefinitionProvider(workflowRepository)
+  const workflowRunService = new WorkflowRunService(
+    db,
+    workflowRunRepository,
+    branchRunRepository,
+    nodeRunRepository,
+    workRepository,
+    publishedDefinitions,
+    workflowAssignmentResolver,
+  )
+  const workflowEventRecorder = new WorkflowEventRecorder(
+    workflowEventRepository,
+    undefined,
+    logger,
+  )
+  const reworkService = new ReworkService({
+    db,
+    runs: workflowRunRepository,
+    branches: branchRunRepository,
+    nodes: nodeRunRepository,
+    reworks: reworkRequestRepository,
+    approvals: approvalRepository,
+    definitions: publishedDefinitions,
+    events: { publish: (event) => workflowEventRecorder.publishRework(event) },
+  })
+  const approvalService = new ApprovalService(
+    db,
+    approvalRepository,
+    nodeRunRepository,
+    branchRunRepository,
+    undefined,
+    reworkService,
+  )
+  const workflowBridge = new WorkflowExecutionBridge({
+    runs: workflowRunRepository,
+    nodes: nodeRunRepository,
+    works: workRepository,
+    worktrees,
+    definitions: publishedDefinitions,
+    resolver: workflowAssignmentResolver,
+    executions: executionService,
+    logger,
+  })
+  const workflowScheduler = new WorkflowScheduler({
+    runs: workflowRunRepository,
+    branches: branchRunRepository,
+    nodes: nodeRunRepository,
+    definitions: publishedDefinitions,
+    gates: defaultDispatchGates({
+      agentCapacity: createAgentCapacityPort({
+        resolver: workflowAssignmentResolver,
+        agents: agentRepository,
+        executions: executionRepository,
+      }),
+      providerAvailability: createProviderAvailabilityPort(registry),
+      workdirAvailability: createWorkdirAvailabilityPort({
+        works: workRepository,
+        locks,
+      }),
+      inputArtifacts: { isAvailable: () => true },
+    }),
+    onNodeStarted: (context) => workflowEngine?.onNodeStarted(context),
+    logger,
+  })
+  workflowEngine = new WorkflowEngine({
+    db,
+    runs: workflowRunRepository,
+    branches: branchRunRepository,
+    nodes: nodeRunRepository,
+    definitions: publishedDefinitions,
+    approvals: approvalService,
+    scheduler: workflowScheduler,
+    bridge: workflowBridge,
+    rework: reworkService,
+    runService: workflowRunService,
+    executions: executionService,
+    eventSink: workflowEventRecorder,
+    logger,
+  })
+  const workflowRecovery = new WorkflowRecoveryService(
+    workflowRunRepository,
+    branchRunRepository,
+    nodeRunRepository,
+    executionRepository,
+    workflowScheduler,
+    (execution) => workflowEngine?.onExecutionFinished(execution),
+    logger,
+  )
 
   // 上次运行遗留的排队任务：丢弃并标记，不自动恢复（从未启动过进程，补跑等于静默产生副作用）。
   const discardedQueued = executionService.discardQueuedOnStartup()
@@ -139,11 +266,22 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   runtime.subscribe(
     (event) => executionService.handleRuntimeEvent(event),
     () => {
-      void executionService.reconcile().catch((error: unknown) => {
-        logger.error('execution reconciliation failed', {
-          error: error instanceof Error ? error.message : String(error),
-        })
-      })
+      void (async () => {
+        try {
+          await executionService.reconcile()
+          const report = await workflowRecovery.recover()
+          logger.info('workflow recovery completed', {
+            runs: report.runs,
+            branches: report.branches,
+            reconciliationRequired: report.nodesMarkedReconciliationRequired.length,
+            runsKicked: report.runsKicked.length,
+          })
+        } catch (error) {
+          logger.error('workflow recovery failed', {
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      })()
     },
   )
 
@@ -170,6 +308,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       assignments: assignmentService,
       worktrees,
       workflows: workflowService,
+      workflowRuns: workflowRunQuery,
     }),
   )
   logger.info('core started', {

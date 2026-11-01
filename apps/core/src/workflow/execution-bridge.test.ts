@@ -324,6 +324,28 @@ describe('WorkflowExecutionBridge · 完成与输出契约', () => {
     }
   })
 
+  it('fails closed when pass=false has no relatedTasks (no rework)', () => {
+    const h = setup()
+    try {
+      h.outputs.set('exe-1', {
+        pass: false,
+        failureReason: 'unknown',
+        relatedTasks: [],
+        impactScope: 'unknown',
+        relatedArtifacts: [],
+      })
+      h.starter.bind('exe-1', h.nodeRunId)
+      h.bridge.onExecutionFinished(execution('exe-1', 'succeeded', 0))
+      const node = h.nodes.get(h.nodeRunId)
+      expect(node?.status).toBe('failed')
+      expect(node?.error?.category).toBe('output_contract_violation')
+      expect(node?.error?.message).toContain('relatedTasks')
+      expect(h.reworks.listByRun(h.context.run.id)).toEqual([])
+    } finally {
+      h.close()
+    }
+  })
+
   it('triggers rework only after a valid test_result report', () => {
     const calls: { reportNodeKey: string; output: Record<string, unknown> }[] = []
     const h = setup({
