@@ -40,6 +40,15 @@ import {
   AssignmentListParams,
   AssignmentListResult,
   AssignmentResult,
+  BACKUP_CREATE_METHOD,
+  BACKUP_EXPORT_METHOD,
+  BACKUP_LIST_METHOD,
+  BackupCreateParamsValue,
+  BackupExportParamsValue,
+  BackupExportResultValue,
+  BackupListParamsValue,
+  BackupListResultValue,
+  BackupResultValue,
   defineMethod,
   EVENTS_SUBSCRIBE_METHOD,
   EventsSubscribeParams,
@@ -155,6 +164,7 @@ import type { AgentService } from '../services/agent-service'
 import type { ApprovalRpcService } from '../services/approval-rpc-service'
 import type { ArtifactRpcService } from '../services/artifact-rpc-service'
 import type { AssignmentService } from '../services/assignment-service'
+import type { BackupRpcService } from '../services/backup-rpc-service'
 import type { CoreEventHub } from '../services/event-hub'
 import type { ExecutionService } from '../services/execution-service'
 import { coreHealthMethods } from '../services/health'
@@ -182,6 +192,7 @@ export type CoreMethodServices = {
   workflowRuns: WorkflowRunQueryService
   approvals: ApprovalRpcService
   artifacts: ArtifactRpcService
+  backups: BackupRpcService
 }
 
 /**
@@ -478,6 +489,18 @@ export function coreMethods(
         }
         return { valid: false, violations: outcome.violations }
       },
+    ),
+
+    [BACKUP_CREATE_METHOD]: defineMethod(BackupCreateParamsValue, BackupResultValue, (params) => ({
+      backup: services.backups.create(params.type),
+    })),
+    [BACKUP_LIST_METHOD]: defineMethod(BackupListParamsValue, BackupListResultValue, (params) => ({
+      backups: services.backups.list(params.limit),
+    })),
+    [BACKUP_EXPORT_METHOD]: defineMethod(
+      BackupExportParamsValue,
+      BackupExportResultValue,
+      (params) => ({ target: services.backups.exportTo(params.backupId, params.targetDir) }),
     ),
 
     [ARTIFACT_PREVIEW_METHOD]: defineMethod(

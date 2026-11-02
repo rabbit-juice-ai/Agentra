@@ -50,7 +50,7 @@ describe('migration v9 · workflow runtime tables', () => {
   it('creates workflow_runs / branch_runs / node_runs with indexes', () => {
     const db = openMigrated()
     try {
-      expect(currentUserVersion(db)).toBe(14)
+      expect(currentUserVersion(db)).toBe(15)
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
           name: string
@@ -141,7 +141,7 @@ describe('migration v9 · workflow runtime tables', () => {
     const db = openMigrated()
     try {
       const second = migrate(db)
-      expect(second).toEqual({ from: 14, to: 14, applied: [] })
+      expect(second).toEqual({ from: 15, to: 15, applied: [] })
 
       // v9 自身的 SQL 也必须幂等（CREATE … IF NOT EXISTS），重放一次再回滚
       const v9 = MIGRATIONS.find((migration) => migration.version === 9)
@@ -251,8 +251,13 @@ describe('migration v12/v13 · rework_requests + workflow_events', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 11,
-        to: 14,
-        applied: ['phase4_rework_requests', 'phase4_workflow_events', 'phase5_artifacts'],
+        to: 15,
+        applied: [
+          'phase4_rework_requests',
+          'phase4_workflow_events',
+          'phase5_artifacts',
+          'phase5_5_backups',
+        ],
       })
 
       // 重建后 approvals 行逐列保留
@@ -354,6 +359,42 @@ describe('migration v12/v13 · rework_requests + workflow_events', () => {
       expect(() => db.prepare("DELETE FROM artifact_versions WHERE id = 'artv-x'").run()).toThrow(
         /cannot be deleted/,
       )
+
+      // v15：backups 表（失败态必须可表达）
+      const backupColumns = (
+        db.prepare('PRAGMA table_info(backups)').all() as { name: string }[]
+      ).map((column) => column.name)
+      expect(backupColumns).toEqual(
+        expect.arrayContaining([
+          'type',
+          'manifest_version',
+          'db_sha256',
+          'artifact_files_json',
+          'file_count',
+          'status',
+          'storage_path',
+          'error_json',
+          'created_at',
+          'completed_at',
+          'verified_at',
+        ]),
+      )
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO backups (id, type, status, storage_path, created_at)
+             VALUES ('bak-x', 'manual', 'failed', '/tmp/b', ?)`,
+          )
+          .run(NOW),
+      ).not.toThrow()
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO backups (id, type, status, storage_path, created_at)
+             VALUES ('bak-bad', 'manual', 'nope', '/tmp/b', ?)`,
+          )
+          .run(NOW),
+      ).toThrow(/CHECK constraint failed/)
 
       // v13：workflow_events 的 event_id 唯一 + FK
       db.prepare(

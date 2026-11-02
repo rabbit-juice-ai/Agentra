@@ -659,6 +659,29 @@ BEGIN
 END;
 `
 
+const PHASE_5_5_BACKUPS = `
+-- 阶段 5.5 S55-1：备份历史（DATABASE §2.10 / D-013）。
+-- status 的 failed 是真实失败态：任何环节失败都不得呈现为 completed。
+CREATE TABLE IF NOT EXISTS backups (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL CHECK (type IN ('manual', 'pre_restore')),
+  manifest_version INTEGER NOT NULL DEFAULT 1 CHECK (manifest_version >= 1),
+  db_sha256 TEXT,
+  artifact_files_json TEXT NOT NULL DEFAULT '[]',
+  file_count INTEGER NOT NULL DEFAULT 0 CHECK (file_count >= 0),
+  status TEXT NOT NULL CHECK (
+    status IN ('creating', 'completed', 'failed', 'verified', 'restored')
+  ),
+  storage_path TEXT NOT NULL,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  verified_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_backups_status_created ON backups(status, created_at);
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -760,6 +783,13 @@ export const MIGRATIONS: Migration[] = [
     name: 'phase5_artifacts',
     up: (db) => {
       db.exec(PHASE_5_ARTIFACTS)
+    },
+  },
+  {
+    version: 15,
+    name: 'phase5_5_backups',
+    up: (db) => {
+      db.exec(PHASE_5_5_BACKUPS)
     },
   },
 ]

@@ -246,6 +246,14 @@ export class ArtifactRepository {
     return row.next
   }
 
+  /** 备份用：全部 Artifact 版本（含 storage_path）。 */
+  listAllVersions(): ArtifactVersionRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM artifact_versions ORDER BY artifact_id ASC, version ASC')
+      .all() as ArtifactVersionRow[]
+    return rows.map(toVersion)
+  }
+
   listVersions(artifactId: string): ArtifactVersionRecord[] {
     const rows = this.db
       .prepare('SELECT * FROM artifact_versions WHERE artifact_id = ? ORDER BY version ASC, id ASC')

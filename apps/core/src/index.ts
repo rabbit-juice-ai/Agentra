@@ -11,6 +11,7 @@ import { ApprovalRepository } from './db/repositories/approval-repository'
 import { ArtifactRepository } from './db/repositories/artifact-repository'
 import { AssignmentRepository } from './db/repositories/assignment-repository'
 import { AuditRepository } from './db/repositories/audit-repository'
+import { BackupRepository } from './db/repositories/backup-repository'
 import { BranchRunRepository } from './db/repositories/branch-run-repository'
 import { ExecutionLogRepository } from './db/repositories/execution-log-repository'
 import { ExecutionRepository } from './db/repositories/execution-repository'
@@ -30,6 +31,8 @@ import { ApprovalRpcService } from './services/approval-rpc-service'
 import { ArtifactRpcService } from './services/artifact-rpc-service'
 import { ArtifactService } from './services/artifact-service'
 import { AssignmentService } from './services/assignment-service'
+import { BackupRpcService } from './services/backup-rpc-service'
+import { BackupService } from './services/backup-service'
 import { CoreEventHub } from './services/event-hub'
 import { ExecutionService } from './services/execution-service'
 import { ProviderRegistry } from './services/provider-registry'
@@ -228,6 +231,15 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     get: (id) => workRepository.get(id),
   })
   const artifactRpc = new ArtifactRpcService(artifactService)
+  const backupService = new BackupService(
+    db,
+    new BackupRepository(db),
+    new ArtifactRepository(db),
+    auditRepository,
+    paths.backups,
+    paths.artifacts,
+  )
+  const backupRpc = new BackupRpcService(backupService)
   const workflowBridge = new WorkflowExecutionBridge({
     runs: workflowRunRepository,
     nodes: nodeRunRepository,
@@ -370,6 +382,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       workflowRuns: workflowRunQuery,
       approvals: approvalRpc,
       artifacts: artifactRpc,
+      backups: backupRpc,
     }),
   )
   logger.info('core started', {

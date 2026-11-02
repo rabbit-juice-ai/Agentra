@@ -24,6 +24,11 @@ export const WORKFLOW_RUN_LIST_BY_WORK_METHOD = 'workflow.run.listByWork'
 
 /** S5-1：审批决策 API（领域事件 approval.decided 的协议入口）。 */
 /** S5-3：Artifact 只读服务面（预览/元数据；创建走 Core 内部，不做通用透传）。 */
+/** S55-1：备份链（手动创建 / 列表 / 导出；恢复属 S55-2）。 */
+export const BACKUP_CREATE_METHOD = 'backup.create'
+export const BACKUP_LIST_METHOD = 'backup.list'
+export const BACKUP_EXPORT_METHOD = 'backup.export'
+
 export const ARTIFACT_PREVIEW_METHOD = 'artifact.preview'
 export const ARTIFACT_LIST_METHOD = 'artifact.list'
 export const APPROVAL_DECIDE_METHOD = 'approval.decide'
@@ -315,4 +320,56 @@ export {
   ArtifactListResultSchema as ArtifactListResult,
   ArtifactPreviewParamsSchema as ArtifactPreviewParams,
   ArtifactPreviewResultSchema as ArtifactPreviewResult,
+}
+
+export const BackupType = z.enum(['manual', 'pre_restore'])
+export type BackupType = z.infer<typeof BackupType>
+
+export const BackupStatus = z.enum(['creating', 'completed', 'failed', 'verified', 'restored'])
+export type BackupStatus = z.infer<typeof BackupStatus>
+
+export const Backup = z.object({
+  id: z.string().min(1),
+  type: BackupType,
+  manifestVersion: z.number().int().min(1),
+  dbSha256: z.string().nullable(),
+  fileCount: z.number().int().min(0),
+  status: BackupStatus,
+  storagePath: z.string().min(1),
+  error: z.unknown().nullable(),
+  createdAt: IsoTimestamp,
+  completedAt: IsoTimestamp.nullable(),
+  verifiedAt: IsoTimestamp.nullable(),
+})
+export type Backup = z.infer<typeof Backup>
+
+export const BackupCreateParamsSchema = z.object({ type: BackupType.optional() }).strict()
+export type BackupCreateParams = z.infer<typeof BackupCreateParamsSchema>
+
+export const BackupListParamsSchema = z
+  .object({ limit: z.number().int().min(1).max(200).optional() })
+  .strict()
+export type BackupListParams = z.infer<typeof BackupListParamsSchema>
+
+export const BackupListResultSchema = z.object({ backups: z.array(Backup) })
+export type BackupListResult = z.infer<typeof BackupListResultSchema>
+
+export const BackupResultSchema = z.object({ backup: Backup })
+export type BackupResult = z.infer<typeof BackupResultSchema>
+
+export const BackupExportParamsSchema = z
+  .object({ backupId: z.string().min(1), targetDir: z.string().min(1) })
+  .strict()
+export type BackupExportParams = z.infer<typeof BackupExportParamsSchema>
+
+export const BackupExportResultSchema = z.object({ target: z.string().min(1) })
+export type BackupExportResult = z.infer<typeof BackupExportResultSchema>
+
+export {
+  BackupCreateParamsSchema as BackupCreateParamsValue,
+  BackupExportParamsSchema as BackupExportParamsValue,
+  BackupExportResultSchema as BackupExportResultValue,
+  BackupListParamsSchema as BackupListParamsValue,
+  BackupListResultSchema as BackupListResultValue,
+  BackupResultSchema as BackupResultValue,
 }

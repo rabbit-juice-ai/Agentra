@@ -161,6 +161,13 @@ function harness(): {
       },
       listByWork: () => ({ artifacts: [] }),
     } as never,
+    backups: {
+      create: () => {
+        throw new Error('not used in this test')
+      },
+      list: () => [],
+      exportTo: () => '',
+    } as never,
   })
 
   const dispatch = async (method: string, params: unknown) => {

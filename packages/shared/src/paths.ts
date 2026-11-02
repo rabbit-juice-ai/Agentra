@@ -25,6 +25,7 @@ export type AgentraPaths = {
   scratch: string
   worktrees: string
   artifacts: string
+  backups: string
   database: string
   coreSocket: string
   daemonSocket: string
@@ -49,6 +50,7 @@ export function agentraPaths(home: string = agentraHome()): AgentraPaths {
   const scratch = path.join(home, 'scratch')
   const worktrees = path.join(home, 'worktrees')
   const artifacts = path.join(home, 'artifacts')
+  const backups = path.join(home, 'backups')
   const coreSocket = path.join(runtime, 'core.sock')
   const daemonSocket = path.join(runtime, 'daemon.sock')
   assertSocketPathLength(coreSocket)
@@ -60,6 +62,7 @@ export function agentraPaths(home: string = agentraHome()): AgentraPaths {
     scratch,
     worktrees,
     artifacts,
+    backups,
     database: path.join(home, 'agentra.db'),
     coreSocket,
     daemonSocket,
@@ -79,6 +82,7 @@ export function ensureDirs(paths: AgentraPaths): void {
     paths.scratch,
     paths.worktrees,
     paths.artifacts,
+    paths.backups,
   ]) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   }
