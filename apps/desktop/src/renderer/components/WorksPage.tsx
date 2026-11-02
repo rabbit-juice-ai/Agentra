@@ -76,6 +76,7 @@ export function WorksPage({
   const [branchName, setBranchName] = useState('')
   /** 两步确认：第一下只进入待确认态，第二下才真正清理（不默认执行）。 */
   const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
 
   const selected = works.find((work) => work.id === selectedId) ?? null
   const assignments = selected ? (assignmentsByWork[selected.id] ?? []) : []
@@ -121,47 +122,61 @@ export function WorksPage({
 
   return (
     <div data-agentra-page={WORKS_PAGE_MARKER} style={{ display: 'grid', gap: 16 }}>
+      {/* S5 UI 外壳批：新建表单改为按钮触发展开，不再占据页面顶部大块区域 */}
       <section style={panelStyle}>
-        <h2 style={sectionTitleStyle}>新建 Work</h2>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr auto',
-            gap: 10,
-            alignItems: 'end',
-          }}
-        >
-          <label>
-            <span style={labelStyle}>名称 *</span>
-            <input
-              style={inputStyle}
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </label>
-          <label>
-            <span style={labelStyle}>工作目录 *</span>
-            <input
-              style={inputStyle}
-              value={rootPath}
-              onChange={(event) => setRootPath(event.target.value)}
-              placeholder="/tmp/agentra-work"
-            />
-          </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <h2 style={{ ...sectionTitleStyle, margin: 0 }}>Works</h2>
           <button
             type="button"
             style={primaryButtonStyle}
-            disabled={busy || name.trim() === '' || rootPath.trim() === ''}
-            onClick={() => void submitWork()}
+            disabled={busy}
+            onClick={() => setCreateOpen((prev) => !prev)}
           >
-            创建
+            {createOpen ? '收起新建' : '新建 Work'}
           </button>
         </div>
+        {createOpen && (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr auto',
+              gap: 10,
+              alignItems: 'end',
+              marginTop: 12,
+            }}
+          >
+            <label>
+              <span style={labelStyle}>名称 *</span>
+              <input
+                style={inputStyle}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+            <label>
+              <span style={labelStyle}>工作目录 *</span>
+              <input
+                style={inputStyle}
+                value={rootPath}
+                onChange={(event) => setRootPath(event.target.value)}
+                placeholder="/tmp/agentra-work"
+              />
+            </label>
+            <button
+              type="button"
+              style={primaryButtonStyle}
+              disabled={busy || name.trim() === '' || rootPath.trim() === ''}
+              onClick={() => void submitWork()}
+            >
+              创建
+            </button>
+          </div>
+        )}
       </section>
 
       <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16 }}>
         <section style={panelStyle}>
-          <h2 style={sectionTitleStyle}>Works</h2>
+          <h2 style={sectionTitleStyle}>列表</h2>
           {works.length === 0 ? (
             <p style={{ fontSize: 13, color: colors.muted, margin: 0 }}>还没有 Work。</p>
           ) : (

@@ -34,7 +34,19 @@ function HealthDot({ label, health }: { label: string; health: HealthResult | nu
   )
 }
 
-function TabButton({
+// 导航项：执行控制台是 dev-only（U2 隔离），发布构建的 NAV_ITEMS 里没有它——
+// 「执行控制台」这个文案字面量也就不出现在发布产物里（check-release-bundle 依赖这一点）。
+const NAV_ITEMS: { tab: Tab; label: string }[] = [
+  ...(__AGENTRA_DEV_CONSOLE__ ? [{ tab: 'console' as Tab, label: '执行控制台' }] : []),
+  { tab: 'agents', label: 'Agents' },
+  { tab: 'teams', label: 'Teams' },
+  { tab: 'works', label: 'Works' },
+  { tab: 'workflow', label: 'Workflow' },
+  { tab: 'approvals', label: '审批中心' },
+  { tab: 'artifacts', label: '交付物' },
+]
+
+function SideNavItem({
   active,
   children,
   onClick,
@@ -49,11 +61,13 @@ function TabButton({
       onClick={onClick}
       style={{
         ...buttonStyle,
+        display: 'block',
+        width: '100%',
+        textAlign: 'left',
         border: 'none',
-        borderBottom: `2px solid ${active ? colors.blue : 'transparent'}`,
-        borderRadius: 0,
-        background: 'transparent',
-        color: active ? colors.text : colors.muted,
+        borderRadius: 6,
+        background: active ? colors.blue : 'transparent',
+        color: active ? '#fff' : colors.muted,
         fontWeight: active ? 600 : 400,
         padding: '8px 12px',
       }}
@@ -72,140 +86,146 @@ export function App() {
   return (
     <div
       style={{
+        display: 'flex',
         minHeight: '100vh',
         background: colors.bg,
         color: colors.text,
         fontFamily: 'system-ui, -apple-system, sans-serif',
       }}
     >
-      <header
+      {/* 左侧固定纵向主导航（Antumi 风格应用外壳） */}
+      <aside
         style={{
+          width: 180,
+          flexShrink: 0,
           display: 'flex',
-          alignItems: 'center',
-          gap: 16,
-          padding: '10px 20px',
+          flexDirection: 'column',
+          gap: 4,
+          padding: '16px 10px',
           background: colors.panel,
-          borderBottom: `1px solid ${colors.border}`,
+          borderRight: `1px solid ${colors.border}`,
           position: 'sticky',
           top: 0,
-          zIndex: 10,
+          height: '100vh',
+          boxSizing: 'border-box',
         }}
       >
-        <strong style={{ fontSize: 15 }}>Agentra</strong>
-        <nav style={{ display: 'flex' }}>
-          {__AGENTRA_DEV_CONSOLE__ && (
-            <TabButton active={tab === 'console'} onClick={() => setTab('console')}>
-              执行控制台
-            </TabButton>
-          )}
-          <TabButton active={tab === 'agents'} onClick={() => setTab('agents')}>
-            Agents
-          </TabButton>
-          <TabButton active={tab === 'teams'} onClick={() => setTab('teams')}>
-            Teams
-          </TabButton>
-          <TabButton active={tab === 'works'} onClick={() => setTab('works')}>
-            Works
-          </TabButton>
-          <TabButton active={tab === 'workflow'} onClick={() => setTab('workflow')}>
-            Workflow
-          </TabButton>
-          <TabButton active={tab === 'approvals'} onClick={() => setTab('approvals')}>
-            审批中心
-          </TabButton>
-          <TabButton active={tab === 'artifacts'} onClick={() => setTab('artifacts')}>
-            交付物
-          </TabButton>
+        <strong style={{ fontSize: 15, padding: '0 12px 12px' }}>Agentra</strong>
+        <nav style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {NAV_ITEMS.map(({ tab: item, label }) => (
+            <SideNavItem key={item} active={tab === item} onClick={() => setTab(item)}>
+              {label}
+            </SideNavItem>
+          ))}
         </nav>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 16 }}>
-          <HealthDot label="Core" health={store.coreHealth} />
-          <HealthDot label="Daemon" health={store.daemonHealth} />
-        </div>
-      </header>
+      </aside>
 
-      {store.banner && (
+      {/* 右侧主内容工作区 */}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* 右上方状态区 */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 12,
-            margin: '12px 20px 0',
-            padding: '8px 12px',
-            borderRadius: 6,
-            border: `1px solid ${colors.amber}`,
-            background: '#fff8c5',
-            fontSize: 13,
-            color: colors.text,
+            gap: 16,
+            padding: '10px 20px',
+            background: colors.panel,
+            borderBottom: `1px solid ${colors.border}`,
+            position: 'sticky',
+            top: 0,
+            zIndex: 10,
           }}
         >
-          <span style={{ flex: 1 }}>{store.banner}</span>
-          <button type="button" style={buttonStyle} onClick={store.dismissBanner}>
-            关闭
-          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 16 }}>
+            <HealthDot label="Core" health={store.coreHealth} />
+            <HealthDot label="Daemon" health={store.daemonHealth} />
+          </div>
         </div>
-      )}
 
-      <main style={{ padding: 20 }}>
-        {__AGENTRA_DEV_CONSOLE__ && tab === 'console' ? (
-          <ConsolePage
-            agents={store.agents}
-            state={store.consoleState}
-            busy={store.busy}
-            onStart={store.actions.startExecution}
-            onSelect={store.actions.selectExecution}
-            onCancel={store.actions.cancelExecution}
-            onInterrupt={store.actions.interruptExecution}
-            onSendMessage={store.actions.sendMessage}
-          />
-        ) : tab === 'workflow' ? (
-          <Suspense fallback={<div style={{ fontSize: 13, color: colors.muted }}>加载画布…</div>}>
-            <WorkflowPage />
-          </Suspense>
-        ) : tab === 'approvals' ? (
-          <ApprovalsPage />
-        ) : tab === 'artifacts' ? (
-          <ArtifactsPanel />
-        ) : tab === 'teams' ? (
-          <TeamsPage
-            teams={store.teams}
-            agents={store.agents}
-            membersByTeam={store.teamMembers}
-            busy={store.busy}
-            onCreate={store.actions.createTeam}
-            onAddMember={store.actions.addTeamMember}
-            onRefreshMembers={store.actions.refreshTeamMembers}
-          />
-        ) : tab === 'works' ? (
-          <WorksPage
-            works={store.works}
-            teams={store.teams}
-            agents={store.agents}
-            assignmentsByWork={store.assignmentsByWork}
-            worktreesByWork={store.worktreesByWork}
-            busy={store.busy}
-            onCreate={store.actions.createWork}
-            onLinkTeam={store.actions.linkWorkTeam}
-            onWorkAction={store.actions.workAction}
-            onCreateAssignment={store.actions.createAssignment}
-            onAssignmentAction={store.actions.assignmentAction}
-            onRefreshAssignments={store.actions.refreshAssignments}
-            onRefreshWorktrees={store.actions.refreshWorktrees}
-            onCreateWorktree={store.actions.createWorktree}
-            onRemoveWorktree={store.actions.removeWorktree}
-          />
-        ) : (
-          <AgentsPage
-            agents={store.agents}
-            providers={store.providers}
-            busy={store.busy}
-            onCreate={store.actions.createAgent}
-            onUpdate={store.actions.updateAgent}
-            onArchive={store.actions.archiveAgent}
-            onSetStatus={store.actions.setAgentStatus}
-            onRefreshProviders={store.actions.refreshProviderDiscovery}
-          />
+        {store.banner && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              margin: '12px 20px 0',
+              padding: '8px 12px',
+              borderRadius: 6,
+              border: `1px solid ${colors.amber}`,
+              background: '#fff8c5',
+              fontSize: 13,
+              color: colors.text,
+            }}
+          >
+            <span style={{ flex: 1 }}>{store.banner}</span>
+            <button type="button" style={buttonStyle} onClick={store.dismissBanner}>
+              关闭
+            </button>
+          </div>
         )}
-      </main>
+
+        <main style={{ padding: 20 }}>
+          {__AGENTRA_DEV_CONSOLE__ && tab === 'console' ? (
+            <ConsolePage
+              agents={store.agents}
+              state={store.consoleState}
+              busy={store.busy}
+              onStart={store.actions.startExecution}
+              onSelect={store.actions.selectExecution}
+              onCancel={store.actions.cancelExecution}
+              onInterrupt={store.actions.interruptExecution}
+              onSendMessage={store.actions.sendMessage}
+            />
+          ) : tab === 'workflow' ? (
+            <Suspense fallback={<div style={{ fontSize: 13, color: colors.muted }}>加载画布…</div>}>
+              <WorkflowPage />
+            </Suspense>
+          ) : tab === 'approvals' ? (
+            <ApprovalsPage />
+          ) : tab === 'artifacts' ? (
+            <ArtifactsPanel />
+          ) : tab === 'teams' ? (
+            <TeamsPage
+              teams={store.teams}
+              agents={store.agents}
+              membersByTeam={store.teamMembers}
+              busy={store.busy}
+              onCreate={store.actions.createTeam}
+              onAddMember={store.actions.addTeamMember}
+              onRefreshMembers={store.actions.refreshTeamMembers}
+            />
+          ) : tab === 'works' ? (
+            <WorksPage
+              works={store.works}
+              teams={store.teams}
+              agents={store.agents}
+              assignmentsByWork={store.assignmentsByWork}
+              worktreesByWork={store.worktreesByWork}
+              busy={store.busy}
+              onCreate={store.actions.createWork}
+              onLinkTeam={store.actions.linkWorkTeam}
+              onWorkAction={store.actions.workAction}
+              onCreateAssignment={store.actions.createAssignment}
+              onAssignmentAction={store.actions.assignmentAction}
+              onRefreshAssignments={store.actions.refreshAssignments}
+              onRefreshWorktrees={store.actions.refreshWorktrees}
+              onCreateWorktree={store.actions.createWorktree}
+              onRemoveWorktree={store.actions.removeWorktree}
+            />
+          ) : (
+            <AgentsPage
+              agents={store.agents}
+              providers={store.providers}
+              busy={store.busy}
+              onCreate={store.actions.createAgent}
+              onUpdate={store.actions.updateAgent}
+              onArchive={store.actions.archiveAgent}
+              onSetStatus={store.actions.setAgentStatus}
+              onRefreshProviders={store.actions.refreshProviderDiscovery}
+            />
+          )}
+        </main>
+      </div>
     </div>
   )
 }
