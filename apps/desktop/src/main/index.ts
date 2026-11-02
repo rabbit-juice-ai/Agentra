@@ -23,6 +23,12 @@ import {
   ASSIGNMENT_RESUME_METHOD,
   AssignmentListResult,
   AssignmentResult,
+  BACKUP_CREATE_METHOD,
+  BACKUP_EXPORT_METHOD,
+  BACKUP_LIST_METHOD,
+  BackupExportResultValue,
+  BackupListResultValue,
+  BackupResultValue,
   CORE_HEALTH_METHOD,
   DAEMON_HEALTH_METHOD,
   EVENTS_SUBSCRIBE_METHOD,
@@ -92,7 +98,7 @@ import {
 } from '@agentra/protocol'
 import { agentraPaths } from '@agentra/shared'
 import { app, BrowserWindow, ipcMain } from 'electron'
-import type { RpcResult } from '../shared/api'
+import { BACKUP_LIST_DEFAULT_LIMIT, backupRpcTimeoutMs, type RpcResult } from '../shared/api'
 import { ensureCore } from './core-launcher'
 import { CoreRpcClient } from './rpc-client'
 
@@ -117,13 +123,14 @@ async function callCore<T>(
   method: string,
   params: unknown,
   schema: Parser<T>,
+  timeoutMs?: number,
 ): Promise<RpcResult<T>> {
   const active = client
   if (!active) {
     return { ok: false, error: { code: 'NOT_READY', message: lastError ?? 'core not connected' } }
   }
   try {
-    const response = await active.call(method, params)
+    const response = await active.call(method, params, timeoutMs)
     if (!response.ok) return { ok: false, error: response.error }
     try {
       return { ok: true, result: schema.parse(response.result) }
@@ -313,6 +320,27 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:artifact-preview', (_event, params: unknown) =>
     callCore(ARTIFACT_PREVIEW_METHOD, params, ArtifactPreviewResult),
+  )
+
+  // 阶段 5.5 S55-1B：备份中心（创建固定 manual；create/export 使用独立超时）。
+  ipcMain.handle('agentra:backup-create', () =>
+    callCore(
+      BACKUP_CREATE_METHOD,
+      { type: 'manual' },
+      BackupResultValue,
+      backupRpcTimeoutMs('create'),
+    ),
+  )
+  ipcMain.handle('agentra:backup-list', (_event, params: unknown) =>
+    callCore(
+      BACKUP_LIST_METHOD,
+      params ?? { limit: BACKUP_LIST_DEFAULT_LIMIT },
+      BackupListResultValue,
+      backupRpcTimeoutMs('list'),
+    ),
+  )
+  ipcMain.handle('agentra:backup-export', (_event, params: unknown) =>
+    callCore(BACKUP_EXPORT_METHOD, params, BackupExportResultValue, backupRpcTimeoutMs('export')),
   )
 }
 

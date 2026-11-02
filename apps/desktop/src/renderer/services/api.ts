@@ -5,6 +5,7 @@ import type {
   ApprovalDecideParams,
   AssignmentCreateParams,
   AssignmentStatus,
+  Backup,
   Execution,
   ExecutionLog,
   ExecutionSendMessageParams,
@@ -15,7 +16,7 @@ import type {
   WorkCreateParams,
   WorkStatus,
 } from '@agentra/protocol'
-import type { RpcResult } from '../../shared/api'
+import { BACKUP_LIST_DEFAULT_LIMIT, type RpcResult } from '../../shared/api'
 
 /** Core 返回的业务错误：保留错误码，UI 可据此给出可执行提示。 */
 export class ApiError extends Error {
@@ -137,6 +138,13 @@ export const api = {
     (await unwrap(window.agentra.listArtifacts({ workId }))).artifacts,
   previewArtifact: async (artifactId: string, version?: number) =>
     await unwrap(window.agentra.previewArtifact({ artifactId, version })),
+
+  // 阶段 5.5 S55-1B：备份中心（创建固定 manual；恢复/删除不在本阶段）。
+  createBackup: async (): Promise<Backup> => (await unwrap(window.agentra.createBackup())).backup,
+  listBackups: async (limit = BACKUP_LIST_DEFAULT_LIMIT): Promise<Backup[]> =>
+    (await unwrap(window.agentra.listBackups({ limit }))).backups,
+  exportBackup: async (backupId: string, targetDir: string): Promise<string> =>
+    (await unwrap(window.agentra.exportBackup({ backupId, targetDir }))).target,
 
   onEvent: (listener: (event: RuntimeEvent) => void): (() => void) =>
     window.agentra.onEvent(listener),

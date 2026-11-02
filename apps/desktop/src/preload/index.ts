@@ -79,6 +79,10 @@ const api: AgentraApi = {
   listArtifacts: (params) => ipcRenderer.invoke('agentra:artifact-list', params),
   previewArtifact: (params) => ipcRenderer.invoke('agentra:artifact-preview', params),
 
+  createBackup: () => ipcRenderer.invoke('agentra:backup-create'),
+  listBackups: (params) => ipcRenderer.invoke('agentra:backup-list', params ?? {}),
+  exportBackup: (params) => ipcRenderer.invoke('agentra:backup-export', params),
+
   onEvent: (listener) => {
     const handler = (_event: IpcRendererEvent, payload: RuntimeEvent): void => listener(payload)
     ipcRenderer.on('agentra:event', handler)

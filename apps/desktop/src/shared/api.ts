@@ -17,6 +17,7 @@ import type {
   AssignmentIdParams,
   AssignmentListResult,
   AssignmentResult,
+  Backup,
   ExecutionGetResult,
   ExecutionInterruptResult,
   ExecutionListResult,
@@ -72,6 +73,25 @@ import type {
 export type RpcResult<T> =
   | { ok: true; result: T }
   | { ok: false; error: { code: string; message: string; detail?: unknown } }
+
+// ---- 阶段 5.5 S55-1B：备份中心 RPC 超时策略 ----
+// create/export 可能执行 VACUUM INTO 或复制大量文件，单独放宽到 120s；
+// list 保持 CoreRpcClient 默认 15s。
+export const BACKUP_CREATE_TIMEOUT_MS = 120_000
+export const BACKUP_EXPORT_TIMEOUT_MS = 120_000
+export const BACKUP_LIST_DEFAULT_LIMIT = 50
+
+export function backupRpcTimeoutMs(operation: 'create' | 'list' | 'export'): number | undefined {
+  if (operation === 'create') return BACKUP_CREATE_TIMEOUT_MS
+  if (operation === 'export') return BACKUP_EXPORT_TIMEOUT_MS
+  return undefined
+}
+
+export type BackupCreateResult = { backup: Backup }
+export type BackupListResult = { backups: Backup[] }
+export type BackupExportResult = { target: string }
+export type BackupListParams = { limit?: number }
+export type BackupExportParams = { backupId: string; targetDir: string }
 
 /**
  * Preload 暴露给 renderer 的最小 API 白名单。
@@ -168,6 +188,11 @@ export type AgentraApi = {
   ): Promise<RpcResult<WorkflowRunListByWorkResult>>
   listArtifacts(params: ArtifactListParams): Promise<RpcResult<ArtifactListResult>>
   previewArtifact(params: ArtifactPreviewParams): Promise<RpcResult<ArtifactPreviewResult>>
+
+  // ---- 阶段 5.5 S55-1B：备份中心（创建固定 manual；恢复/删除不在本阶段） ----
+  createBackup(): Promise<RpcResult<BackupCreateResult>>
+  listBackups(params?: BackupListParams): Promise<RpcResult<BackupListResult>>
+  exportBackup(params: BackupExportParams): Promise<RpcResult<BackupExportResult>>
 
   /** 订阅 Core 推送的执行事件；返回取消订阅函数。 */
   onEvent(listener: (event: RuntimeEvent) => void): () => void
