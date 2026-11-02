@@ -1,6 +1,7 @@
 import type { HealthResult } from '@agentra/protocol'
 import { lazy, Suspense, useState } from 'react'
 import { AgentsPage } from './components/AgentsPage'
+import { BackupsPage } from './components/BackupsPage'
 import { ConsolePage } from './components/ConsolePage'
 import { buttonStyle, colors } from './components/styles'
 import { TeamsPage } from './components/TeamsPage'
@@ -9,7 +10,15 @@ import { ApprovalsPage } from './features/approvals/ApprovalsPage'
 import { ArtifactsPanel } from './features/approvals/ArtifactsPanel'
 import { useAgentra } from './hooks/useAgentra'
 
-type Tab = 'console' | 'agents' | 'teams' | 'works' | 'workflow' | 'approvals' | 'artifacts'
+type Tab =
+  | 'console'
+  | 'agents'
+  | 'teams'
+  | 'works'
+  | 'workflow'
+  | 'approvals'
+  | 'artifacts'
+  | 'backups'
 
 // 画布必须独立成 chunk：WorkflowPage 走 React.lazy + 动态 import()。
 const WorkflowPage = lazy(() => import('./features/workflow/WorkflowPage'))
@@ -44,6 +53,7 @@ const NAV_ITEMS: { tab: Tab; label: string }[] = [
   { tab: 'workflow', label: 'Workflow' },
   { tab: 'approvals', label: '审批中心' },
   { tab: 'artifacts', label: '交付物' },
+  { tab: 'backups', label: '备份中心' },
 ]
 
 function SideNavItem({
@@ -184,6 +194,8 @@ export function App() {
             <ApprovalsPage />
           ) : tab === 'artifacts' ? (
             <ArtifactsPanel />
+          ) : tab === 'backups' ? (
+            <BackupsPage />
           ) : tab === 'teams' ? (
             <TeamsPage
               teams={store.teams}
