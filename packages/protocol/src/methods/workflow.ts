@@ -28,6 +28,8 @@ export const WORKFLOW_RUN_LIST_BY_WORK_METHOD = 'workflow.run.listByWork'
 export const BACKUP_CREATE_METHOD = 'backup.create'
 export const BACKUP_LIST_METHOD = 'backup.list'
 export const BACKUP_EXPORT_METHOD = 'backup.export'
+/** S55-2A：恢复预检（只读；实际恢复不在本阶段）。 */
+export const BACKUP_RESTORE_PRECHECK_METHOD = 'backup.restorePrecheck'
 
 export const ARTIFACT_PREVIEW_METHOD = 'artifact.preview'
 export const ARTIFACT_LIST_METHOD = 'artifact.list'
@@ -263,14 +265,12 @@ export const WorkflowRunGetResult = z.object({
 })
 export type WorkflowRunGetResult = z.infer<typeof WorkflowRunGetResult>
 
-export {
-  ApprovalDecideParamsSchema as ApprovalDecideParams,
-  ApprovalGetParamsSchema as ApprovalGetParams,
-  ApprovalGetResultSchema as ApprovalGetResult,
-  ApprovalListPendingParamsSchema as ApprovalListPendingParams,
-  ApprovalListPendingResultSchema as ApprovalListPendingResult,
-  ApprovalResultSchema as ApprovalResult,
-}
+export const ApprovalDecideParams = ApprovalDecideParamsSchema
+export const ApprovalGetParams = ApprovalGetParamsSchema
+export const ApprovalGetResult = ApprovalGetResultSchema
+export const ApprovalListPendingParams = ApprovalListPendingParamsSchema
+export const ApprovalListPendingResult = ApprovalListPendingResultSchema
+export const ApprovalResult = ApprovalResultSchema
 
 export const ArtifactVersion = z.object({
   id: z.string().min(1),
@@ -365,11 +365,79 @@ export type BackupExportParams = z.infer<typeof BackupExportParamsSchema>
 export const BackupExportResultSchema = z.object({ target: z.string().min(1) })
 export type BackupExportResult = z.infer<typeof BackupExportResultSchema>
 
+// ---- S55-2A：恢复预检（只读） ----
+
+export const BackupRestorePrecheckFailureCode = z.enum([
+  'BACKUP_NOT_FOUND',
+  'BACKUP_PATH_UNSAFE',
+  'BACKUPS_ROOT_UNAVAILABLE',
+  'MANIFEST_INVALID',
+  'DATABASE_MISSING',
+  'DATABASE_SIZE_MISMATCH',
+  'DATABASE_SHA256_MISMATCH',
+  'DATABASE_INTEGRITY_FAILED',
+  'DATABASE_SCHEMA_INVALID',
+  'ARTIFACT_MISSING',
+  'ARTIFACT_SIZE_MISMATCH',
+  'ARTIFACT_SHA256_MISMATCH',
+  'ARTIFACT_PATH_UNSAFE',
+  'ARTIFACT_MAPPING_MISMATCH',
+  'SCHEMA_VERSION_UNSUPPORTED',
+  'SCHEMA_VERSION_INVALID',
+  'STORAGE_PATH_INCOMPATIBLE',
+  'ARTIFACTS_ROOT_UNAVAILABLE',
+  'PRECHECK_INTERNAL',
+])
+export type BackupRestorePrecheckFailureCode = z.infer<typeof BackupRestorePrecheckFailureCode>
+
+export const BackupRestorePrecheckParamsSchema = z.object({ backupId: z.string().min(1) }).strict()
+export type BackupRestorePrecheckParams = z.infer<typeof BackupRestorePrecheckParamsSchema>
+
+export const BackupRestorePrecheckFailure = z.object({
+  code: BackupRestorePrecheckFailureCode,
+  message: z.string().min(1),
+  detail: z.unknown().optional(),
+})
+export type BackupRestorePrecheckFailure = z.infer<typeof BackupRestorePrecheckFailure>
+
+export const BackupRestorePrecheckDatabase = z.object({
+  file: z.literal('database.db'),
+  bytes: z.number().int().min(0),
+  sha256: z.string().length(64),
+  integrityCheck: z.enum(['ok', 'failed']),
+  userVersion: z.number().int().min(0),
+})
+export type BackupRestorePrecheckDatabase = z.infer<typeof BackupRestorePrecheckDatabase>
+
+export const BackupRestorePrecheckSchemaCompatibility = z.object({
+  backupUserVersion: z.number().int().min(0),
+  currentUserVersion: z.number().int().min(0),
+  compatible: z.boolean(),
+})
+export type BackupRestorePrecheckSchemaCompatibility = z.infer<
+  typeof BackupRestorePrecheckSchemaCompatibility
+>
+
+export const BackupRestorePrecheckResultSchema = z.object({
+  backupId: z.string().min(1),
+  type: BackupType.nullable(),
+  createdAt: IsoTimestamp.nullable(),
+  manifestVersion: z.number().int().min(1).nullable(),
+  database: BackupRestorePrecheckDatabase.nullable(),
+  artifactCount: z.number().int().min(0).nullable(),
+  schemaCompatibility: BackupRestorePrecheckSchemaCompatibility.nullable(),
+  allowedToRestore: z.boolean(),
+  failure: BackupRestorePrecheckFailure.nullable(),
+})
+export type BackupRestorePrecheckResult = z.infer<typeof BackupRestorePrecheckResultSchema>
+
 export {
   BackupCreateParamsSchema as BackupCreateParamsValue,
   BackupExportParamsSchema as BackupExportParamsValue,
   BackupExportResultSchema as BackupExportResultValue,
   BackupListParamsSchema as BackupListParamsValue,
   BackupListResultSchema as BackupListResultValue,
+  BackupRestorePrecheckParamsSchema as BackupRestorePrecheckParamsValue,
+  BackupRestorePrecheckResultSchema as BackupRestorePrecheckResultValue,
   BackupResultSchema as BackupResultValue,
 }

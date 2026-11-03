@@ -82,6 +82,7 @@ const api: AgentraApi = {
   createBackup: () => ipcRenderer.invoke('agentra:backup-create'),
   listBackups: (params) => ipcRenderer.invoke('agentra:backup-list', params ?? {}),
   exportBackup: (params) => ipcRenderer.invoke('agentra:backup-export', params),
+  restorePrecheck: (params) => ipcRenderer.invoke('agentra:backup-restore-precheck', params),
 
   onEvent: (listener) => {
     const handler = (_event: IpcRendererEvent, payload: RuntimeEvent): void => listener(payload)

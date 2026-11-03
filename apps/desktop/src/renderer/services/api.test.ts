@@ -52,6 +52,7 @@ describe('backup RPC wiring', () => {
     createBackup: ReturnType<typeof vi.fn>
     listBackups: ReturnType<typeof vi.fn>
     exportBackup: ReturnType<typeof vi.fn>
+    restorePrecheck: ReturnType<typeof vi.fn>
   }
 
   let backupApi: BackupApiStub
@@ -61,6 +62,7 @@ describe('backup RPC wiring', () => {
       createBackup: vi.fn(),
       listBackups: vi.fn(),
       exportBackup: vi.fn(),
+      restorePrecheck: vi.fn(),
     }
     vi.stubGlobal('window', { agentra: backupApi })
   })
@@ -171,9 +173,58 @@ describe('backup RPC wiring', () => {
     }
   })
 
-  it('applies 120s to create/export and keeps the default for list', () => {
+  it('restorePrecheck passes backupId and returns the precheck result', async () => {
+    const precheck = {
+      backupId: 'bak-1',
+      type: 'manual' as const,
+      createdAt: '2026-11-02T00:00:00.000Z',
+      manifestVersion: 1,
+      database: {
+        file: 'database.db' as const,
+        bytes: 1024,
+        sha256: 'a'.repeat(64),
+        integrityCheck: 'ok' as const,
+        userVersion: 15,
+      },
+      artifactCount: 2,
+      schemaCompatibility: {
+        backupUserVersion: 15,
+        currentUserVersion: 15,
+        compatible: true,
+      },
+      allowedToRestore: true,
+      failure: null,
+    }
+    backupApi.restorePrecheck.mockResolvedValue({ ok: true, result: precheck })
+    await expect(api.restorePrecheck('bak-1')).resolves.toEqual(precheck)
+    expect(backupApi.restorePrecheck).toHaveBeenCalledWith({ backupId: 'bak-1' })
+  })
+
+  it('restorePrecheck surfaces structured failure detail', async () => {
+    backupApi.restorePrecheck.mockResolvedValue({
+      ok: false,
+      error: {
+        code: 'INVALID_PARAMS',
+        message: 'precheck failed',
+        detail: { code: 'MANIFEST_INVALID' },
+      },
+    })
+    try {
+      await api.restorePrecheck('bak-1')
+      throw new Error('expected restorePrecheck to throw')
+    } catch (error) {
+      expect(error).toBeInstanceOf(ApiError)
+      const apiError = error as ApiError
+      expect(apiError.code).toBe('INVALID_PARAMS')
+      expect(apiError.message).toBe('precheck failed')
+      expect(apiError.detail).toEqual({ code: 'MANIFEST_INVALID' })
+    }
+  })
+
+  it('applies 120s to create/export/precheck and keeps the default for list', () => {
     expect(backupRpcTimeoutMs('create')).toBe(120_000)
     expect(backupRpcTimeoutMs('export')).toBe(120_000)
+    expect(backupRpcTimeoutMs('precheck')).toBe(120_000)
     expect(backupRpcTimeoutMs('list')).toBeUndefined()
   })
 })

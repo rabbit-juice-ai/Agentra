@@ -26,8 +26,10 @@ import {
   BACKUP_CREATE_METHOD,
   BACKUP_EXPORT_METHOD,
   BACKUP_LIST_METHOD,
+  BACKUP_RESTORE_PRECHECK_METHOD,
   BackupExportResultValue,
   BackupListResultValue,
+  BackupRestorePrecheckResultValue,
   BackupResultValue,
   CORE_HEALTH_METHOD,
   DAEMON_HEALTH_METHOD,
@@ -341,6 +343,16 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:backup-export', (_event, params: unknown) =>
     callCore(BACKUP_EXPORT_METHOD, params, BackupExportResultValue, backupRpcTimeoutMs('export')),
+  )
+
+  // 阶段 5.5 S55-2A：恢复预检（只读）。
+  ipcMain.handle('agentra:backup-restore-precheck', (_event, params: unknown) =>
+    callCore(
+      BACKUP_RESTORE_PRECHECK_METHOD,
+      params,
+      BackupRestorePrecheckResultValue,
+      backupRpcTimeoutMs('precheck'),
+    ),
   )
 }
 

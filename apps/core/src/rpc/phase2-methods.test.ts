@@ -168,6 +168,11 @@ function harness(): {
       list: () => [],
       exportTo: () => '',
     } as never,
+    backupPrecheck: {
+      precheck: () => {
+        throw new Error('not used in this test')
+      },
+    } as never,
   })
 
   const dispatch = async (method: string, params: unknown) => {

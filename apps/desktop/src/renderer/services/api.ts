@@ -6,6 +6,7 @@ import type {
   AssignmentCreateParams,
   AssignmentStatus,
   Backup,
+  BackupRestorePrecheckResult,
   Execution,
   ExecutionLog,
   ExecutionSendMessageParams,
@@ -145,6 +146,10 @@ export const api = {
     (await unwrap(window.agentra.listBackups({ limit }))).backups,
   exportBackup: async (backupId: string, targetDir: string): Promise<string> =>
     (await unwrap(window.agentra.exportBackup({ backupId, targetDir }))).target,
+
+  // 阶段 5.5 S55-2A：恢复预检（只读）。
+  restorePrecheck: async (backupId: string): Promise<BackupRestorePrecheckResult> =>
+    await unwrap(window.agentra.restorePrecheck({ backupId })),
 
   onEvent: (listener: (event: RuntimeEvent) => void): (() => void) =>
     window.agentra.onEvent(listener),

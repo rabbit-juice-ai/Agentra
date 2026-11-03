@@ -18,6 +18,7 @@ import type {
   AssignmentListResult,
   AssignmentResult,
   Backup,
+  BackupRestorePrecheckResult,
   ExecutionGetResult,
   ExecutionInterruptResult,
   ExecutionListResult,
@@ -76,14 +77,18 @@ export type RpcResult<T> =
 
 // ---- 阶段 5.5 S55-1B：备份中心 RPC 超时策略 ----
 // create/export 可能执行 VACUUM INTO 或复制大量文件，单独放宽到 120s；
-// list 保持 CoreRpcClient 默认 15s。
+// precheck 需要复制/哈希数据库与 Artifact，同样放宽；list 保持默认 15s。
 export const BACKUP_CREATE_TIMEOUT_MS = 120_000
 export const BACKUP_EXPORT_TIMEOUT_MS = 120_000
+export const BACKUP_PRECHECK_TIMEOUT_MS = 120_000
 export const BACKUP_LIST_DEFAULT_LIMIT = 50
 
-export function backupRpcTimeoutMs(operation: 'create' | 'list' | 'export'): number | undefined {
+export function backupRpcTimeoutMs(
+  operation: 'create' | 'list' | 'export' | 'precheck',
+): number | undefined {
   if (operation === 'create') return BACKUP_CREATE_TIMEOUT_MS
   if (operation === 'export') return BACKUP_EXPORT_TIMEOUT_MS
+  if (operation === 'precheck') return BACKUP_PRECHECK_TIMEOUT_MS
   return undefined
 }
 
@@ -92,6 +97,7 @@ export type BackupListResult = { backups: Backup[] }
 export type BackupExportResult = { target: string }
 export type BackupListParams = { limit?: number }
 export type BackupExportParams = { backupId: string; targetDir: string }
+export type BackupRestorePrecheckParams = { backupId: string }
 
 /**
  * Preload 暴露给 renderer 的最小 API 白名单。
@@ -193,6 +199,11 @@ export type AgentraApi = {
   createBackup(): Promise<RpcResult<BackupCreateResult>>
   listBackups(params?: BackupListParams): Promise<RpcResult<BackupListResult>>
   exportBackup(params: BackupExportParams): Promise<RpcResult<BackupExportResult>>
+
+  // ---- 阶段 5.5 S55-2A：恢复预检（只读） ----
+  restorePrecheck(
+    params: BackupRestorePrecheckParams,
+  ): Promise<RpcResult<BackupRestorePrecheckResult>>
 
   /** 订阅 Core 推送的执行事件；返回取消订阅函数。 */
   onEvent(listener: (event: RuntimeEvent) => void): () => void

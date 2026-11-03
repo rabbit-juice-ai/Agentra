@@ -43,11 +43,14 @@ import {
   BACKUP_CREATE_METHOD,
   BACKUP_EXPORT_METHOD,
   BACKUP_LIST_METHOD,
+  BACKUP_RESTORE_PRECHECK_METHOD,
   BackupCreateParamsValue,
   BackupExportParamsValue,
   BackupExportResultValue,
   BackupListParamsValue,
   BackupListResultValue,
+  BackupRestorePrecheckParamsValue,
+  BackupRestorePrecheckResultValue,
   BackupResultValue,
   defineMethod,
   EVENTS_SUBSCRIBE_METHOD,
@@ -164,6 +167,7 @@ import type { AgentService } from '../services/agent-service'
 import type { ApprovalRpcService } from '../services/approval-rpc-service'
 import type { ArtifactRpcService } from '../services/artifact-rpc-service'
 import type { AssignmentService } from '../services/assignment-service'
+import type { BackupRestorePrecheckService } from '../services/backup-restore-precheck-service'
 import type { BackupRpcService } from '../services/backup-rpc-service'
 import type { CoreEventHub } from '../services/event-hub'
 import type { ExecutionService } from '../services/execution-service'
@@ -193,6 +197,7 @@ export type CoreMethodServices = {
   approvals: ApprovalRpcService
   artifacts: ArtifactRpcService
   backups: BackupRpcService
+  backupPrecheck: BackupRestorePrecheckService
 }
 
 /**
@@ -501,6 +506,11 @@ export function coreMethods(
       BackupExportParamsValue,
       BackupExportResultValue,
       (params) => ({ target: services.backups.exportTo(params.backupId, params.targetDir) }),
+    ),
+    [BACKUP_RESTORE_PRECHECK_METHOD]: defineMethod(
+      BackupRestorePrecheckParamsValue,
+      BackupRestorePrecheckResultValue,
+      (params) => services.backupPrecheck.precheck(params.backupId),
     ),
 
     [ARTIFACT_PREVIEW_METHOD]: defineMethod(

@@ -5,7 +5,7 @@ import { assertCoreSocketAvailable } from './core-instance-guard'
 import { DaemonClient } from './daemon/daemon-client'
 import { ensureDaemon } from './daemon-launcher'
 import { openDatabase } from './db/database'
-import { migrate } from './db/migrations'
+import { MIGRATIONS, migrate } from './db/migrations'
 import { AgentRepository } from './db/repositories/agent-repository'
 import { ApprovalRepository } from './db/repositories/approval-repository'
 import { ArtifactRepository } from './db/repositories/artifact-repository'
@@ -31,6 +31,7 @@ import { ApprovalRpcService } from './services/approval-rpc-service'
 import { ArtifactRpcService } from './services/artifact-rpc-service'
 import { ArtifactService } from './services/artifact-service'
 import { AssignmentService } from './services/assignment-service'
+import { BackupRestorePrecheckService } from './services/backup-restore-precheck-service'
 import { BackupRpcService } from './services/backup-rpc-service'
 import { BackupService } from './services/backup-service'
 import { CoreEventHub } from './services/event-hub'
@@ -231,15 +232,22 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     get: (id) => workRepository.get(id),
   })
   const artifactRpc = new ArtifactRpcService(artifactService)
+  const backupRepository = new BackupRepository(db)
   const backupService = new BackupService(
     db,
-    new BackupRepository(db),
+    backupRepository,
     new ArtifactRepository(db),
     auditRepository,
     paths.backups,
     paths.artifacts,
   )
   const backupRpc = new BackupRpcService(backupService)
+  const backupPrecheck = new BackupRestorePrecheckService(
+    backupRepository,
+    paths.backups,
+    paths.artifacts,
+    Math.max(...MIGRATIONS.map((migration) => migration.version)),
+  )
   const workflowBridge = new WorkflowExecutionBridge({
     runs: workflowRunRepository,
     nodes: nodeRunRepository,
@@ -383,6 +391,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       approvals: approvalRpc,
       artifacts: artifactRpc,
       backups: backupRpc,
+      backupPrecheck,
     }),
   )
   logger.info('core started', {
