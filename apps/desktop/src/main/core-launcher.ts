@@ -43,6 +43,25 @@ export async function ensureCore(paths: AgentraPaths = agentraPaths()): Promise<
     }
   }
 
+  // S55-2B-1B：boot socket 存活 = Core 正在 booting/recovering——等待而不是重复 spawn。
+  // 超时后必须重新检查状态，不能直接假定可以启动第二个 Core。
+  const bootDeadline = Date.now() + START_WAIT_MS
+  while ((await probeSocket(paths.coreBootSocket)) === 'live') {
+    if ((await probeSocket(paths.coreSocket)) === 'live') return
+    if (Date.now() >= bootDeadline) {
+      if ((await probeSocket(paths.coreBootSocket)) === 'live') {
+        throw new Error(
+          `core is still booting (boot socket alive) after ${START_WAIT_MS / 1000}s; ` +
+            'refusing to spawn a second instance',
+        )
+      }
+      break
+    }
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  // 等待窗口内 core.sock 可能已经就绪。
+  if ((await probeSocket(paths.coreSocket)) === 'live') return
+
   // 清理陈旧 socket/pid（absent 才走到这里）。
   try {
     fs.unlinkSync(paths.coreSocket)

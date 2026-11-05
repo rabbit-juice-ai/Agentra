@@ -61,7 +61,7 @@ function definition(): WorkflowDefinition {
   } as unknown as WorkflowDefinition
 }
 
-function setup(): {
+function setup(options: { maintenance?: { isSchedulerAllowed(): boolean } } = {}): {
   db: Database
   engine: WorkflowEngine
   scheduler: WorkflowScheduler
@@ -130,6 +130,7 @@ function setup(): {
     nodes,
     definitions,
     gates: defaultDispatchGates(allowAllResourcePorts()),
+    maintenance: options.maintenance,
     onNodeStarted: (context) => engine?.onNodeStarted(context),
     now: () => NOW,
   })
@@ -145,6 +146,7 @@ function setup(): {
     rework,
     executions: { getNodeRunId: () => 'nrn-task' },
     eventSink: recorder,
+    maintenance: options.maintenance,
     runService: new WorkflowRunService(
       db,
       runs,
@@ -182,6 +184,18 @@ describe('WorkflowEngine 装配', () => {
       // 重复推进不得重复写事件
       await h.engine.kick(h.runId)
       expect(h.events.listByRun(h.runId)).toHaveLength(1)
+    } finally {
+      h.close()
+    }
+  })
+
+  it('does not kick scheduler while maintenance gate is closed', async () => {
+    const h = setup({ maintenance: { isSchedulerAllowed: () => false } })
+    try {
+      await h.engine.kick(h.runId)
+      expect(h.nodes.get('nrn-start')?.status).toBe('blocked')
+      expect(h.nodes.get('nrn-task')?.status).toBe('blocked')
+      expect(h.events.listByRun(h.runId)).toHaveLength(0)
     } finally {
       h.close()
     }

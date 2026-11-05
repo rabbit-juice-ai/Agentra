@@ -30,6 +30,10 @@ export const BACKUP_LIST_METHOD = 'backup.list'
 export const BACKUP_EXPORT_METHOD = 'backup.export'
 /** S55-2A：恢复预检（只读；实际恢复不在本阶段）。 */
 export const BACKUP_RESTORE_PRECHECK_METHOD = 'backup.restorePrecheck'
+/** S55-2C：异步接受 Restore 请求（只允许已登记 backupId）。 */
+export const BACKUP_RESTORE_METHOD = 'backup.restore'
+/** S55-2C：只读查询活动 Restore Journal 快照。 */
+export const RESTORE_STATUS_METHOD = 'restore.status'
 
 export const ARTIFACT_PREVIEW_METHOD = 'artifact.preview'
 export const ARTIFACT_LIST_METHOD = 'artifact.list'
@@ -431,13 +435,110 @@ export const BackupRestorePrecheckResultSchema = z.object({
 })
 export type BackupRestorePrecheckResult = z.infer<typeof BackupRestorePrecheckResultSchema>
 
+// ---- S55-2C：Restore 异步接受与只读状态 ----
+
+export const RestorePhaseSchema = z.enum([
+  'requested',
+  'prepared',
+  'drained',
+  'handed_off',
+  'capture',
+  'capture_verified',
+  'forward_replacement',
+  'replaced',
+  'self_row_fixing',
+  'reconciling',
+  'verifying',
+  'verified',
+  'completed',
+  'rollback_in_progress',
+  'rolled_back',
+  'rollback_failed',
+  'aborted',
+  'recovery_locked',
+])
+export type RestorePhase = z.infer<typeof RestorePhaseSchema>
+
+export const RestoreOperationKindSchema = z.enum([
+  'db',
+  'wal',
+  'shm',
+  'artifacts',
+  'archive',
+  'marker',
+  'cleanup',
+])
+export type RestoreOperationKind = z.infer<typeof RestoreOperationKindSchema>
+
+export const RestoreOperationStatusSchema = z.enum([
+  'not_started',
+  'intent',
+  'capturing',
+  'captured',
+  'verifying',
+  'verified',
+  'installed',
+  'done',
+  'rb_staged',
+  'rb_verified',
+  'blocked',
+])
+export type RestoreOperationStatus = z.infer<typeof RestoreOperationStatusSchema>
+
+export const RestoreOperationStatusViewSchema = z
+  .object({
+    operationId: z.string().min(1),
+    kind: RestoreOperationKindSchema,
+    status: RestoreOperationStatusSchema,
+    opRev: z.number().int().min(1),
+  })
+  .strict()
+export type RestoreOperationStatusView = z.infer<typeof RestoreOperationStatusViewSchema>
+
+export const BackupRestoreParamsSchema = z.object({ backupId: z.string().min(1) }).strict()
+export type BackupRestoreParams = z.infer<typeof BackupRestoreParamsSchema>
+
+export const BackupRestoreAcceptedSchema = z
+  .object({
+    journalId: z.string().min(1),
+    state: z.literal('requested'),
+  })
+  .strict()
+export type BackupRestoreAccepted = z.infer<typeof BackupRestoreAcceptedSchema>
+
+export const RestoreStatusParamsSchema = z
+  .object({ journalId: z.string().min(1).optional() })
+  .strict()
+export type RestoreStatusParams = z.infer<typeof RestoreStatusParamsSchema>
+
+export const RestoreStatusResultSchema = z
+  .object({
+    active: z.boolean(),
+    journalId: z.string().nullable(),
+    backupId: z.string().nullable(),
+    phase: RestorePhaseSchema.nullable(),
+    globalRevision: z.number().int().min(1).nullable(),
+    operations: z.array(RestoreOperationStatusViewSchema),
+    currentOperationId: z.string().nullable(),
+    errorCode: z.string().nullable(),
+    recoveryLocked: z.boolean(),
+    manualInterventionRequired: z.boolean(),
+    updatedAt: IsoTimestamp.nullable(),
+  })
+  .strict()
+export type RestoreStatusResult = z.infer<typeof RestoreStatusResultSchema>
+
 export {
   BackupCreateParamsSchema as BackupCreateParamsValue,
   BackupExportParamsSchema as BackupExportParamsValue,
   BackupExportResultSchema as BackupExportResultValue,
   BackupListParamsSchema as BackupListParamsValue,
   BackupListResultSchema as BackupListResultValue,
+  BackupRestoreAcceptedSchema as BackupRestoreAcceptedValue,
+  BackupRestoreParamsSchema as BackupRestoreParamsValue,
   BackupRestorePrecheckParamsSchema as BackupRestorePrecheckParamsValue,
   BackupRestorePrecheckResultSchema as BackupRestorePrecheckResultValue,
   BackupResultSchema as BackupResultValue,
+  RestoreStatusParamsSchema as RestoreStatusParamsValue,
+  RestoreStatusResultSchema as RestoreStatusResultValue,
 }

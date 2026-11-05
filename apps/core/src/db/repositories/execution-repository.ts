@@ -296,4 +296,66 @@ export class ExecutionRepository {
       .prepare('UPDATE executions SET recovery_state_json = ?, updated_at = ? WHERE id = ?')
       .run(JSON.stringify(state), updatedAt, id)
   }
+
+  /**
+   * S55-2B-1B：读取原始 recovery_state_json（TX1 事务内 read-merge-write 用）。
+   * valid=false 表示列存在但 JSON 损坏——调用方必须 fail closed，禁止覆盖。
+   */
+  getRecoveryStateRaw(id: string): { raw: string | null; valid: boolean } {
+    const row = this.db
+      .prepare(
+        `SELECT recovery_state_json AS raw, CASE
+           WHEN recovery_state_json IS NULL THEN 1
+           ELSE json_valid(recovery_state_json) END AS valid
+         FROM executions WHERE id = ?`,
+      )
+      .get(id) as { raw: string | null; valid: number } | undefined
+    if (!row) return { raw: null, valid: true }
+    return { raw: row.raw, valid: row.valid === 1 }
+  }
+
+  /**
+   * S55-2B-1B：终态补偿待处理行（sweep 用）。
+   * 只匹配「终态 + terminalProcessing.state === 'pending'」；JSON 损坏行由
+   * countCorruptRecoveryState 单独预检，不在此静默跳过。
+   */
+  listTerminalProcessingPending(): Execution[] {
+    const rows = this.db
+      .prepare(
+        `${SELECT_EXECUTION}
+         WHERE e.status IN ('succeeded', 'failed', 'cancelled', 'crashed')
+           AND e.recovery_state_json IS NOT NULL
+           AND json_valid(e.recovery_state_json) = 1
+           AND json_extract(e.recovery_state_json, '$.terminalProcessing.state') = 'pending'
+         ORDER BY e.updated_at ASC, e.id ASC`,
+      )
+      .all() as ExecutionRow[]
+    return rows.map(toExecution)
+  }
+
+  /** S55-2B-1B：recovery_state_json 损坏的行数（boot 预检；>0 → recovery_locked）。 */
+  countCorruptRecoveryState(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM executions
+         WHERE recovery_state_json IS NOT NULL AND json_valid(recovery_state_json) = 0`,
+      )
+      .get() as { c: number }
+    return row.c
+  }
+
+  /**
+   * S55-2B-1B：键级合并 recovery_state_json（completed 标记）。
+   * json_patch 保留既有键；损坏 JSON 由 json_patch 抛错（fail closed，不静默覆盖）。
+   */
+  mergeRecoveryState(id: string, fragment: Record<string, unknown>, updatedAt: string): void {
+    this.db
+      .prepare(
+        `UPDATE executions
+         SET recovery_state_json = json_patch(COALESCE(recovery_state_json, '{}'), ?),
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(JSON.stringify(fragment), updatedAt, id)
+  }
 }

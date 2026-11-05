@@ -2,7 +2,12 @@ import fs from 'node:fs'
 import http from 'node:http'
 import { rpcFailure } from '@agentra/protocol'
 import { type WebSocket, WebSocketServer } from 'ws'
-import { createDispatcher, type MethodTable, type RpcContext } from './dispatcher'
+import {
+  createDispatcher,
+  type DispatchHooks,
+  type MethodTable,
+  type RpcContext,
+} from './dispatcher'
 
 export type WsServer = { close: () => void; socketPath: string }
 
@@ -11,8 +16,12 @@ export type WsServer = { close: () => void; socketPath: string }
  * 不占 TCP 端口，天然只限本机进程访问。
  * 订阅连接（events.subscribe）通过 ctx.push 接收服务端事件帧。
  */
-export function startWsServer(socketPath: string, methods: MethodTable): Promise<WsServer> {
-  const dispatch = createDispatcher(methods)
+export function startWsServer(
+  socketPath: string,
+  methods: MethodTable,
+  hooks: DispatchHooks = {},
+): Promise<WsServer> {
+  const dispatch = createDispatcher(methods, hooks)
   const httpServer = http.createServer((_req, res) => {
     // 非 WS 升级请求一律拒绝（健康探针走 RPC，不做 HTTP 页面）。
     res.writeHead(426).end('websocket only')

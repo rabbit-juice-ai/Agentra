@@ -24,6 +24,12 @@ import { WorkRepository } from './db/repositories/work-repository'
 import { WorkflowEventRepository } from './db/repositories/workflow-event-repository'
 import { WorkflowRepository } from './db/repositories/workflow-repository'
 import { WorkflowRunRepository } from './db/repositories/workflow-run-repository'
+import { BootLock, BootLockError } from './lifecycle/boot-lock'
+import { DrainCoordinator, type DrainResult } from './lifecycle/drain-coordinator'
+import { MaintenanceController } from './lifecycle/maintenance-controller'
+import { PersistenceGate } from './lifecycle/persistence-gate'
+import { type RestoreJournal, RestoreJournalStore } from './lifecycle/restore-journal'
+import { startBootSocket } from './rpc/boot-socket'
 import { coreMethods } from './rpc/methods'
 import { startWsServer } from './rpc/ws-server'
 import { AgentService } from './services/agent-service'
@@ -36,10 +42,15 @@ import { BackupRpcService } from './services/backup-rpc-service'
 import { BackupService } from './services/backup-service'
 import { CoreEventHub } from './services/event-hub'
 import { ExecutionService } from './services/execution-service'
+import { proxyDaemonHealth } from './services/health'
 import { ProviderRegistry } from './services/provider-registry'
+import { RestoreArchiveService } from './services/restore-archive-service'
+import { RestoreBootService } from './services/restore-boot-service'
+import { RestoreCoordinator } from './services/restore-coordinator'
+import { RestoreExecutor } from './services/restore-executor'
 import { TeamService } from './services/team-service'
 import { WorkService } from './services/work-service'
-import { WorkdirLockService } from './services/workdir-lock-service'
+import { currentBootUuid, WorkdirLockService } from './services/workdir-lock-service'
 import { WorkflowDefinitionService } from './services/workflow-definition-service'
 import { WorktreeService } from './services/worktree-service'
 import { createApprovalGateChecker } from './workflow/approval-gate'
@@ -64,13 +75,173 @@ import { WorkflowScheduler } from './workflow/scheduler'
 
 const VERSION = '0.1.0'
 
+/** S55-2B-1A（P1-1）：SIGTERM 排空在途写的 deadline。不等待 Agent Task 自然结束。 */
+const SHUTDOWN_DRAIN_DEADLINE_MS = 5_000
+
+/** S55-2B-1B：启动期等待 Daemon 订阅 ACK 的总预算。 */
+const DAEMON_CONNECT_TIMEOUT_MS = 30_000
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+export type ShutdownDeps = {
+  signal: string
+  maintenance: Pick<MaintenanceController, 'beginShuttingDown'>
+  drain: Pick<DrainCoordinator, 'close' | 'drain'>
+  closeRuntime: () => void
+  closeServer: () => void
+  /** S55-2B-1B：最小 health/status socket（recovery_locked 期间保留，退出时关闭）。 */
+  closeBootSocket?: () => void
+  closeDb: () => void
+  removePidFile: () => void
+  /** S55-2B-1B：释放 O_EXLOCK fd（只 close，不 unlink 锁文件）。 */
+  releaseLock?: () => void
+  exit: (code: number) => void
+  logger: {
+    info: (message: string, data?: Record<string, unknown>) => void
+    warn: (message: string, data?: Record<string, unknown>) => void
+    error: (message: string, data?: Record<string, unknown>) => void
+  }
+  drainDeadlineMs?: number
+}
+
+/**
+ * S55-2B-1A（P1-1）：正常 SIGTERM 的关闭序列。
+ *
+ * 顺序：shutting_down 门禁 → 关闭新 lease → 等 deadline 排空在途写 →
+ * 依次关闭 Runtime / RPC Server / DB → 清理 pid 文件 → 退出。
+ * 不等待 Agent Task、不干预 Daemon、不 cancel / retry Execution。
+ * drain 异常或超时按失败记录并输出诊断快照，但不伪装成成功、不无限等待，
+ * 仍按既定策略继续执行全部清理步骤（CTO 行为要求 3 / 4 / 5 / 7）。
+ */
+export async function shutdownWithDrain(deps: ShutdownDeps): Promise<void> {
+  const {
+    signal,
+    maintenance,
+    drain,
+    closeRuntime,
+    closeServer,
+    closeBootSocket,
+    closeDb,
+    removePidFile,
+    releaseLock,
+    exit,
+    logger,
+    drainDeadlineMs = SHUTDOWN_DRAIN_DEADLINE_MS,
+  } = deps
+
+  logger.info('core shutting down', { signal })
+  maintenance.beginShuttingDown(signal)
+  drain.close()
+
+  let drainResult: DrainResult | null = null
+  try {
+    drainResult = await drain.drain(drainDeadlineMs)
+  } catch (error) {
+    // 排空本身失败不能伪装成成功；记录后按既定策略继续退出（不无限等待）。
+    logger.error('shutdown drain failed', { signal, error: errorMessage(error) })
+  }
+  if (drainResult && !drainResult.ok) {
+    logger.error('shutdown drain timed out; in-flight operations may be interrupted', {
+      signal,
+      deadlineMs: drainDeadlineMs,
+      timedOut: drainResult.timedOut,
+      snapshot: drainResult.snapshot,
+    })
+  } else if (drainResult) {
+    logger.info('shutdown drain completed', { signal, snapshot: drainResult.snapshot })
+  }
+
+  closeRuntime()
+  closeServer()
+  try {
+    closeBootSocket?.()
+  } catch (error) {
+    logger.warn('boot socket close failed', { error: errorMessage(error) })
+  }
+  try {
+    closeDb()
+  } catch (error) {
+    logger.warn('database close failed', { error: errorMessage(error) })
+  }
+  try {
+    removePidFile()
+  } catch {
+    // 清理失败不阻止退出；pid 文件残留由启动守卫按 pid 存活判断处理。
+  }
+  try {
+    releaseLock?.()
+  } catch (error) {
+    logger.warn('boot lock release failed', { error: errorMessage(error) })
+  }
+  exit(0)
+}
+
+/**
+ * S55-2B-1A（P1-1）：shutdown 去重包装。第一个信号触发执行，后续信号只记录日志。
+ * 重复触发不会重复进入关闭序列（CTO 行为要求 6）。
+ */
+export function createShutdownHandler(
+  run: (signal: string) => Promise<void>,
+  logger: ShutdownDeps['logger'],
+): (signal: string) => void {
+  let started = false
+  return (signal: string) => {
+    if (started) {
+      logger.warn('shutdown already in progress; ignoring repeated signal', { signal })
+      return
+    }
+    started = true
+    void run(signal)
+  }
+}
+
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const home = agentraHome(env)
   const paths = agentraPaths(home)
   ensureDirs(paths)
   const logger = createLogger('core')
+  const maintenance = new MaintenanceController()
+  const drain = new DrainCoordinator()
+  // S55-2C：Artifact/Backup/Worktree 文件写入的统一 lease 门禁；Restore 编排在
+  // pre_restore 完成后 close + closeAndDrain，然后才允许 checkpoint/handoff。
+  const persistence = new PersistenceGate(drain)
 
-  // Core 单实例守卫：已有活 Core 就拒绝启动，绝不 unlink 掉别人的 socket。
+  // S55-2B-1B：启动即进入 booting。normal 是业务 RPC 唯一放行态；
+  // booting/recovering 与 recovery_locked 同为 lockdown 授权。
+  maintenance.enterBooting('boot')
+
+  // 1) BootLock（O_EXLOCK 内核锁）：同一数据根唯一 Core；文件永不 unlink。
+  const bootLock = new BootLock(paths.coreLock)
+  try {
+    const identity = currentBootUuid()
+    const owner = bootLock.acquire({
+      startedAt: new Date().toISOString(),
+      bootUuid: identity.status === 'known' ? identity.uuid : null,
+      protocolVersion: PROTOCOL_VERSION,
+    })
+    logger.info('core boot lock acquired', {
+      lockPath: paths.coreLock,
+      pid: owner.pid,
+      bootUuid: owner.bootUuid,
+    })
+  } catch (error) {
+    if (error instanceof BootLockError) {
+      logger.error('core refused to start: boot lock unavailable', {
+        code: error.code,
+        error: error.message,
+        detail: error.detail,
+      })
+    } else {
+      logger.error('core refused to start: boot lock failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+    process.exit(1)
+  }
+
+  // 2) 旧版 Core（无 boot lock）仍活着的防御：业务 socket 探活。
   // 产品路径由 Electron 单实例锁保护；这里覆盖 dev:core / QA 脚本 / 非 Electron 部署。
   try {
     await assertCoreSocketAvailable(paths.coreSocket)
@@ -79,22 +250,154 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       socket: paths.coreSocket,
       error: error instanceof Error ? error.message : String(error),
     })
+    bootLock.release()
     process.exit(1)
   }
 
-  // 启动链：Core 负责 Daemon 存活（探活优先，附着已有实例）。
-  const daemon = await ensureDaemon(paths, env)
-  logger.info('daemon ensured', { spawned: daemon.spawned, socket: paths.daemonSocket })
+  // 3) 最小 health/status socket：从此刻起可探活并查询启动阶段；
+  //    物理方法表只有 core.health / core.maintenance.status。
+  let bootServer: Awaited<ReturnType<typeof startBootSocket>>
+  try {
+    bootServer = await startBootSocket(
+      paths.coreBootSocket,
+      VERSION,
+      paths.daemonSocket,
+      maintenance,
+      drain,
+    )
+  } catch (error) {
+    logger.error('core refused to start: boot socket bind failed', {
+      socket: paths.coreBootSocket,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    bootLock.release()
+    process.exit(1)
+  }
 
-  // 数据库：Core 独占业务库（Daemon 不访问），启动即迁移。
-  const db = openDatabase(paths.database)
-  const migration = migrate(db)
-  logger.info('database ready', {
-    file: paths.database,
-    fromVersion: migration.from,
-    toVersion: migration.to,
-    applied: migration.applied,
-  })
+  // 4) PID 文件：覆盖整个启动窗口（Desktop 以 pidAlive 判定启动中）。
+  fs.writeFileSync(
+    paths.corePid,
+    JSON.stringify({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      protocolVersion: PROTOCOL_VERSION,
+      socketPath: paths.coreSocket,
+    }),
+    { mode: 0o600 },
+  )
+
+  // 4.5) S55-2C：恢复启动模式。必须在 openDatabase 之前完成判定与文件替换；
+  //      active marker / Journal 是唯一事务依据，任何无法证明的现场一律 recovery_locked。
+  const restoreJournalPaths = {
+    restoreRoot: paths.restore,
+    journalA: paths.restoreJournalA,
+    journalB: paths.restoreJournalB,
+    activeMarker: paths.restoreActiveMarker,
+    archiveRoot: paths.restoreArchive,
+  }
+  const restoreStore = new RestoreJournalStore(restoreJournalPaths)
+  const restoreArchive = new RestoreArchiveService(restoreStore, paths.restoreRetired)
+  const restoreBoot = new RestoreBootService(
+    restoreStore,
+    restoreArchive,
+    paths.restoreArchive,
+    logger,
+  )
+  let restoredJournal: RestoreJournal | null = null
+  try {
+    const scene = restoreBoot.detect()
+    if (scene.kind === 'locked') {
+      logger.error('restore boot scene requires manual recovery', { reason: scene.reason })
+      maintenance.enterRecoveryLocked(`restore_boot_${scene.reason}`)
+      return
+    }
+    if (scene.kind === 'abandoned') {
+      restoreBoot.archiveAbandoned(scene.journal)
+      logger.warn('unactivated restore journal archived; continuing normal boot', {
+        journalId: scene.journal.journalId,
+      })
+    } else if (scene.kind === 'aborted') {
+      restoreBoot.abortBeforeReplacement(scene.journal)
+      logger.warn('restore aborted before replacement; continuing normal boot', {
+        journalId: scene.journal.journalId,
+      })
+    } else if (scene.kind === 'terminal') {
+      restoreBoot.finalizeTerminal(scene.journal)
+      logger.info('restore terminal scene finalized', {
+        journalId: scene.journal.journalId,
+        phase: scene.phase,
+      })
+    } else if (scene.kind === 'forward') {
+      const executor = new RestoreExecutor(paths, restoreStore, scene.journal, logger)
+      const result = executor.execute()
+      if (result.rolledBack) {
+        restoreBoot.finalizeTerminal(result.journal)
+        logger.warn('restore rolled back during boot recovery', {
+          journalId: result.journal.journalId,
+        })
+      } else {
+        restoredJournal = result.journal
+        logger.info('restore file replacement completed during boot', {
+          journalId: result.journal.journalId,
+          phase: result.journal.phase,
+        })
+      }
+    } else if (scene.kind === 'rollback') {
+      const executor = new RestoreExecutor(paths, restoreStore, scene.journal, logger)
+      const rolledBack = executor.resumeRollback()
+      restoreBoot.finalizeTerminal(rolledBack)
+      logger.warn('restore rollback completed during boot recovery', {
+        journalId: rolledBack.journalId,
+      })
+    } else if (scene.kind === 'reconcile') {
+      restoredJournal = scene.journal
+      logger.info('restore boot resuming at reconciliation', {
+        journalId: scene.journal.journalId,
+        phase: scene.journal.phase,
+      })
+    }
+  } catch (error) {
+    logger.error('restore boot recovery failed; entering recovery_locked', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    maintenance.enterRecoveryLocked('restore_boot_failed')
+    return
+  }
+
+  // 5) Daemon / DB / migration。失败只清理本进程创建的资源（boot socket、pid、锁）。
+  let daemon: Awaited<ReturnType<typeof ensureDaemon>>
+  let db: ReturnType<typeof openDatabase>
+  try {
+    // 启动链：Core 负责 Daemon 存活（探活优先，附着已有实例）。
+    daemon = await ensureDaemon(paths, env)
+    logger.info('daemon ensured', { spawned: daemon.spawned, socket: paths.daemonSocket })
+
+    // 数据库：Core 独占业务库（Daemon 不访问），启动即迁移。
+    db = openDatabase(paths.database)
+    const migration = migrate(db)
+    logger.info('database ready', {
+      file: paths.database,
+      fromVersion: migration.from,
+      toVersion: migration.to,
+      applied: migration.applied,
+    })
+  } catch (error) {
+    logger.error('core boot failed before services assembly', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    try {
+      bootServer.close()
+    } catch {
+      // 清理失败不掩盖原始错误。
+    }
+    try {
+      fs.unlinkSync(paths.corePid)
+    } catch {
+      // 不存在即目标状态。
+    }
+    bootLock.release()
+    process.exit(1)
+  }
 
   const agentRepository = new AgentRepository(db)
   const teamRepository = new TeamRepository(db)
@@ -114,8 +417,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const workflowEventRepository = new WorkflowEventRepository(db)
 
   const hub = new CoreEventHub()
-  const runtime = new DaemonClient(paths.daemonSocket, logger)
-  const registry = new ProviderRegistry(providerRepository, runtime, logger)
+  const runtime = new DaemonClient(paths.daemonSocket, logger, drain)
+  const registry = new ProviderRegistry(providerRepository, runtime, logger, undefined, drain)
   await registry.refreshQuietly()
 
   const agentService = new AgentService(db, agentRepository, providerRepository)
@@ -157,6 +460,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     nodeRunRepository,
   )
   let workflowEngine: WorkflowEngine | undefined
+  let workflowBridge: WorkflowExecutionBridge | undefined
   const executionService = new ExecutionService({
     db,
     runtime,
@@ -173,7 +477,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     hub,
     scratchRoot: paths.scratch,
     logger,
+    maintenance,
+    drain,
+    audit: auditRepository,
+    // S55-2B-1B：补偿链直调桥接（同步、无 kick）；engine 包装仅用于运行期 kick。
+    onTerminalBridge: (execution) => workflowBridge?.onExecutionFinished(execution),
     onExecutionFinished: (execution) => workflowEngine?.onExecutionFinished(execution),
+    workflowRuns: workflowRunRepository,
   })
 
   // ---- Workflow Engine 内部装配（S4-7；执行入口仍不暴露 RPC） ----
@@ -248,7 +558,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     paths.artifacts,
     Math.max(...MIGRATIONS.map((migration) => migration.version)),
   )
-  const workflowBridge = new WorkflowExecutionBridge({
+  workflowBridge = new WorkflowExecutionBridge({
+    db,
     runs: workflowRunRepository,
     nodes: nodeRunRepository,
     works: workRepository,
@@ -269,6 +580,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     branches: branchRunRepository,
     nodes: nodeRunRepository,
     definitions: publishedDefinitions,
+    maintenance,
+    drain,
     gates: [
       approvalGate(approvalGateChecker),
       ...defaultDispatchGates({
@@ -305,6 +618,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const workflowFairDispatcher = new WorkflowFairDispatcher({
     runs: workflowRunRepository,
     scheduler: workflowScheduler,
+    maintenance,
     logger,
   })
   workflowEngine = new WorkflowEngine({
@@ -323,6 +637,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     executions: executionService,
     eventSink: workflowEventRecorder,
     logger,
+    maintenance,
+    drain,
   })
   const workflowRecovery = new WorkflowRecoveryService(
     workflowRunRepository,
@@ -335,26 +651,78 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     workflowFairDispatcher,
   )
 
-  // 上次运行遗留的排队任务：丢弃并标记，不自动恢复（从未启动过进程，补跑等于静默产生副作用）。
-  const discardedQueued = executionService.discardQueuedOnStartup()
-  if (discardedQueued > 0) {
-    logger.info('discarded queued executions on startup', { count: discardedQueued })
-  }
+  // S55-2B-1B：先注册 shutdown（recovery_locked 早退路径也必须能优雅退出并清理
+  // 本进程创建的 socket/pid/锁），再进入 recovering 编排。
+  let businessServer: Awaited<ReturnType<typeof startWsServer>> | null = null
+  const shutdown = createShutdownHandler(
+    (signal) =>
+      shutdownWithDrain({
+        signal,
+        maintenance,
+        drain,
+        closeRuntime: () => runtime.close(),
+        closeServer: () => businessServer?.close(),
+        closeBootSocket: () => bootServer.close(),
+        closeDb: () => db.close(),
+        removePidFile: () => fs.unlinkSync(paths.corePid),
+        releaseLock: () => bootLock.release(),
+        exit: (code) => process.exit(code),
+        logger,
+      }),
+    logger,
+  )
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
 
-  // 先订阅再对外提供 RPC：避免漏掉启动瞬间的执行事件。
+  // S55-2C：老 Core 的 Restore 编排。只在 normal 态接受 backup.restore（RPC 门禁）；
+  // handed_off 后经 shutdown 正常退出，文件替换由新 Core 在恢复启动模式完成。
+  const restoreCoordinator = new RestoreCoordinator(
+    {
+      restoreRoot: paths.restore,
+      journalA: paths.restoreJournalA,
+      journalB: paths.restoreJournalB,
+      activeMarker: paths.restoreActiveMarker,
+      archiveRoot: paths.restoreArchive,
+    },
+    paths.restoreRetired,
+    db,
+    maintenance,
+    drain,
+    persistence,
+    runtime,
+    executionRepository,
+    backupRepository,
+    backupService,
+    backupPrecheck,
+    (reason) => shutdown(reason),
+    logger,
+  )
+
+  // S55-2B-1B：进入 recovering；先订阅（终态事件可入）再等待订阅 ACK。
+  maintenance.beginRecovering('reconciliation')
+
+  // 运行期重连路径：仅 normal 态执行（boot 期由下方显式编排，不重复进入）。
   runtime.subscribe(
     (event) => executionService.handleRuntimeEvent(event),
     () => {
+      if (maintenance.state !== 'normal') {
+        logger.warn('skip daemon recovery while core is not normal', {
+          state: maintenance.state,
+        })
+        return
+      }
       void (async () => {
         try {
           await executionService.reconcile()
-          const report = await workflowRecovery.recover()
+          const report = await workflowRecovery.recover({ daemonAvailable: true })
           logger.info('workflow recovery completed', {
             runs: report.runs,
             branches: report.branches,
             reconciliationRequired: report.nodesMarkedReconciliationRequired.length,
             runsKicked: report.runsKicked.length,
           })
+          // S55-2B-1B（C1）：重连后无条件收敛一次，消费遗留 ready 行（CAS 幂等）。
+          await workflowFairDispatcher.tickAll()
         } catch (error) {
           logger.error('workflow recovery failed', {
             error: error instanceof Error ? error.message : String(error),
@@ -364,63 +732,215 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     },
   )
 
-  fs.writeFileSync(
-    paths.corePid,
-    JSON.stringify({
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-      protocolVersion: PROTOCOL_VERSION,
-      socketPath: paths.coreSocket,
-    }),
-    { mode: 0o600 },
-  )
+  const daemonConnected = (await runtime.waitForConnection(DAEMON_CONNECT_TIMEOUT_MS)) === true
+  logger.info('daemon connection ready check', { connected: daemonConnected })
 
-  const server = await startWsServer(
-    paths.coreSocket,
-    coreMethods(VERSION, paths.daemonSocket, {
-      agents: agentService,
-      registry,
-      executions: executionService,
-      hub,
-      teams: teamService,
-      works: workService,
-      assignments: assignmentService,
-      worktrees,
-      workflows: workflowService,
-      workflowRuns: workflowRunQuery,
-      approvals: approvalRpc,
-      artifacts: artifactRpc,
-      backups: backupRpc,
-      backupPrecheck,
-    }),
-  )
-  logger.info('core started', {
-    socketPath: server.socketPath,
-    pid: process.pid,
-    version: VERSION,
-    daemonSpawned: daemon.spawned,
-  })
+  // 终态补偿 sweep：纯 DB，与 Daemon 可用性无关；失败必须 fail closed。
+  try {
+    const backlog = executionService.processTerminalBacklog()
+    logger.info('terminal backlog processed', {
+      processed: backlog.processed,
+      completed: backlog.completed,
+      failures: backlog.failures.length,
+    })
+    if (backlog.failures.length > 0) {
+      throw new Error(
+        `terminal compensation incomplete for ${backlog.failures.length} execution(s)`,
+      )
+    }
+  } catch (error) {
+    logger.error('terminal compensation sweep failed; entering recovery_locked', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    maintenance.enterRecoveryLocked('terminal_compensation_failed')
+    return
+  }
 
-  const shutdown = (signal: string) => {
-    logger.info('core shutting down', { signal })
-    runtime.close()
-    server.close()
+  // 上次运行遗留的排队任务：丢弃并标记，不自动恢复（从未启动过进程，补跑等于静默产生副作用）。
+  // 顺序约束（S55-2B-1B）：discard 严格先于 reconcile——queued 行从未有 Daemon 证据。
+  const discardedQueued = executionService.discardQueuedOnStartup()
+  if (discardedQueued > 0) {
+    logger.info('discarded queued executions on startup', { count: discardedQueued })
+  }
+
+  if (daemonConnected) {
     try {
-      db.close()
+      const report = await executionService.reconcile()
+      if (report.conflicts.length > 0) {
+        logger.error('reconciliation conflicts detected; entering recovery_locked', {
+          conflicts: report.conflicts,
+        })
+        maintenance.enterRecoveryLocked('reconciliation_conflict')
+        return
+      }
+      const recoveryReport = await workflowRecovery.recover({
+        daemonAvailable: true,
+        unconfirmedExecutionIds: new Set(report.unconfirmed),
+        // S55-2C：Restore 启动恢复禁止自动 kick。
+        allowKick: restoredJournal === null,
+      })
+      logger.info('workflow recovery completed', {
+        runs: recoveryReport.runs,
+        branches: recoveryReport.branches,
+        reconciliationRequired: recoveryReport.nodesMarkedReconciliationRequired.length,
+        runsKicked: recoveryReport.runsKicked.length,
+      })
     } catch (error) {
-      logger.warn('database close failed', {
+      logger.error('startup recovery failed; entering recovery_locked', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      maintenance.enterRecoveryLocked('startup_recovery_failed')
+      return
+    }
+  } else {
+    // A4：Daemon 不可用——仅做一次只读健康探测（日志用途），不改 Execution 终态、
+    // 不自动 dispatch；无法确认的 NodeRun/WorkflowRun 进入 reconciliation_required。
+    try {
+      await proxyDaemonHealth(paths.daemonSocket)
+    } catch (error) {
+      logger.warn('daemon health probe failed (diagnostics only)', {
         error: error instanceof Error ? error.message : String(error),
       })
     }
     try {
-      fs.unlinkSync(paths.corePid)
-    } catch {
-      // 忽略。
+      const recoveryReport = await workflowRecovery.recover({ daemonAvailable: false })
+      logger.warn('daemon unavailable; marked unconfirmed work as reconciliation_required', {
+        nodes: recoveryReport.nodesMarkedReconciliationRequired.length,
+        runs: recoveryReport.runsMarkedReconciliationRequired.length,
+      })
+    } catch (error) {
+      logger.error('daemon-unavailable recovery failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
     }
-    process.exit(0)
+    maintenance.enterRecoveryLocked('daemon_unavailable')
+    return
   }
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
-  process.on('SIGINT', () => shutdown('SIGINT'))
+
+  // S55-2C：Restore 启动恢复的数据验证与 completed 收尾。
+  // 必须在业务 socket 开放前完成：Archive verified → marker 删除 → Journal 退役。
+  if (restoredJournal) {
+    try {
+      const evidence = restoreBoot.verifyRestoredData(
+        restoredJournal,
+        paths.database,
+        paths.artifacts,
+      )
+      restoredJournal = restoreBoot.markReconciled(restoredJournal)
+      restoredJournal = restoreBoot.completeRestore(restoredJournal, evidence)
+      logger.info('restore completed and archived during boot', {
+        journalId: restoredJournal.journalId,
+        phase: restoredJournal.phase,
+        evidence,
+      })
+    } catch (error) {
+      logger.error('restore data verification failed; entering recovery_locked', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      maintenance.enterRecoveryLocked('restore_verification_failed')
+      return
+    }
+  }
+
+  // 业务 RPC socket：在对账完成后 bind，但状态仍为 recovering——
+  // authorizeRpc 的 lockdown 分支保证任何业务调用（含 events.subscribe）都被拒绝。
+  try {
+    businessServer = await startWsServer(
+      paths.coreSocket,
+      coreMethods(
+        VERSION,
+        paths.daemonSocket,
+        {
+          agents: agentService,
+          registry,
+          executions: executionService,
+          hub,
+          teams: teamService,
+          works: workService,
+          assignments: assignmentService,
+          worktrees,
+          workflows: workflowService,
+          workflowRuns: workflowRunQuery,
+          approvals: approvalRpc,
+          artifacts: artifactRpc,
+          backups: backupRpc,
+          backupPrecheck,
+          restore: restoreCoordinator,
+        },
+        {
+          maintenance,
+          drain,
+        },
+      ),
+      {
+        authorize: (requestId, method, access) =>
+          maintenance.authorizeRpc(requestId, method, access),
+        onStart: (method, access) => {
+          if (access !== 'write') return undefined
+          const lease = drain.acquire('rpc-mutation', `rpc:${method}`)
+          return () => {
+            lease.release()
+          }
+        },
+      },
+    )
+  } catch (error) {
+    logger.error('business socket bind failed; entering recovery_locked', {
+      socket: paths.coreSocket,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    maintenance.enterRecoveryLocked('business_socket_bind_failed')
+    return
+  }
+
+  // completeBoot：只有 bind 成功后才进入 normal；失败则关闭业务入口并锁定。
+  try {
+    maintenance.completeBoot()
+  } catch (error) {
+    logger.error('completeBoot failed; closing business socket', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    try {
+      businessServer.close()
+    } catch {
+      // 关闭失败不掩盖原始错误。
+    }
+    maintenance.enterRecoveryLocked('complete_boot_failed')
+    return
+  }
+
+  // 收敛 pass（S55-2B-1B）：normal 后消费遗留 ready 行；Daemon 健康不可达则跳过
+  // （ready 行持久保留，由运行期 onConnected 路径重新消费）。
+  // S55-2C：Restore 启动恢复不自动 kick——遗留 ready 行保持排队，由用户/后续操作决定。
+  let daemonHealthy = false
+  try {
+    await proxyDaemonHealth(paths.daemonSocket)
+    daemonHealthy = true
+  } catch (error) {
+    logger.warn('convergence pass skipped: daemon health check failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+  if (daemonHealthy && !restoredJournal) {
+    try {
+      await workflowFairDispatcher.tickAll()
+      logger.info('boot convergence pass completed')
+    } catch (error) {
+      logger.warn('boot convergence pass failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  } else if (restoredJournal) {
+    logger.info('boot convergence pass skipped after restore (no auto dispatch)')
+  }
+
+  logger.info('core started', {
+    socketPath: paths.coreSocket,
+    bootSocketPath: paths.coreBootSocket,
+    pid: process.pid,
+    version: VERSION,
+    daemonSpawned: daemon.spawned,
+  })
 }
 
 // 被直接运行时启动（tsx 源码 / esbuild 打包产物）；被测试导入时不自动启动。

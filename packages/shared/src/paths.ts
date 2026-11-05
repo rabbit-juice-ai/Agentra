@@ -26,8 +26,22 @@ export type AgentraPaths = {
   worktrees: string
   artifacts: string
   backups: string
+  /** S55-2C：Restore 事务根目录（active Journal / staged / rollback / archive）。 */
+  restore: string
+  restoreActiveMarker: string
+  restoreJournalA: string
+  restoreJournalB: string
+  restoreArchive: string
+  restoreRetired: string
+  restoreCapturedRollback: string
+  restoreForwardStaged: string
+  restoreRollbackStaged: string
   database: string
   coreSocket: string
+  /** S55-2B-1B：最小 health/status socket（booting/recovering 期间唯一可用入口）。 */
+  coreBootSocket: string
+  /** S55-2B-1B：Core 单实例 boot lock（O_EXLOCK 文件，永久存在，不 unlink）。 */
+  coreLock: string
   daemonSocket: string
   corePid: string
   daemonPid: string
@@ -51,9 +65,14 @@ export function agentraPaths(home: string = agentraHome()): AgentraPaths {
   const worktrees = path.join(home, 'worktrees')
   const artifacts = path.join(home, 'artifacts')
   const backups = path.join(home, 'backups')
+  const restore = path.join(home, 'restore')
   const coreSocket = path.join(runtime, 'core.sock')
+  // S55-2B-1B：最小 health/status socket。文件名取 boot.sock（而非 core-boot.sock）：
+  // sun_path 预算 90 字节，测试/长数据根路径下 core-boot.sock 会超限。
+  const coreBootSocket = path.join(runtime, 'boot.sock')
   const daemonSocket = path.join(runtime, 'daemon.sock')
   assertSocketPathLength(coreSocket)
+  assertSocketPathLength(coreBootSocket)
   assertSocketPathLength(daemonSocket)
   return {
     home,
@@ -63,8 +82,19 @@ export function agentraPaths(home: string = agentraHome()): AgentraPaths {
     worktrees,
     artifacts,
     backups,
+    restore,
+    restoreActiveMarker: path.join(restore, 'active'),
+    restoreJournalA: path.join(restore, 'journal.a.json'),
+    restoreJournalB: path.join(restore, 'journal.b.json'),
+    restoreArchive: path.join(restore, 'archive'),
+    restoreRetired: path.join(restore, 'retired'),
+    restoreCapturedRollback: path.join(restore, 'rollback'),
+    restoreForwardStaged: path.join(restore, 'staged'),
+    restoreRollbackStaged: path.join(restore, 'rollback-staged'),
     database: path.join(home, 'agentra.db'),
     coreSocket,
+    coreBootSocket,
+    coreLock: path.join(runtime, 'core.lock'),
     daemonSocket,
     corePid: path.join(runtime, 'core.pid'),
     daemonPid: path.join(runtime, 'daemon.pid'),
@@ -83,6 +113,9 @@ export function ensureDirs(paths: AgentraPaths): void {
     paths.worktrees,
     paths.artifacts,
     paths.backups,
+    // S55-2C：只创建 Restore 根目录；active marker / Journal / staged 子目录由
+    // Restore 协议按 durable-intent 顺序创建，不能由通用 ensureDirs 预先伪造。
+    paths.restore,
   ]) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   }

@@ -287,4 +287,52 @@ describe('WorkflowRecoveryService', () => {
       h.close()
     }
   })
+
+  it('A4: daemon unavailable marks node AND run reconciliation_required without kicking', async () => {
+    const h = setup()
+    try {
+      bindExecution(h, 'nrn-task', 'running')
+      const report = await h.recovery.recover({ daemonAvailable: false })
+      expect(report.nodesMarkedReconciliationRequired.map((n) => n.nodeRunId)).toEqual(['nrn-task'])
+      expect(report.runsMarkedReconciliationRequired).toEqual([h.runId])
+      expect(report.runsKicked).toEqual([])
+      expect(h.nodes.get('nrn-task')?.status).toBe('reconciliation_required')
+      expect(h.runs.get(h.runId)?.status).toBe('reconciliation_required')
+    } finally {
+      h.close()
+    }
+  })
+
+  it('A3: unconfirmed execution marks the node but keeps the run running (W2)', async () => {
+    const h = setup()
+    try {
+      bindExecution(h, 'nrn-task', 'running')
+      const report = await h.recovery.recover({
+        daemonAvailable: true,
+        unconfirmedExecutionIds: new Set(['exe-1']),
+      })
+      expect(report.nodesMarkedReconciliationRequired.map((n) => n.nodeRunId)).toEqual(['nrn-task'])
+      expect(report.runsMarkedReconciliationRequired).toEqual([])
+      expect(h.nodes.get('nrn-task')?.status).toBe('reconciliation_required')
+      expect(h.runs.get(h.runId)?.status).toBe('running')
+    } finally {
+      h.close()
+    }
+  })
+
+  it('A1: confirmed-active execution keeps the node running', async () => {
+    const h = setup()
+    try {
+      bindExecution(h, 'nrn-task', 'running')
+      const report = await h.recovery.recover({
+        daemonAvailable: true,
+        unconfirmedExecutionIds: new Set(),
+      })
+      expect(report.nodesMarkedReconciliationRequired).toEqual([])
+      expect(h.nodes.get('nrn-task')?.status).toBe('running')
+      expect(h.runs.get(h.runId)?.status).toBe('running')
+    } finally {
+      h.close()
+    }
+  })
 })

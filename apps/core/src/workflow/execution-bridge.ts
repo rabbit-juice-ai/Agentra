@@ -1,6 +1,7 @@
 import type { Execution } from '@agentra/protocol'
 import { newId } from '@agentra/shared'
 import type { WorkflowDefinition, WorkflowNode } from '@agentra/workflow-schema'
+import { type Database, transaction } from '../db/database'
 import type { NodeRunRecord, NodeRunRepository } from '../db/repositories/node-run-repository'
 import type { WorkRepository } from '../db/repositories/work-repository'
 import type { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
@@ -93,6 +94,7 @@ export type TestResultReworkPort = {
 }
 
 export type ExecutionBridgeDeps = {
+  db: Database
   runs: WorkflowRunRepository
   nodes: NodeRunRepository
   works: WorkRepository
@@ -282,28 +284,35 @@ export class WorkflowExecutionBridge {
     if (node.type !== 'agent_task') return
     const maxAttempts =
       node.config.retryPolicy?.maxAttempts ?? definition.settings.defaults.maxAttempts
-    const marked = this.deps.nodes.fail(
-      nodeRun.id,
-      ['running'],
-      { category: 'internal', nodeKey: node.key, message, details },
-      now,
-    )
-    if (!marked) this.warnUnchanged(nodeRun, node.key, 'failed')
-    if (nodeRun.attempt >= maxAttempts) return
-
-    // NodeRun 级重试：每次 attempt 一条新 NodeRun（与 D4 模型一致），交给下一次 tick 派发。
-    this.deps.nodes.create(
-      {
-        id: newId('nrn'),
-        workflowRunId: nodeRun.workflowRunId,
-        workflowNodeKey: nodeRun.workflowNodeKey,
-        branchRunId: nodeRun.branchRunId,
-        status: 'ready',
-        attempt: nodeRun.attempt + 1,
-        inputSnapshot: nodeRun.inputSnapshot,
-      },
-      now,
-    )
+    // R1（S55-2B-1B）：失败迁移与 retry-attempt 创建必须原子，且 create 仅在
+    // fail CAS 真正成功时执行——重复补偿/并发观察不会产生第二条 attempt。
+    const retry =
+      nodeRun.attempt >= maxAttempts
+        ? null
+        : {
+            id: newId('nrn'),
+            workflowRunId: nodeRun.workflowRunId,
+            workflowNodeKey: nodeRun.workflowNodeKey,
+            branchRunId: nodeRun.branchRunId,
+            status: 'ready' as const,
+            attempt: nodeRun.attempt + 1,
+            inputSnapshot: nodeRun.inputSnapshot,
+          }
+    const result = transaction(this.deps.db, () => {
+      const marked = this.deps.nodes.fail(
+        nodeRun.id,
+        ['running'],
+        { category: 'internal', nodeKey: node.key, message, details },
+        now,
+      )
+      if (!marked) return { marked, created: false }
+      if (retry) {
+        this.deps.nodes.create(retry, now)
+        return { marked, created: true }
+      }
+      return { marked, created: false }
+    })
+    if (!result.marked) this.warnUnchanged(nodeRun, node.key, 'failed')
   }
 
   private fail(

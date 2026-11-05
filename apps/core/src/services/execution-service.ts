@@ -25,6 +25,7 @@ import type { Database } from '../db/database'
 import { transaction } from '../db/database'
 import type { AgentRepository } from '../db/repositories/agent-repository'
 import type { AssignmentRepository } from '../db/repositories/assignment-repository'
+import type { AuditRepository } from '../db/repositories/audit-repository'
 import type { ExecutionLogRepository } from '../db/repositories/execution-log-repository'
 import {
   type ExecutionRepository,
@@ -33,6 +34,8 @@ import {
 import type { NodeRunRepository } from '../db/repositories/node-run-repository'
 import type { SessionRepository } from '../db/repositories/session-repository'
 import type { WorkRepository } from '../db/repositories/work-repository'
+import type { DrainCoordinator } from '../lifecycle/drain-coordinator'
+import type { NodeRunStatus } from '../workflow/state-machine'
 import type { CoreEventHub } from './event-hub'
 import type { ProviderRegistry } from './provider-registry'
 import type { WorkdirLockService } from './workdir-lock-service'
@@ -81,18 +84,67 @@ export type ExecutionServiceDeps = {
   hub: CoreEventHub
   scratchRoot: string
   logger?: ExecutionServiceLogger
-  /** 执行进入终态后的回调（S4-4 工作流桥接用）。回调异常不得影响执行状态落库。 */
+  /** S55-2B：维护模式门禁；缺省视为 normal（测试/旧装配兼容）。 */
+  maintenance?: {
+    isExecutionStartAllowed(): boolean
+    /** S55-2C：entering_maintenance 期间终态事件仍可取得内部 event-handler lease。 */
+    isEventIngressAllowed?(): boolean
+  }
+  /** S55-2B：in-flight start/spawn/event 计数；缺省不跟踪。 */
+  drain?: DrainCoordinator
+  /** S55-2B-1B：终态审计（A2 来源区分）；缺省跳过审计写入。 */
+  audit?: AuditRepository
+  /**
+   * S55-2B-1B：终态补偿桥接（**直调** WorkflowExecutionBridge.onExecutionFinished）。
+   * 补偿链要求同步、无 kick；不得接 engine 包装。
+   */
+  onTerminalBridge?: (execution: Execution) => void
+  /** 执行进入终态后的运行时调度触发（engine 包装：桥接 no-op + kick）。 */
   onExecutionFinished?: (execution: Execution) => void
+  /** S55-2B-1B：S4 验证需要校验 NodeRun 所属 WorkflowRun 存在。 */
+  workflowRuns?: { get(id: string): unknown | null }
   now?: () => string
 }
 
 /** 无人值守执行的默认权限模式：不弹权限请求（阶段 1 无审批 UI），最小权限。 */
 const DEFAULT_PERMISSION_MODE = 'dontAsk'
 const MAX_SEEN_EVENT_IDS = 10_000
-/** 对账宽限：刚创建的 pending 执行可能仍在启动途中，不判为崩溃。 */
-const RECONCILE_PENDING_GRACE_MS = 30_000
 /** 只有进行中的 Work 可以启动执行。 */
 const WORK_ACCEPTS_EXECUTIONS = new Set(['active', 'paused'])
+
+/** S55-2B-1B：终态观察来源（审计 details.source 区分事件/对账/Core 主动）。 */
+export type TerminalObservationSource =
+  | 'event_observed'
+  | 'reconciliation_observed'
+  | 'core_initiated'
+
+/** S55-2B-1B：reconcile 分类结果（boot / 运行期重连共用同一保守分类器）。 */
+export type ReconciliationReport = {
+  confirmedActive: string[]
+  observedTerminal: Array<{ executionId: string; daemonStatus: ExecutionState }>
+  unconfirmed: string[]
+  conflicts: Array<{
+    kind: 'daemon_active_db_terminal' | 'daemon_unknown_execution'
+    executionId: string
+  }>
+}
+
+/**
+ * S55-2B-1B（报告五 §2.2）：S4 允许集合——桥接已完成或本就不适用的节点状态。
+ * running 表示桥接未收尾；blocked/ready/未知状态视为矛盾；均 fail closed。
+ * reconciliation_required 表示「终态补偿已完成、节点待人工对账」，不代表业务成功。
+ */
+const TERMINAL_COMPENSATION_NODE_STATUSES: ReadonlySet<NodeRunStatus> = new Set([
+  'succeeded',
+  'failed',
+  'cancelled',
+  'skipped',
+  'waiting_approval',
+  'paused',
+  'changes_requested',
+  'rejected',
+  'reconciliation_required',
+])
 
 /**
  * 执行编排：Core 是 Execution 状态的唯一权威写入者。
@@ -102,6 +154,12 @@ export class ExecutionService {
   private readonly seenEventIds = new Set<string>()
   /** executionId → 待启动任务；与 executions 表里的 queued 标记一一对应。 */
   private readonly queued = new Map<string, SpawnJob>()
+  /**
+   * S55-2B-1B：正在 startInternal 途中（行已建、spawn 未返回）的执行。
+   * 只用于运行期对账避免误分类在途启动；进程崩溃后自然消失（下次 boot 按
+   * 「pending 且无 Daemon 证据」正确归入 A6）。
+   */
+  private readonly starting = new Set<string>()
   private readonly draining = new Set<string>()
   private readonly seenEventOrder: string[] = []
   private readonly db: Database
@@ -119,7 +177,14 @@ export class ExecutionService {
   private readonly scratchRoot: string
   private readonly logger: ExecutionServiceLogger | undefined
   private readonly onExecutionFinished: ((execution: Execution) => void) | undefined
+  private readonly onTerminalBridge: ((execution: Execution) => void) | undefined
+  private readonly audit: AuditRepository | undefined
   private readonly nodeRuns: NodeRunRepository | undefined
+  private readonly workflowRuns: { get(id: string): unknown | null } | undefined
+  private readonly maintenance:
+    | { isExecutionStartAllowed(): boolean; isEventIngressAllowed?(): boolean }
+    | undefined
+  private readonly drain: DrainCoordinator | undefined
   private readonly now: () => string
 
   constructor(deps: ExecutionServiceDeps) {
@@ -138,12 +203,17 @@ export class ExecutionService {
     this.scratchRoot = deps.scratchRoot
     this.logger = deps.logger
     this.onExecutionFinished = deps.onExecutionFinished
+    this.onTerminalBridge = deps.onTerminalBridge
+    this.audit = deps.audit
     this.nodeRuns = deps.nodeRuns
+    this.workflowRuns = deps.workflowRuns
+    this.maintenance = deps.maintenance
+    this.drain = deps.drain
     this.now = deps.now ?? (() => new Date().toISOString())
   }
 
   async start(params: ExecutionStartParams): Promise<Execution> {
-    return this.startInternal(params, null)
+    return this.withStartLease('execution.start', () => this.startInternal(params, null))
   }
 
   /**
@@ -151,13 +221,33 @@ export class ExecutionService {
    * 不暴露为 RPC —— 只有 Core 内部的 WorkflowExecutionBridge 调用。
    */
   async startForNode(nodeRunId: string, params: ExecutionStartParams): Promise<Execution> {
-    return this.startInternal(params, nodeRunId)
+    return this.withStartLease('execution.startForNode', () =>
+      this.startInternal(params, nodeRunId),
+    )
+  }
+
+  private async withStartLease<T>(operation: string, action: () => Promise<T>): Promise<T> {
+    const lease = this.drain?.acquire('execution-start', operation)
+    try {
+      return await action()
+    } finally {
+      lease?.release()
+    }
+  }
+
+  private assertStartAllowed(): void {
+    if (!this.maintenance || this.maintenance.isExecutionStartAllowed()) return
+    throw new RpcMethodError(
+      'MAINTENANCE_ACTIVE',
+      'cannot start a new execution while core is in maintenance',
+    )
   }
 
   private async startInternal(
     params: ExecutionStartParams,
     nodeRunId: string | null,
   ): Promise<Execution> {
+    this.assertStartAllowed()
     const prompt = params.prompt.trim()
     if (prompt.length === 0) {
       throw new RpcMethodError('INVALID_PARAMS', 'prompt must not be blank')
@@ -227,35 +317,41 @@ export class ExecutionService {
       updatedAt: now,
     }
 
-    transaction(this.db, () => {
-      this.sessions.create({
-        id: sessionId,
-        assignmentId: null,
-        providerId: provider.id,
-        externalSessionId,
-        contextRef: agent.id,
-        status: 'active',
-        createdAt: now,
-        updatedAt: now,
-        lastActiveAt: now,
+    this.starting.add(executionId)
+    try {
+      transaction(this.db, () => {
+        this.sessions.create({
+          id: sessionId,
+          assignmentId: null,
+          providerId: provider.id,
+          externalSessionId,
+          contextRef: agent.id,
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+          lastActiveAt: now,
+        })
+        this.executions.create(execution, nodeRunId)
+        // D-1：同一事务内把 Session 绑到 Assignment（阶段 1 scratch 模式没有 assignment，保持 NULL）。
+        if (assignment) this.sessions.bindAssignment(sessionId, assignment.id, now)
+        this.appendSystemLog(
+          executionId,
+          'execution.created',
+          { agentId: agent.id, providerId: provider.id },
+          now,
+        )
+        // 审计：本次实际生效的工具策略（不新增表或列，落在 execution_logs 的 system 流）。
+        this.appendSystemLog(
+          executionId,
+          'execution.tool_policy',
+          { allow: toolPermissions.allow, deny: toolPermissions.deny },
+          now,
+        )
       })
-      this.executions.create(execution, nodeRunId)
-      // D-1：同一事务内把 Session 绑到 Assignment（阶段 1 scratch 模式没有 assignment，保持 NULL）。
-      if (assignment) this.sessions.bindAssignment(sessionId, assignment.id, now)
-      this.appendSystemLog(
-        executionId,
-        'execution.created',
-        { agentId: agent.id, providerId: provider.id },
-        now,
-      )
-      // 审计：本次实际生效的工具策略（不新增表或列，落在 execution_logs 的 system 流）。
-      this.appendSystemLog(
-        executionId,
-        'execution.tool_policy',
-        { allow: toolPermissions.allow, deny: toolPermissions.deny },
-        now,
-      )
-    })
+    } catch (error) {
+      this.starting.delete(executionId)
+      throw error
+    }
     this.logger?.info('execution created', {
       executionId,
       agentId: agent.id,
@@ -292,6 +388,7 @@ export class ExecutionService {
           now,
         )
       })
+      this.starting.delete(executionId)
       this.logger?.info('execution queued', {
         executionId,
         agentId: agent.id,
@@ -309,51 +406,65 @@ export class ExecutionService {
    */
   private async spawn(job: SpawnJob): Promise<Execution> {
     const { executionId } = job
+    const lease = this.drain?.acquire('execution-start', `execution.spawn:${executionId}`)
     try {
-      const handle = await this.runtime.start({
-        executionId,
-        providerId: job.providerId,
-        executablePath: job.executablePath,
-        capabilities: job.capabilities,
-        prompt: job.prompt,
-        workingDirectory: job.workingDirectory,
-        sessionId: job.externalSessionId,
-        systemPrompt: job.systemPrompt,
-        permissionMode: DEFAULT_PERMISSION_MODE,
-        allowedTools: job.allowedTools,
-        disallowedTools: job.disallowedTools,
-        allowedRoots: job.allowedRoots,
-      })
-      this.executions.markRunning(executionId, {
-        processId: handle.processId,
-        startedAt: handle.startedAt,
-        updatedAt: handle.startedAt,
-      })
-      this.appendSystemLog(
-        executionId,
-        'execution.process_started',
-        { processId: handle.processId, ...this.workflowContext(executionId) },
-        handle.startedAt,
-      )
-      return this.get(executionId)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.locks.releaseByExecution(executionId)
-      const failedAt = this.now()
-      this.executions.finish(executionId, {
-        status: 'failed',
-        endedAt: failedAt,
-        recoveryState: { reason: 'start_failed', message },
-      })
-      this.sessions.end(job.sessionId, failedAt)
-      this.appendSystemLog(executionId, 'execution.start_failed', { message }, failedAt)
-      this.publishState(executionId, 'failed', 'pending', message)
-      this.logger?.error('execution start failed', {
-        executionId,
-        error: message,
-        ...this.workflowContext(executionId),
-      })
-      throw error
+      try {
+        this.assertStartAllowed()
+        const handle = await this.runtime.start({
+          executionId,
+          providerId: job.providerId,
+          executablePath: job.executablePath,
+          capabilities: job.capabilities,
+          prompt: job.prompt,
+          workingDirectory: job.workingDirectory,
+          sessionId: job.externalSessionId,
+          systemPrompt: job.systemPrompt,
+          permissionMode: DEFAULT_PERMISSION_MODE,
+          allowedTools: job.allowedTools,
+          disallowedTools: job.disallowedTools,
+          allowedRoots: job.allowedRoots,
+        })
+        this.executions.markRunning(executionId, {
+          processId: handle.processId,
+          startedAt: handle.startedAt,
+          updatedAt: handle.startedAt,
+        })
+        this.appendSystemLog(
+          executionId,
+          'execution.process_started',
+          { processId: handle.processId, ...this.workflowContext(executionId) },
+          handle.startedAt,
+        )
+        return this.get(executionId)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const maintenanceAbort =
+          error instanceof RpcMethodError && error.code === 'MAINTENANCE_ACTIVE'
+        const failedAt = this.now()
+        this.recordTerminalObservation({
+          executionId,
+          status: 'failed',
+          endedAt: failedAt,
+          source: 'core_initiated',
+          extraState: {
+            reason: maintenanceAbort ? 'maintenance_start_aborted' : 'start_failed',
+            message,
+          },
+          logEvent: 'execution.start_failed',
+          logData: { message },
+          auditAction: 'execution.terminal.observed',
+        })
+        this.publishState(executionId, 'failed', 'pending', message)
+        this.logger?.error('execution start failed', {
+          executionId,
+          error: message,
+          ...this.workflowContext(executionId),
+        })
+        throw error
+      }
+    } finally {
+      this.starting.delete(executionId)
+      lease?.release()
     }
   }
 
@@ -404,21 +515,17 @@ export class ExecutionService {
 
     const now = this.now()
     const previous = execution.status
-    this.executions.finish(execution.id, {
+    this.recordTerminalObservation({
+      executionId: execution.id,
       status: 'cancelled',
       endedAt: now,
-      recoveryState: { reason: 'user_cancelled' },
+      source: 'core_initiated',
+      extraState: { reason: 'user_cancelled' },
+      logEvent: 'execution.cancel_requested',
+      logData: this.workflowContext(execution.id),
+      auditAction: 'execution.terminal.observed',
     })
-    this.sessions.end(execution.sessionId, now)
-    this.queued.delete(execution.id)
-    this.appendSystemLog(
-      execution.id,
-      'execution.cancel_requested',
-      this.workflowContext(execution.id),
-      now,
-    )
     this.publishState(execution.id, 'cancelled', previous, 'cancelled by user')
-    this.locks.releaseByExecution(execution.id)
     void this.drainQueue(execution.agentId)
     // S4-5 O-2：取消也是终态迁移，必须通知工作流桥接，否则 NodeRun 会停在 running。
     this.notifyExecutionFinished(execution.id)
@@ -427,9 +534,10 @@ export class ExecutionService {
       await this.runtime.cancel(execution.id)
     } catch (error) {
       // Daemon 侧取消失败：状态已按用户意图终结，记录可追踪的失败原因。
+      // S55-2B-1B：用 json_patch 键级合并，保留 terminalProcessing 等既有键。
       const message = error instanceof Error ? error.message : String(error)
       this.logger?.warn('daemon cancel failed', { executionId: execution.id, error: message })
-      this.executions.setRecoveryState(
+      this.executions.mergeRecoveryState(
         execution.id,
         { reason: 'cancel_failed', message },
         this.now(),
@@ -462,6 +570,19 @@ export class ExecutionService {
 
   /** 处理 Daemon 事件：eventId 去重 → 持久化 → 广播 Desktop。 */
   handleRuntimeEvent(event: RuntimeEvent): void {
+    const lease = this.drain?.acquire('event-handler', `event:${event.eventType}`, {
+      // Drain is closed before active Execution reaches zero; necessary terminal events remain
+      // admitted through the explicitly controlled internal path until ingress is paused.
+      internal: this.maintenance?.isEventIngressAllowed?.() === true,
+    })
+    try {
+      this.handleRuntimeEventInternal(event)
+    } finally {
+      lease?.release()
+    }
+  }
+
+  private handleRuntimeEventInternal(event: RuntimeEvent): void {
     if (this.seenEventIds.has(event.eventId)) {
       this.logger?.info('duplicate runtime event ignored', {
         eventId: event.eventId,
@@ -496,56 +617,354 @@ export class ExecutionService {
   }
 
   /**
-   * Daemon 订阅（重）连后对账：Daemon 不知道的活跃执行标记 crashed，
-   * 仍在运行的执行保持 running。绝不自动重放可能有副作用的执行。
+   * S55-2B-1B（R3）：保守对账分类器——启动恢复与运行期重连共用。
+   *
+   * 证据只来自 Daemon 的 listActive + 逐执行 status：
+   * - Daemon 明确报告活跃 → 保持 running（A1/A5）；
+   * - Daemon 同进程明确报告终态 → 补记账（A2，TX1+补偿链）；
+   * - Daemon 查不到记录（EXECUTION_NOT_FOUND）→ 不可确认（A3/A6），绝不判 crashed；
+   * - Daemon 活跃但 DB 已终态 / DB 未知 → 矛盾（C3/C4），调用方进入 recovery_locked。
+   * listActive/status 抛非 EXECUTION_NOT_FOUND 错误 → 证据中断（C5），原样上抛。
+   * 不再有「pending 宽限期后自动判 crashed」的分支。
    */
-  async reconcile(): Promise<void> {
-    const activeIds = await this.runtime.listActive()
-    const active = new Set(activeIds)
+  async reconcile(): Promise<ReconciliationReport> {
+    const report: ReconciliationReport = {
+      confirmedActive: [],
+      observedTerminal: [],
+      unconfirmed: [],
+      conflicts: [],
+    }
+    const activeIds = new Set(await this.runtime.listActive())
     const now = this.now()
-    for (const execution of this.executions.listActive()) {
-      if (active.has(execution.id)) {
+    const dbActive = this.executions.listActive()
+    const dbActiveIds = new Set(dbActive.map((execution) => execution.id))
+
+    for (const execution of dbActive) {
+      // 在途启动（行已建、spawn 未返回）：证据尚未产生，不参与分类。
+      if (this.starting.has(execution.id)) continue
+      // 排队行由 discardQueuedOnStartup 按策略处置（boot 期先行执行）。
+      if (execution.status === 'pending' && this.queued.has(execution.id)) continue
+
+      if (activeIds.has(execution.id)) {
         this.executions.markRunning(execution.id, {
           processId: null,
           startedAt: execution.startedAt ?? now,
           updatedAt: now,
         })
+        report.confirmedActive.push(execution.id)
         continue
       }
-      if (execution.status === 'pending' && this.queued.has(execution.id)) {
-        // 排队中的执行本来就没有进程，不能按崩溃处理。
-        continue
+
+      let status: {
+        status: ExecutionState
+        exitCode: number | null
+        endedAt: string | null
+        processId: number | null
       }
-      if (
-        execution.status === 'pending' &&
-        Date.now() - Date.parse(execution.createdAt) < RECONCILE_PENDING_GRACE_MS
-      ) {
-        continue
+      try {
+        status = await this.runtime.status(execution.id)
+      } catch (error) {
+        if (error instanceof RpcMethodError && error.code === 'EXECUTION_NOT_FOUND') {
+          report.unconfirmed.push(execution.id)
+          this.audit?.append({
+            actorType: 'system',
+            actorId: null,
+            action: 'reconciliation.execution.unconfirmed',
+            targetType: 'execution',
+            targetId: execution.id,
+            details: {
+              source: 'reconciliation_observed',
+              evidence: 'EXECUTION_NOT_FOUND',
+              previousStatus: execution.status,
+            },
+            now,
+          })
+          continue
+        }
+        // C5：对账过程中 Daemon 断开/不可达——中止，由调用方 recovery_locked。
+        throw error
       }
-      const previous = execution.status
-      this.executions.finish(execution.id, {
-        status: 'crashed',
-        endedAt: now,
-        recoveryState: {
-          reason: 'reconciliation',
-          detail: 'process not found in daemon after reconnect',
-        },
+
+      if (isTerminalExecutionState(status.status)) {
+        report.observedTerminal.push({ executionId: execution.id, daemonStatus: status.status })
+        this.recordTerminalObservation({
+          executionId: execution.id,
+          status: status.status,
+          exitCode: status.exitCode,
+          endedAt: status.endedAt ?? now,
+          source: 'reconciliation_observed',
+          extraState: { reason: 'reconciliation_observed' },
+          evidence: {
+            daemonStatus: status.status,
+            daemonProcessId: status.processId,
+            previousStatus: execution.status,
+          },
+          logEvent: 'execution.reconciled',
+          logData: {
+            daemonStatus: status.status,
+            previousStatus: execution.status,
+            ...this.workflowContext(execution.id),
+          },
+          auditAction: 'reconciliation.execution.observed_terminal',
+        })
+      } else {
+        // Daemon 认识且非终态（未出现在 listActive 的竞态窗口）：按活跃处理。
+        this.executions.markRunning(execution.id, {
+          processId: null,
+          startedAt: execution.startedAt ?? now,
+          updatedAt: now,
+        })
+        report.confirmedActive.push(execution.id)
+      }
+    }
+
+    // C3/C4：Daemon 活跃集合中的 DB 已终态 / DB 未知执行——矛盾，不可仲裁。
+    for (const id of activeIds) {
+      if (dbActiveIds.has(id)) continue
+      const row = this.executions.get(id)
+      if (row && isTerminalExecutionState(row.status)) {
+        report.conflicts.push({ kind: 'daemon_active_db_terminal', executionId: id })
+      } else if (!row) {
+        report.conflicts.push({ kind: 'daemon_unknown_execution', executionId: id })
+      }
+    }
+    for (const conflict of report.conflicts) {
+      this.audit?.append({
+        actorType: 'system',
+        actorId: null,
+        action: 'reconciliation.conflict',
+        targetType: 'execution',
+        targetId: conflict.executionId,
+        details: { source: 'reconciliation_observed', kind: conflict.kind },
+        now,
       })
-      this.sessions.end(execution.sessionId, now)
-      this.appendSystemLog(execution.id, 'execution.crashed', { reason: 'reconciliation' }, now)
-      this.publishState(
-        execution.id,
-        'crashed',
-        previous,
-        'process not found in daemon after reconnect',
-      )
-      // 补记账：崩溃也是终态，工作流桥接必须收到，否则 NodeRun 会停在 running。
-      this.notifyExecutionFinished(execution.id)
-      this.logger?.warn('execution reconciled as crashed', {
-        executionId: execution.id,
-        ...this.workflowContext(execution.id),
+      this.logger?.error('reconciliation conflict detected', {
+        kind: conflict.kind,
+        executionId: conflict.executionId,
       })
     }
+
+    return report
+  }
+
+  /**
+   * S55-2B-1B（A2）：终态观察统一入口。
+   *
+   * TX1（BEGIN IMMEDIATE）内原子完成：终态 CAS + terminalProcessing.pending 标志
+   * + session/lock/系统日志/审计。事务内 read-merge-write 保留既有 recovery_state
+   * 键；JSON 损坏即抛错回滚（fail closed，禁止静默覆盖）。
+   *
+   * 事务提交后执行补偿链。补偿是否执行**只由持久化 pending 状态驱动**，
+   * 绝不由 finish 的 changed 返回值决定（崩溃遗留场景下 CAS 必输但副作用欠缺）。
+   */
+  private recordTerminalObservation(input: {
+    executionId: string
+    status: ExecutionState
+    exitCode?: number | null
+    endedAt: string
+    source: TerminalObservationSource
+    extraState?: Record<string, unknown>
+    evidence?: Record<string, unknown>
+    logEvent?: string
+    logData?: Record<string, unknown>
+    auditAction?: string
+  }): void {
+    const existing = this.executions.get(input.executionId)
+    if (!existing) return
+
+    if (!isTerminalExecutionState(existing.status)) {
+      transaction(this.db, () => {
+        const raw = this.executions.getRecoveryStateRaw(input.executionId)
+        if (raw.raw !== null && !raw.valid) {
+          throw new Error(
+            `recovery_state_json is corrupt for execution ${input.executionId}; refusing to overwrite (fail closed)`,
+          )
+        }
+        let merged: Record<string, unknown> = {}
+        if (raw.raw !== null) {
+          // 损坏 JSON 在上一分支已拦截；这里仍兜底解析失败为 fail closed。
+          try {
+            merged = JSON.parse(raw.raw) as Record<string, unknown>
+          } catch (error) {
+            throw new Error(
+              `recovery_state_json parse failed for execution ${input.executionId}: ${String(error)}`,
+            )
+          }
+        }
+        merged = {
+          ...merged,
+          ...(input.extraState ?? {}),
+          terminalProcessing: {
+            state: 'pending',
+            source: input.source,
+            observedAt: input.endedAt,
+            ...(input.evidence ? { evidence: input.evidence } : {}),
+          },
+        }
+        const changed = this.executions.finish(input.executionId, {
+          status: input.status,
+          exitCode: input.exitCode,
+          endedAt: input.endedAt,
+          recoveryState: merged,
+        })
+        if (!changed) return
+        this.sessions.end(existing.sessionId, input.endedAt)
+        this.locks.releaseByExecution(input.executionId)
+        if (input.logEvent) {
+          this.appendSystemLog(
+            input.executionId,
+            input.logEvent,
+            input.logData ?? {},
+            input.endedAt,
+          )
+        }
+        if (input.auditAction) {
+          this.audit?.append({
+            actorType: 'system',
+            actorId: null,
+            action: input.auditAction,
+            targetType: 'execution',
+            targetId: input.executionId,
+            details: {
+              source: input.source,
+              previousStatus: existing.status,
+              status: input.status,
+              ...(input.evidence ?? {}),
+            },
+            now: input.endedAt,
+          })
+        }
+      })
+    }
+
+    // 补偿由持久化状态驱动：无论本次是否赢得 CAS，只要该行是 pending 就执行/重放。
+    this.processTerminalCompensation(input.executionId)
+  }
+
+  /**
+   * S55-2B-1B：终态补偿链（S2–S5）。完全由持久化 pending 状态驱动，幂等可重放。
+   * 全链同步执行（无 await / 无 kick）；桥接直调（不经 engine 包装）。
+   */
+  private processTerminalCompensation(
+    executionId: string,
+  ): 'completed' | 'pending' | 'not-applicable' {
+    const execution = this.executions.get(executionId)
+    if (!execution) return 'not-applicable'
+    if (!isTerminalExecutionState(execution.status)) return 'not-applicable'
+    const raw = this.executions.getRecoveryStateRaw(executionId)
+    // 无标志的历史终态行不归本机制管（节点层由 recover-N2 兜底）。
+    if (raw.raw === null) return 'not-applicable'
+    if (!raw.valid) return 'pending'
+    let state: Record<string, unknown>
+    try {
+      state = JSON.parse(raw.raw) as Record<string, unknown>
+    } catch {
+      return 'pending'
+    }
+    const processing = state.terminalProcessing as { state?: unknown } | undefined
+    if (!processing || processing.state === 'completed') return 'not-applicable'
+    if (processing.state !== 'pending') return 'pending'
+
+    // S2：内存队列清理（幂等）。
+    this.queued.delete(executionId)
+    // S3：桥接直调（同步；内部 guard + CAS 保证重复调用 no-op）。
+    try {
+      this.onTerminalBridge?.(execution)
+    } catch (error) {
+      this.logger?.error('terminal compensation bridge failed', {
+        executionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return 'pending'
+    }
+    // S4：验证必要副作用已完成。
+    const verification = this.verifyTerminalCompensation(execution)
+    if (!verification.ok) {
+      this.logger?.error('terminal compensation verification failed', {
+        executionId,
+        reason: verification.reason,
+      })
+      return 'pending'
+    }
+    // S5：completed 标记（json_patch 键级合并，保留 source/evidence 等既有键）。
+    const completedAt = this.now()
+    try {
+      this.executions.mergeRecoveryState(
+        executionId,
+        { terminalProcessing: { state: 'completed', completedAt } },
+        completedAt,
+      )
+    } catch (error) {
+      this.logger?.error('terminal compensation completed write failed', {
+        executionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return 'pending'
+    }
+    return 'completed'
+  }
+
+  /** S55-2B-1B（S4）：验证终态补偿的必要副作用（报告五 §2.2 允许集合）。 */
+  private verifyTerminalCompensation(
+    execution: Execution,
+  ): { ok: true } | { ok: false; reason: string } {
+    const session = this.sessions.get(execution.sessionId)
+    if (session?.status !== 'ended') {
+      return { ok: false, reason: `session ${execution.sessionId} is not ended` }
+    }
+    if (this.locks.countByExecution(execution.id) > 0) {
+      return { ok: false, reason: 'workdir lock still held' }
+    }
+    const nodeRunId = this.executions.getNodeRunId(execution.id)
+    // scratch 执行（node_run_id = NULL）：无节点校验项。
+    if (nodeRunId === null) return { ok: true }
+    if (!this.nodeRuns) return { ok: false, reason: 'node run repository unavailable' }
+    const nodeRun = this.nodeRuns.get(nodeRunId)
+    if (!nodeRun) return { ok: false, reason: `node run ${nodeRunId} not found` }
+    if (!TERMINAL_COMPENSATION_NODE_STATUSES.has(nodeRun.status)) {
+      return { ok: false, reason: `node run ${nodeRunId} is ${nodeRun.status}` }
+    }
+    if (this.workflowRuns && !this.workflowRuns.get(nodeRun.workflowRunId)) {
+      return { ok: false, reason: `workflow run ${nodeRun.workflowRunId} not found` }
+    }
+    return { ok: true }
+  }
+
+  /**
+   * S55-2B-1B：启动终态补偿 sweep。损坏 JSON 预检 fail closed；
+   * 任一待处理行验证失败时保持 pending 并上报（调用方进入 recovery_locked）。
+   */
+  processTerminalBacklog(): {
+    processed: number
+    completed: number
+    failures: Array<{ executionId: string; reason: string }>
+  } {
+    const corrupt = this.executions.countCorruptRecoveryState()
+    if (corrupt > 0) {
+      throw new Error(
+        `detected ${corrupt} execution(s) with corrupt recovery_state_json; refusing to continue boot (fail closed)`,
+      )
+    }
+    const pendingRows = this.executions.listTerminalProcessingPending()
+    const failures: Array<{ executionId: string; reason: string }> = []
+    let completed = 0
+    for (const execution of pendingRows) {
+      let outcome: 'completed' | 'pending' | 'not-applicable'
+      try {
+        outcome = this.processTerminalCompensation(execution.id)
+      } catch (error) {
+        failures.push({
+          executionId: execution.id,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+        continue
+      }
+      if (outcome === 'completed') completed += 1
+      else if (outcome === 'pending') {
+        failures.push({ executionId: execution.id, reason: 'compensation verification failed' })
+      }
+    }
+    return { processed: pendingRows.length, completed, failures }
   }
 
   private handleOutput(event: RuntimeEvent): void {
@@ -581,13 +1000,39 @@ export class ExecutionService {
         startedAt: payload.timestamp,
         updatedAt: payload.timestamp,
       })
-    } else if (isTerminalExecutionState(payload.status)) {
-      this.executions.finish(payload.executionId, {
+      this.appendSystemLog(
+        payload.executionId,
+        'execution.state',
+        {
+          status: payload.status,
+          previousStatus: payload.previousStatus,
+          detail: payload.detail ?? null,
+        },
+        payload.timestamp,
+      )
+      this.hub.publish(event)
+      return
+    }
+
+    if (isTerminalExecutionState(payload.status)) {
+      // S55-2B-1B：终态走统一 TX1 + 补偿链（审计来源 event_observed）。
+      this.recordTerminalObservation({
+        executionId: payload.executionId,
         status: payload.status,
         endedAt: payload.timestamp,
+        source: 'event_observed',
+        evidence: { previousStatus: payload.previousStatus, detail: payload.detail ?? null },
+        logEvent: 'execution.state',
+        logData: {
+          status: payload.status,
+          previousStatus: payload.previousStatus,
+          detail: payload.detail ?? null,
+        },
+        auditAction: 'execution.terminal.observed',
       })
-      this.sessions.end(execution.sessionId, payload.timestamp)
-      this.locks.releaseByExecution(payload.executionId)
+      this.hub.publish(event)
+      this.notifyExecutionFinished(payload.executionId)
+      return
     }
 
     this.appendSystemLog(
@@ -601,7 +1046,6 @@ export class ExecutionService {
       payload.timestamp,
     )
     this.hub.publish(event)
-    if (isTerminalExecutionState(payload.status)) this.notifyExecutionFinished(payload.executionId)
   }
 
   /** 诊断字段：执行 → NodeRun → Run/Branch；缺失时只带已知 ID。 */
@@ -638,6 +1082,14 @@ export class ExecutionService {
       })
       return
     }
+    // S55-2B-1B：终态事实已落库后到达的重复 exited 事件不重复记账（幂等收紧）。
+    if (isTerminalExecutionState(execution.status)) {
+      this.logger?.info('exited event for already-terminal execution ignored', {
+        executionId: payload.executionId,
+        status: execution.status,
+      })
+      return
+    }
     const status: ExecutionState =
       payload.reason === 'cancelled'
         ? 'cancelled'
@@ -646,26 +1098,23 @@ export class ExecutionService {
           : payload.exitCode === 0
             ? 'succeeded'
             : 'failed'
-    this.executions.finish(payload.executionId, {
+    this.recordTerminalObservation({
+      executionId: payload.executionId,
       status,
       exitCode: payload.exitCode,
       endedAt: payload.timestamp,
-    })
-    this.sessions.end(execution.sessionId, payload.timestamp)
-    this.queued.delete(payload.executionId)
-    this.locks.releaseByExecution(payload.executionId)
-    void this.drainQueue(execution.agentId)
-    this.appendSystemLog(
-      payload.executionId,
-      'execution.exited',
-      {
+      source: 'event_observed',
+      evidence: { reason: payload.reason, signal: payload.signal, exitCode: payload.exitCode },
+      logEvent: 'execution.exited',
+      logData: {
         exitCode: payload.exitCode,
         signal: payload.signal,
         reason: payload.reason,
         ...this.workflowContext(payload.executionId),
       },
-      payload.timestamp,
-    )
+      auditAction: 'execution.terminal.observed',
+    })
+    void this.drainQueue(execution.agentId)
     this.hub.publish(event)
     this.notifyExecutionFinished(payload.executionId)
   }
@@ -723,9 +1172,11 @@ export class ExecutionService {
    */
   private async drainQueue(agentId: string | null): Promise<void> {
     if (!agentId || this.draining.has(agentId)) return
+    if (this.maintenance && !this.maintenance.isExecutionStartAllowed()) return
     this.draining.add(agentId)
     try {
       for (;;) {
+        if (this.maintenance && !this.maintenance.isExecutionStartAllowed()) return
         const agent = this.agents.get(agentId)
         if (!agent) return
         const active = this.executions.countActiveByAgent(agentId)
@@ -740,12 +1191,13 @@ export class ExecutionService {
         this.appendSystemLog(next.id, 'execution.dequeued', { activeBefore: active }, now)
         if (!job) {
           // 进程内队列与库里的标记不一致（理论上不该发生）：按失败终态处理，不静默丢弃。
-          this.executions.finish(next.id, {
+          this.recordTerminalObservation({
+            executionId: next.id,
             status: 'failed',
             endedAt: now,
-            recoveryState: { reason: 'queue_entry_missing' },
+            source: 'core_initiated',
+            extraState: { reason: 'queue_entry_missing' },
           })
-          this.sessions.end(next.sessionId, now)
           continue
         }
         try {
@@ -767,21 +1219,17 @@ export class ExecutionService {
     const queuedRows = this.executions.listQueued()
     const now = this.now()
     for (const execution of queuedRows) {
-      this.executions.finish(execution.id, {
+      // S55-2B-1B：走统一终态观察入口（TX1 原子 + 补偿链）；丢弃是启动策略动作，
+      // 不写对账审计（保持既有 system log 语义）。
+      this.recordTerminalObservation({
+        executionId: execution.id,
         status: 'failed',
         endedAt: now,
-        recoveryState: { reason: 'queue_discarded_on_restart', discardedAt: now },
+        source: 'core_initiated',
+        extraState: { reason: 'queue_discarded_on_restart', discardedAt: now },
+        logEvent: 'execution.queue_discarded',
+        logData: { reason: 'core_restart', ...this.workflowContext(execution.id) },
       })
-      this.sessions.end(execution.sessionId, now)
-      this.locks.releaseByExecution(execution.id)
-      this.appendSystemLog(
-        execution.id,
-        'execution.queue_discarded',
-        { reason: 'core_restart', ...this.workflowContext(execution.id) },
-        now,
-      )
-      // 排队执行被丢弃也是终态：桥接需要把 NodeRun 收尾（或按策略重试）。
-      this.notifyExecutionFinished(execution.id)
     }
     return queuedRows.length
   }

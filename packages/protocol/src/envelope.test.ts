@@ -19,10 +19,20 @@ describe('protocol version', () => {
   })
 })
 
-describe('RpcError 与 15 个错误码', () => {
-  it('exposes exactly 15 codes including UNKNOWN_NODE_TYPE', () => {
-    expect(RpcErrorCode.options).toHaveLength(15)
+describe('RpcError 与 25 个错误码', () => {
+  it('exposes exactly 25 codes including maintenance, recovery and restore codes', () => {
+    expect(RpcErrorCode.options).toHaveLength(25)
     expect(RpcErrorCode.options).toContain('UNKNOWN_NODE_TYPE')
+    expect(RpcErrorCode.options).toContain('MAINTENANCE_ACTIVE')
+    expect(RpcErrorCode.options).toContain('RECOVERY_LOCKED')
+    expect(RpcErrorCode.options).toContain('SHUTTING_DOWN')
+    expect(RpcErrorCode.options).toContain('RESTORE_ALREADY_ACTIVE')
+    expect(RpcErrorCode.options).toContain('RESTORE_PRECHECK_FAILED')
+    expect(RpcErrorCode.options).toContain('RESTORE_DRAIN_TIMEOUT')
+    expect(RpcErrorCode.options).toContain('RESTORE_CHECKPOINT_BUSY')
+    expect(RpcErrorCode.options).toContain('RESTORE_JOURNAL_INVALID')
+    expect(RpcErrorCode.options).toContain('RESTORE_FILESYSTEM_CONFLICT')
+    expect(RpcErrorCode.options).toContain('RESTORE_INSUFFICIENT_SPACE')
   })
 
   it('keeps the envelope without detail backward compatible', () => {

@@ -123,6 +123,9 @@ export class BackupRepository {
     input: { dbSha256: string; files: BackupArtifactFile[]; status?: 'completed' | 'verified' },
     now: string,
   ): boolean {
+    // S55-2C：status 与 verified_at 必须同源——默认 verified 时不得留下 null 验证时间，
+    // 否则 pre_restore 记录无法通过 RestorePreBackupRecordSchema。
+    const status = input.status ?? 'verified'
     const result = this.db
       .prepare(
         `UPDATE backups SET
@@ -131,12 +134,12 @@ export class BackupRepository {
          WHERE id = ? AND status = 'creating'`,
       )
       .run(
-        input.status ?? 'verified',
+        status,
         input.dbSha256,
         JSON.stringify(input.files),
         input.files.length,
         now,
-        input.status === 'verified' ? now : null,
+        status === 'verified' ? now : null,
         id,
       )
     return Number(result.changes) > 0
@@ -160,5 +163,106 @@ export class BackupRepository {
       )
       .run(now, id)
     return Number(result.changes) > 0
+  }
+
+  /**
+   * S55-2C：恢复后的目标备份 self-row 在 VACUUM INTO 时仍可能是 creating。
+   * 受控修复同时补齐快照时尚未知的 hash/文件清单；已 restored 时必须全字段一致。
+   */
+  repairRestoredSelfRow(
+    input: {
+      id: string
+      manifestVersion: number
+      dbSha256: string
+      files: BackupArtifactFile[]
+      storagePath: string
+    },
+    now: string,
+  ): boolean {
+    const current = this.get(input.id)
+    if (!current) return false
+    if (current.status === 'restored') {
+      return (
+        current.manifestVersion === input.manifestVersion &&
+        current.dbSha256 === input.dbSha256 &&
+        current.fileCount === input.files.length &&
+        current.storagePath === input.storagePath &&
+        JSON.stringify(current.artifactFiles) === JSON.stringify(input.files)
+      )
+    }
+    const result = this.db
+      .prepare(
+        `UPDATE backups SET
+           status = 'restored', manifest_version = ?, db_sha256 = ?,
+           artifact_files_json = ?, file_count = ?, storage_path = ?,
+           verified_at = ?, completed_at = COALESCE(completed_at, ?)
+         WHERE id = ? AND status IN ('creating', 'completed', 'verified')`,
+      )
+      .run(
+        input.manifestVersion,
+        input.dbSha256,
+        JSON.stringify(input.files),
+        input.files.length,
+        input.storagePath,
+        now,
+        now,
+        input.id,
+      )
+    return Number(result.changes) > 0
+  }
+
+  /**
+   * S55-2C：在恢复后的新 DB 中幂等重新登记 pre_restore。
+   * 已存在时必须所有安全字段逐项一致；禁止无条件 upsert 覆盖。
+   */
+  registerVerified(input: {
+    id: string
+    type: BackupType
+    manifestVersion: number
+    dbSha256: string
+    files: BackupArtifactFile[]
+    storagePath: string
+    createdAt: string
+    completedAt: string
+    verifiedAt: string
+  }): BackupRecord {
+    const existing = this.get(input.id)
+    if (existing) {
+      const same =
+        existing.type === input.type &&
+        existing.manifestVersion === input.manifestVersion &&
+        existing.dbSha256 === input.dbSha256 &&
+        existing.fileCount === input.files.length &&
+        existing.storagePath === input.storagePath &&
+        existing.createdAt === input.createdAt &&
+        existing.completedAt === input.completedAt &&
+        existing.verifiedAt === input.verifiedAt &&
+        JSON.stringify(existing.artifactFiles) === JSON.stringify(input.files) &&
+        existing.status === 'verified'
+      if (!same) throw new Error(`pre_restore backup row conflicts with existing row: ${input.id}`)
+      return existing
+    }
+    this.db
+      .prepare(
+        `INSERT INTO backups (
+           id, type, manifest_version, db_sha256, artifact_files_json, file_count,
+           status, storage_path, error_json, created_at, completed_at, verified_at
+         ) VALUES (?, ?, ?, ?, ?, ?, 'verified', ?, NULL, ?, ?, ?)`,
+      )
+      .run(
+        input.id,
+        input.type,
+        input.manifestVersion,
+        input.dbSha256,
+        JSON.stringify(input.files),
+        input.files.length,
+        input.storagePath,
+        input.createdAt,
+        input.completedAt,
+        input.verifiedAt,
+      )
+    const registered = this.get(input.id)
+    if (!registered) throw new Error(`pre_restore row missing after registration: ${input.id}`)
+    return registered
   }
 }

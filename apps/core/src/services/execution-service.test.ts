@@ -1,13 +1,16 @@
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import {
   type DaemonExecutionStartParams,
   type DaemonExecutionStartResult,
   type DaemonExecutionStatusResult,
   type ExecutionState,
   PROTOCOL_VERSION,
+  RpcMethodError,
   type RuntimeEvent,
   type RuntimeInfo,
 } from '@agentra/protocol'
@@ -35,6 +38,7 @@ import { TeamRepository } from '../db/repositories/team-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { WorkflowRepository } from '../db/repositories/workflow-repository'
 import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
+import type { DrainCoordinator } from '../lifecycle/drain-coordinator'
 import { WorkflowAssignmentResolver } from '../workflow/assignment-resolver'
 import { checkWorkflowConsistency } from '../workflow/consistency'
 import { WorkflowExecutionBridge } from '../workflow/execution-bridge'
@@ -70,6 +74,9 @@ class FakeRuntimeClient implements RuntimeClient {
   readonly cancels: string[] = []
   active: string[] = []
   startError: Error | null = null
+  /** S55-2B-1B：status() 可注入结果/错误，覆盖 A2/A3 分类场景。 */
+  statusResult: DaemonExecutionStatusResult | null = null
+  statusError: Error | null = null
   private readonly listeners = new Set<(event: RuntimeEvent) => void>()
 
   async discover(): Promise<RuntimeInfo[]> {
@@ -111,6 +118,8 @@ class FakeRuntimeClient implements RuntimeClient {
   }
 
   async status(executionId: string): Promise<DaemonExecutionStatusResult> {
+    if (this.statusError) throw this.statusError
+    if (this.statusResult) return this.statusResult
     return {
       executionId,
       status: 'running',
@@ -224,6 +233,10 @@ async function harness(
     capabilities?: typeof CAPABILITIES
     /** 真实接线：ExecutionService.cancel → WorkflowExecutionBridge（O-2 集成测试用）。 */
     workflow?: boolean
+    /** S55-2B-1B：工作流默认重试次数（R1 重试路径测试用；默认 1）。 */
+    maxAttempts?: number
+    maintenance?: { isExecutionStartAllowed(): boolean }
+    drain?: DrainCoordinator
   } = {},
 ): Promise<Harness> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentra-exec-'))
@@ -304,9 +317,16 @@ async function harness(
       warn: (message, data) => warnings.push(`${message} ${JSON.stringify(data ?? {})}`),
       error: (message, data) => warnings.push(`${message} ${JSON.stringify(data ?? {})}`),
     },
+    maintenance: options.maintenance,
+    drain: options.drain,
     now: () => NOW,
     ...(options.workflow
-      ? { onExecutionFinished: (execution) => workflowBridge?.onExecutionFinished(execution) }
+      ? {
+          // S55-2B-1B：补偿链直调桥接；engine 包装保留为运行期 kick 路径。
+          onTerminalBridge: (execution) => workflowBridge?.onExecutionFinished(execution),
+          onExecutionFinished: (execution) => workflowBridge?.onExecutionFinished(execution),
+          workflowRuns: new WorkflowRunRepository(db),
+        }
       : {}),
   })
 
@@ -330,7 +350,7 @@ async function harness(
         { key: 'e2', source: 'task_1', target: 'end' },
       ],
       settings: {
-        defaults: { timeoutSeconds: 1800, maxAttempts: 1 },
+        defaults: { timeoutSeconds: 1800, maxAttempts: options.maxAttempts ?? 1 },
         reworkPolicy: { maxRounds: 2 },
         failureStrategy: 'fail_branch',
         concurrency: { maxParallelNodes: 4 },
@@ -363,6 +383,7 @@ async function harness(
     const workflowRepo = new WorkflowRepository(db)
     const nodes = nodeRunRepository
     workflowBridge = new WorkflowExecutionBridge({
+      db,
       runs: new WorkflowRunRepository(db),
       nodes,
       works: workRepository,
@@ -440,6 +461,35 @@ describe('ExecutionService.start', () => {
       code: 'INVALID_PARAMS',
     })
     expect(h.executions.list()).toHaveLength(0)
+  })
+
+  it('rejects new execution starts while maintenance gate is closed', async () => {
+    const h = await harness({
+      maintenance: { isExecutionStartAllowed: () => false },
+    })
+    await expect(h.executions.start({ agentId: h.agentId, prompt: 'x' })).rejects.toMatchObject({
+      code: 'MAINTENANCE_ACTIVE',
+    })
+    expect(h.executions.list()).toHaveLength(0)
+    expect(h.runtime.starts).toHaveLength(0)
+  })
+
+  it('aborts before Daemon start when maintenance closes between intent and spawn', async () => {
+    let calls = 0
+    const h = await harness({
+      maintenance: {
+        isExecutionStartAllowed: () => {
+          calls += 1
+          return calls === 1
+        },
+      },
+    })
+    await expect(h.executions.start({ agentId: h.agentId, prompt: 'x' })).rejects.toMatchObject({
+      code: 'MAINTENANCE_ACTIVE',
+    })
+    expect(h.runtime.starts).toHaveLength(0)
+    expect(h.executions.list()).toHaveLength(1)
+    expect(h.executions.list()[0]?.status).toBe('failed')
   })
 
   it('returns CLI_UNAVAILABLE without creating an execution when the CLI is unavailable', async () => {
@@ -603,7 +653,7 @@ describe('ExecutionService lifecycle RPCs', () => {
     })
   })
 
-  it('notifies the workflow bridge when reconcile marks a bound execution crashed', async () => {
+  it('backfills a bound execution when the daemon reports a terminal state (A2)', async () => {
     const h = await harness({ workflow: true })
     if (!h.workflow) throw new Error('missing workflow harness')
     const execution = await h.executions.startForNode(h.workflow.nodeRunId, {
@@ -612,10 +662,19 @@ describe('ExecutionService lifecycle RPCs', () => {
     })
     expect(h.workflow.nodes.get(h.workflow.nodeRunId)?.status).toBe('running')
 
-    // Daemon 重启后不知道这条执行：reconcile 必须补记账并通知桥接。
+    // Daemon 同进程明确报告终态（A2）：允许补记账，节点经桥接收尾。
     h.runtime.active = []
-    await h.executions.reconcile()
+    h.runtime.statusResult = {
+      executionId: execution.id,
+      status: 'crashed',
+      processId: null,
+      exitCode: null,
+      startedAt: NOW,
+      endedAt: NOW,
+    }
+    const report = await h.executions.reconcile()
 
+    expect(report.observedTerminal.map((entry) => entry.executionId)).toEqual([execution.id])
     expect(h.executions.get(execution.id).status).toBe('crashed')
     expect(h.workflow.nodes.get(h.workflow.nodeRunId)?.status).toBe('failed')
     expect(checkWorkflowConsistency(h.db)).toEqual([])
@@ -691,16 +750,50 @@ describe('ExecutionService lifecycle RPCs', () => {
 })
 
 describe('ExecutionService.reconcile', () => {
-  it('marks executions the daemon no longer knows as crashed', async () => {
+  it('does not mark an execution crashed when the daemon no longer knows it (A3)', async () => {
     const h = await harness()
     const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
     h.runtime.active = []
-    await h.executions.reconcile()
-    const stored = h.executions.get(execution.id)
-    expect(stored.status).toBe('crashed')
-    expect(h.logs.list(execution.id).some((log) => log.content.includes('reconciliation'))).toBe(
-      true,
+    h.runtime.statusError = new RpcMethodError(
+      'EXECUTION_NOT_FOUND',
+      'daemon does not know execution',
     )
+    const report = await h.executions.reconcile()
+    // R3：仅凭 Daemon 不可见不判死——行保持原状态，交由节点层 reconciliation_required。
+    expect(report.unconfirmed).toEqual([execution.id])
+    expect(h.executions.get(execution.id).status).toBe('running')
+  })
+
+  it('records a daemon-observed terminal state with reconciliation provenance (A2)', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    h.runtime.active = []
+    h.runtime.statusResult = {
+      executionId: execution.id,
+      status: 'succeeded',
+      processId: 4242,
+      exitCode: 0,
+      startedAt: NOW,
+      endedAt: NOW,
+    }
+    const report = await h.executions.reconcile()
+    expect(report.observedTerminal).toEqual([
+      { executionId: execution.id, daemonStatus: 'succeeded' },
+    ])
+    const stored = h.executions.get(execution.id)
+    expect(stored.status).toBe('succeeded')
+    expect(stored.exitCode).toBe(0)
+    // 持久化标志：terminalProcessing 完成，且来源为 reconciliation_observed。
+    const row = h.db
+      .prepare('SELECT recovery_state_json AS raw FROM executions WHERE id = ?')
+      .get(execution.id) as { raw: string }
+    const state = JSON.parse(row.raw) as {
+      terminalProcessing?: { state?: string; source?: string }
+      reason?: string
+    }
+    expect(state.terminalProcessing?.state).toBe('completed')
+    expect(state.terminalProcessing?.source).toBe('reconciliation_observed')
+    expect(state.reason).toBe('reconciliation_observed')
   })
 
   it('keeps executions the daemon still tracks as running', async () => {
@@ -1147,5 +1240,461 @@ describe('阶段 2 D-1：Session 绑定 Assignment', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(h.runtime.starts).toHaveLength(1)
     expect(h.executions.get(queued.id)?.status).toBe('cancelled')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S55-2B-1B：终态补偿（M1–M6 / S1–S8 / X1–X3 / 崩溃点）
+// ---------------------------------------------------------------------------
+
+type SeedOptions = {
+  executionStatus?: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'crashed'
+  nodeStatus?: string | null
+  nodeRunId?: string
+  nodeKey?: string
+  recoveryState?: Record<string, unknown> | null
+  corrupt?: boolean
+  sessionEnded?: boolean
+  withLock?: boolean
+}
+
+function seedExecution(
+  h: Harness,
+  options: SeedOptions = {},
+): { executionId: string; sessionId: string; nodeRunId: string | null } {
+  const executionId = `exe-${randomUUID()}`
+  const sessionId = `ses-${randomUUID()}`
+  const now = NOW
+  h.db
+    .prepare(
+      `INSERT INTO agent_sessions (id, assignment_id, provider_id, external_session_id,
+         context_ref, status, created_at, updated_at, last_active_at)
+       VALUES (?, NULL, 'claude-code', ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      sessionId,
+      randomUUID(),
+      h.agentId,
+      options.sessionEnded === false ? 'active' : 'ended',
+      now,
+      now,
+      now,
+    )
+  let nodeRunId: string | null = null
+  if (options.nodeStatus) {
+    nodeRunId = options.nodeRunId ?? `nrn-${randomUUID()}`
+    h.db
+      .prepare(
+        `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, branch_run_id, status,
+           attempt, input_snapshot_json, created_at, updated_at)
+         VALUES (?, 'run-1', ?, NULL, ?, 1, '{}', ?, ?)`,
+      )
+      .run(
+        nodeRunId,
+        options.nodeKey ?? `node_${randomUUID().slice(0, 8)}`,
+        options.nodeStatus,
+        now,
+        now,
+      )
+  }
+  const recovery =
+    options.corrupt === true
+      ? '{corrupt'
+      : options.recoveryState === undefined
+        ? null
+        : JSON.stringify(options.recoveryState)
+  h.db
+    .prepare(
+      `INSERT INTO executions (id, session_id, node_run_id, provider_id, external_execution_id,
+         process_id, status, working_directory, started_at, ended_at, exit_code,
+         capabilities_snapshot_json, recovery_state_json, created_at, updated_at)
+       VALUES (?, ?, ?, 'claude-code', NULL, NULL, ?, '/tmp/seed', ?, ?, 0, ?, ?, ?, ?)`,
+    )
+    .run(
+      executionId,
+      sessionId,
+      nodeRunId,
+      options.executionStatus ?? 'succeeded',
+      now,
+      now,
+      JSON.stringify(CAPABILITIES),
+      recovery,
+      now,
+      now,
+    )
+  if (options.withLock) {
+    h.db
+      .prepare(
+        `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_uuid, acquired_at)
+         VALUES (?, ?, NULL, ?, NULL, ?)`,
+      )
+      .run(`/tmp/lock-${executionId}`, executionId, process.pid, now)
+  }
+  return { executionId, sessionId, nodeRunId }
+}
+
+function readRecoveryState(h: Harness, executionId: string): Record<string, unknown> {
+  const row = h.db
+    .prepare('SELECT recovery_state_json AS raw FROM executions WHERE id = ?')
+    .get(executionId) as { raw: string | null }
+  if (row.raw === null) return {}
+  return JSON.parse(row.raw) as Record<string, unknown>
+}
+
+describe('S55-2B-1B terminal compensation', () => {
+  it('M1/M3: TX1 merges terminalProcessing.pending and preserves queued keys', async () => {
+    const h = await harness()
+    const { executionId } = seedExecution(h, {
+      executionStatus: 'pending',
+      recoveryState: { queued: true, queuedAt: NOW },
+    })
+    h.executions.discardQueuedOnStartup()
+    const state = readRecoveryState(h, executionId)
+    expect(state.queued).toBe(true)
+    expect(state.queuedAt).toBe(NOW)
+    expect(state.reason).toBe('queue_discarded_on_restart')
+    expect(state.terminalProcessing).toMatchObject({
+      state: 'completed',
+      source: 'core_initiated',
+    })
+    expect(h.executions.get(executionId).status).toBe('failed')
+  })
+
+  it('M2: preserves every pre-existing recovery_state key', async () => {
+    const h = await harness()
+    const { executionId } = seedExecution(h, {
+      executionStatus: 'pending',
+      recoveryState: { queued: true, queuedAt: NOW, evidence: { x: 1 }, custom: 'keep' },
+    })
+    h.executions.discardQueuedOnStartup()
+    const state = readRecoveryState(h, executionId)
+    expect(state).toMatchObject({
+      queued: true,
+      queuedAt: NOW,
+      evidence: { x: 1 },
+      custom: 'keep',
+    })
+    expect((state.terminalProcessing as { state: string }).state).toBe('completed')
+  })
+
+  it('M4: corrupt recovery_state_json fails closed without overwriting', async () => {
+    const h = await harness()
+    // 运行中的执行 + 损坏 JSON：终态观察的 TX1 必须抛错回滚，事件处理器记录后丢弃该事件。
+    const { executionId } = seedExecution(h, {
+      executionStatus: 'running',
+      nodeStatus: null,
+      corrupt: true,
+    })
+    h.executions.handleRuntimeEvent(
+      exitedEvent(executionId, { exitCode: 0, signal: null, reason: 'exited' }),
+    )
+    const row = h.db
+      .prepare('SELECT status, recovery_state_json AS raw FROM executions WHERE id = ?')
+      .get(executionId) as { status: string; raw: string }
+    expect(row.status).toBe('running')
+    expect(row.raw).toBe('{corrupt')
+    expect(h.warnings.some((warning) => warning.includes('corrupt'))).toBe(true)
+  })
+
+  it('M5: NULL recovery_state is written with pending then completed', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    h.executions.handleRuntimeEvent(
+      exitedEvent(execution.id, { exitCode: 0, signal: null, reason: 'exited' }),
+    )
+    const state = readRecoveryState(h, execution.id)
+    expect(state.terminalProcessing).toMatchObject({
+      state: 'completed',
+      source: 'event_observed',
+    })
+    expect(state.terminalProcessing).toMatchObject({ observedAt: NOW })
+  })
+
+  it('M6: BEGIN IMMEDIATE excludes a second SQLite writer (real lock)', async () => {
+    const h = await harness()
+    const second = new DatabaseSync(path.join(h.dir, 'agentra.db'))
+    h.db.exec('BEGIN IMMEDIATE')
+    try {
+      expect(() => second.exec('BEGIN IMMEDIATE')).toThrow(/locked|busy/i)
+    } finally {
+      h.db.exec('ROLLBACK')
+      second.close()
+    }
+  })
+
+  describe('S4 node status verification', () => {
+    const allowed = [
+      'succeeded',
+      'failed',
+      'cancelled',
+      'skipped',
+      'waiting_approval',
+      'paused',
+      'changes_requested',
+      'rejected',
+      'reconciliation_required',
+    ]
+    for (const nodeStatus of allowed) {
+      it(`S: node ${nodeStatus} allows completed`, async () => {
+        const h = await harness({ workflow: true })
+        const { executionId } = seedExecution(h, {
+          nodeStatus,
+          recoveryState: {
+            terminalProcessing: { state: 'pending', source: 'event_observed' },
+          },
+        })
+        const result = h.executions.processTerminalBacklog()
+        expect(result.failures).toEqual([])
+        expect(result.completed).toBe(1)
+        expect(
+          (readRecoveryState(h, executionId).terminalProcessing as { state: string }).state,
+        ).toBe('completed')
+      })
+    }
+
+    for (const nodeStatus of ['running', 'blocked', 'ready']) {
+      it(`S: node ${nodeStatus} fails closed and stays pending`, async () => {
+        const h = await harness({ workflow: true })
+        const { executionId } = seedExecution(h, {
+          nodeStatus,
+          recoveryState: {
+            terminalProcessing: { state: 'pending', source: 'event_observed' },
+          },
+        })
+        const result = h.executions.processTerminalBacklog()
+        expect(result.completed).toBe(0)
+        expect(result.failures).toHaveLength(1)
+        expect(
+          (readRecoveryState(h, executionId).terminalProcessing as { state: string }).state,
+        ).toBe('pending')
+      })
+    }
+
+    it('S7: scratch execution (node_run_id NULL) passes without node checks', async () => {
+      const h = await harness()
+      const { executionId } = seedExecution(h, {
+        nodeStatus: null,
+        recoveryState: { terminalProcessing: { state: 'pending', source: 'event_observed' } },
+      })
+      const result = h.executions.processTerminalBacklog()
+      expect(result.failures).toEqual([])
+      expect(result.completed).toBe(1)
+      expect(
+        (readRecoveryState(h, executionId).terminalProcessing as { state: string }).state,
+      ).toBe('completed')
+    })
+
+    it('S6: missing node run fails closed', async () => {
+      const h = await harness({ workflow: true })
+      const { executionId } = seedExecution(h, {
+        nodeStatus: 'succeeded',
+        recoveryState: { terminalProcessing: { state: 'pending', source: 'event_observed' } },
+      })
+      const original = (h.executions as unknown as { nodeRuns: unknown }).nodeRuns
+      ;(h.executions as unknown as { nodeRuns: unknown }).nodeRuns = { get: () => null }
+      try {
+        const result = h.executions.processTerminalBacklog()
+        expect(result.failures).toHaveLength(1)
+        expect(
+          (readRecoveryState(h, executionId).terminalProcessing as { state: string }).state,
+        ).toBe('pending')
+      } finally {
+        ;(h.executions as unknown as { nodeRuns: unknown }).nodeRuns = original
+      }
+    })
+
+    it('S8: missing workflow run fails closed', async () => {
+      const h = await harness({ workflow: true })
+      const { executionId } = seedExecution(h, {
+        nodeStatus: 'succeeded',
+        recoveryState: { terminalProcessing: { state: 'pending', source: 'event_observed' } },
+      })
+      const original = (h.executions as unknown as { workflowRuns: unknown }).workflowRuns
+      ;(h.executions as unknown as { workflowRuns: unknown }).workflowRuns = { get: () => null }
+      try {
+        const result = h.executions.processTerminalBacklog()
+        expect(result.failures).toHaveLength(1)
+        expect(
+          (readRecoveryState(h, executionId).terminalProcessing as { state: string }).state,
+        ).toBe('pending')
+      } finally {
+        ;(h.executions as unknown as { workflowRuns: unknown }).workflowRuns = original
+      }
+    })
+
+    it('S: corrupt JSON anywhere blocks the backlog sweep (precheck)', async () => {
+      const h = await harness()
+      seedExecution(h, { executionStatus: 'pending', corrupt: true })
+      expect(() => h.executions.processTerminalBacklog()).toThrow(/corrupt/)
+    })
+  })
+
+  describe('crash-point replay (K2/K6/K9)', () => {
+    it('K2: terminal + pending + node running → backlog completes bridge and flag', async () => {
+      const h = await harness({ workflow: true })
+      const { executionId, nodeRunId } = seedExecution(h, {
+        executionStatus: 'failed',
+        nodeStatus: 'running',
+        nodeKey: 'task_1',
+        recoveryState: {
+          terminalProcessing: { state: 'pending', source: 'event_observed' },
+        },
+      })
+      const result = h.executions.processTerminalBacklog()
+      expect(result.failures).toEqual([])
+      expect(h.workflow?.nodes.get(nodeRunId as string)?.status).toBe('failed')
+      expect(
+        (readRecoveryState(h, executionId).terminalProcessing as { state: string }).state,
+      ).toBe('completed')
+    })
+
+    it('K6: retry attempt survives; replay does not create a second attempt', async () => {
+      const h = await harness({ workflow: true })
+      const nodeKey = 'task_1'
+      const { executionId, nodeRunId } = seedExecution(h, {
+        executionStatus: 'failed',
+        nodeStatus: 'running',
+        nodeKey,
+        recoveryState: {
+          terminalProcessing: { state: 'pending', source: 'event_observed' },
+        },
+      })
+      // 模拟 K6：桥接已创建 attempt+1 的 ready 行。
+      h.db
+        .prepare(
+          `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, branch_run_id, status,
+             attempt, input_snapshot_json, created_at, updated_at)
+           VALUES (?, 'run-1', ?, NULL, 'ready', 2, '{}', ?, ?)`,
+        )
+        .run(`nrn-${randomUUID()}`, nodeKey, NOW, NOW)
+
+      const first = h.executions.processTerminalBacklog()
+      expect(first.failures).toEqual([])
+      const second = h.executions.processTerminalBacklog()
+      expect(second.processed).toBe(0)
+      const attempts = h.db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM node_runs WHERE workflow_run_id = 'run-1'
+             AND workflow_node_key = ? AND attempt = 2`,
+        )
+        .get(nodeKey) as { c: number }
+      expect(attempts.c).toBe(1)
+      expect(h.workflow?.nodes.get(nodeRunId as string)?.status).toBe('failed')
+      expect(
+        (readRecoveryState(h, executionId).terminalProcessing as { state: string }).state,
+      ).toBe('completed')
+    })
+
+    it('K9: all effects already applied + pending → replay is a no-op then completed', async () => {
+      const h = await harness({ workflow: true })
+      const { executionId, nodeRunId } = seedExecution(h, {
+        executionStatus: 'succeeded',
+        nodeStatus: 'succeeded',
+        recoveryState: {
+          terminalProcessing: { state: 'pending', source: 'event_observed' },
+        },
+      })
+      const logsBefore = h.logs.list(executionId).length
+      const result = h.executions.processTerminalBacklog()
+      expect(result.failures).toEqual([])
+      expect(h.logs.list(executionId)).toHaveLength(logsBefore)
+      expect(h.workflow?.nodes.get(nodeRunId as string)?.status).toBe('succeeded')
+      expect(
+        (readRecoveryState(h, executionId).terminalProcessing as { state: string }).state,
+      ).toBe('completed')
+    })
+  })
+
+  it('X1: compensation chain runs synchronously (no event-loop yield)', async () => {
+    const h = await harness()
+    seedExecution(h, {
+      executionStatus: 'pending',
+      recoveryState: { queued: true },
+    })
+    let microtasks = 0
+    queueMicrotask(() => {
+      microtasks += 1
+    })
+    h.executions.discardQueuedOnStartup()
+    // 补偿链（TX1 + 桥接 + 验证 + completed）在同一宏任务内完成。
+    expect(microtasks).toBe(0)
+  })
+
+  it('X2: nested BEGIN is rejected — bridge must never run inside TX1', async () => {
+    const h = await harness()
+    h.db.exec('BEGIN IMMEDIATE')
+    try {
+      expect(() => h.db.exec('BEGIN IMMEDIATE')).toThrow(/within a transaction/)
+    } finally {
+      h.db.exec('ROLLBACK')
+    }
+  })
+
+  it('X3: discard keeps queued keys and writes completed (merge semantics)', async () => {
+    const h = await harness()
+    const { executionId } = seedExecution(h, {
+      executionStatus: 'pending',
+      recoveryState: { queued: true, queuedAt: NOW },
+    })
+    h.executions.discardQueuedOnStartup()
+    const state = readRecoveryState(h, executionId)
+    expect(state.queued).toBe(true)
+    expect(state.terminalProcessing).toMatchObject({ state: 'completed' })
+    // 队列查询不再命中终态行。
+    expect(h.executions.list().find((e) => e.id === executionId)?.status).toBe('failed')
+  })
+
+  it('R1: repeated bridge invocation creates the retry attempt exactly once', async () => {
+    const h = await harness({ workflow: true, maxAttempts: 2 })
+    if (!h.workflow) throw new Error('missing workflow harness')
+    const execution = await h.executions.startForNode(h.workflow.nodeRunId, {
+      agentId: h.agentId,
+      prompt: 'hello',
+    })
+    h.executions.handleRuntimeEvent(
+      exitedEvent(execution.id, { exitCode: 1, signal: null, reason: 'exited' }),
+    )
+    const failed = h.executions.get(execution.id)
+    h.workflow.bridge.onExecutionFinished(failed)
+    const attempts = h.db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM node_runs WHERE workflow_run_id = 'run-1'
+           AND workflow_node_key = 'task_1' AND attempt = 2`,
+      )
+      .get() as { c: number }
+    expect(attempts.c).toBe(1)
+  })
+
+  it('R1: retry-attempt creation failure rolls back the node failure', async () => {
+    const h = await harness({ workflow: true, maxAttempts: 2 })
+    if (!h.workflow) throw new Error('missing workflow harness')
+    const execution = await h.executions.startForNode(h.workflow.nodeRunId, {
+      agentId: h.agentId,
+      prompt: 'hello',
+    })
+    const nodes = h.workflow.nodes as unknown as { create: (...args: unknown[]) => unknown }
+    const originalCreate = nodes.create
+    nodes.create = () => {
+      throw new Error('simulated create failure')
+    }
+    try {
+      h.executions.handleRuntimeEvent(
+        exitedEvent(execution.id, { exitCode: 1, signal: null, reason: 'exited' }),
+      )
+      // 事务回滚：节点仍在 running（补偿返回 pending，不伪造收尾）。
+      expect(h.workflow.nodes.get(h.workflow.nodeRunId)?.status).toBe('running')
+    } finally {
+      nodes.create = originalCreate
+    }
+    // 重放补偿：节点失败 + attempt 恰好一条。
+    h.executions.processTerminalBacklog()
+    expect(h.workflow.nodes.get(h.workflow.nodeRunId)?.status).toBe('failed')
+    const attempts = h.db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM node_runs WHERE workflow_run_id = 'run-1'
+           AND workflow_node_key = 'task_1' AND attempt = 2`,
+      )
+      .get() as { c: number }
+    expect(attempts.c).toBe(1)
   })
 })

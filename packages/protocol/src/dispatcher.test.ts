@@ -6,6 +6,7 @@ import {
   type MethodTable,
   PROTOCOL_VERSION,
   RpcMethodError,
+  rpcFailure,
 } from './index'
 
 const EchoParams = z.object({ text: z.string().min(1) }).strict()
@@ -122,5 +123,39 @@ describe('createDispatcher (B4：params 与 result 双向绑定)', () => {
     })
     expect(pushed).toEqual([{ type: 'event' }])
     expect(closed).toBe(true)
+  })
+
+  it('releases the onStart lease after success, invalid params and handler failure', async () => {
+    let started = 0
+    let released = 0
+    const dispatch = createDispatcher(table(), {
+      onStart: () => {
+        started += 1
+        return () => {
+          released += 1
+        }
+      },
+    })
+    await dispatch(request('test.echo', { text: 'hi' }))
+    await dispatch(request('test.echo', { text: '' }))
+    await dispatch(request('test.boom', { text: 'x' }))
+    expect(started).toBe(3)
+    expect(released).toBe(3)
+  })
+
+  it('denies before params parsing and onStart when authorize returns a failure', async () => {
+    let started = 0
+    const dispatch = createDispatcher(table(), {
+      authorize: (requestId) =>
+        rpcFailure(requestId, 'MAINTENANCE_ACTIVE', 'maintenance is active'),
+      onStart: () => {
+        started += 1
+        return undefined
+      },
+    })
+    const response = await dispatch(request('test.echo', { text: 'hi' }))
+    expect(response.ok).toBe(false)
+    if (!response.ok) expect(response.error.code).toBe('MAINTENANCE_ACTIVE')
+    expect(started).toBe(0)
   })
 })

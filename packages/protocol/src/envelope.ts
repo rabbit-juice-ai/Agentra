@@ -25,6 +25,20 @@ export const RpcErrorCode = z.enum([
   // 阶段 3 B2（第 15 个）：工作流定义里出现 7 种节点白名单之外的 type。
   // 这是错误码，不是 violation —— 校验器不把它放进 violations 数组。
   'UNKNOWN_NODE_TYPE',
+  // 阶段 5.5 S55-2B：维护模式拒绝新的外部写请求。
+  'MAINTENANCE_ACTIVE',
+  // 阶段 5.5 S55-2B：恢复锁/恢复事务未完成，业务 RPC 一律 fail closed。
+  'RECOVERY_LOCKED',
+  // 阶段 5.5 S55-2B：Core 正在关闭，拒绝新的业务请求。
+  'SHUTTING_DOWN',
+  // 阶段 5.5 S55-2C：Restore 事务生命周期错误。
+  'RESTORE_ALREADY_ACTIVE',
+  'RESTORE_PRECHECK_FAILED',
+  'RESTORE_DRAIN_TIMEOUT',
+  'RESTORE_CHECKPOINT_BUSY',
+  'RESTORE_JOURNAL_INVALID',
+  'RESTORE_FILESYSTEM_CONFLICT',
+  'RESTORE_INSUFFICIENT_SPACE',
 ])
 export type RpcErrorCode = z.infer<typeof RpcErrorCode>
 

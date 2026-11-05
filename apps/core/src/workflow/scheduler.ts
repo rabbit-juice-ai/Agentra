@@ -8,6 +8,7 @@ import type {
   WorkflowRunRecord,
   WorkflowRunRepository,
 } from '../db/repositories/workflow-run-repository'
+import type { DrainCoordinator } from '../lifecycle/drain-coordinator'
 import { applyBranchPausePolicy, type BranchPauseExecutor } from './branch-pause-policy'
 import type { DispatchContext, DispatchGate } from './dispatch-gates'
 import { evaluateReadiness, type NodeStateView, ROOT_BRANCH_KEY, resolveBranchKeys } from './graph'
@@ -75,6 +76,10 @@ export type SchedulerDeps = {
   executionsRepo?: ExecutionRepository
   /** 失败兜底路径的可观测性（如 nodes.fail() 因状态被并发改走而未生效）。 */
   logger?: SchedulerLogger
+  /** S55-2B：维护模式门禁；缺省视为 normal（测试/旧装配兼容）。 */
+  maintenance?: { isSchedulerAllowed(): boolean }
+  /** S55-2B：in-flight tick 计数；缺省不跟踪（测试/旧装配兼容）。 */
+  drain?: DrainCoordinator
   /**
    * ready → running 之后的启动钩子。S4-3 只提供接缝，真正的 Execution 桥接在 S4-4；
    * 钩子抛错时节点按结构化失败（category=internal）收尾，不会留在 running。
@@ -150,6 +155,8 @@ export class WorkflowScheduler {
   private readonly executionsRepo: ExecutionRepository | undefined
   private readonly onNodeStarted: NodeStartHandler | undefined
   private readonly logger: SchedulerLogger | undefined
+  private readonly maintenance: { isSchedulerAllowed(): boolean } | undefined
+  private readonly drain: DrainCoordinator | undefined
   private readonly now: () => string
 
   constructor(deps: SchedulerDeps) {
@@ -170,11 +177,29 @@ export class WorkflowScheduler {
     this.executionsRepo = deps.executionsRepo
     this.onNodeStarted = deps.onNodeStarted
     this.logger = deps.logger
+    this.maintenance = deps.maintenance
+    this.drain = deps.drain
     this.now = deps.now ?? (() => new Date().toISOString())
   }
 
   /** 一次调度推进：可重复调用，直到 TickResult 为空。 */
   async tick(runId: string, options: TickOptions = {}): Promise<TickResult> {
+    if (!this.isDispatchAllowed()) return { ...EMPTY_RESULT }
+    const lease = this.drain?.acquire('scheduler-tick', `tick:${runId}`)
+    try {
+      return await this.tickInternal(runId, options)
+    } finally {
+      lease?.release()
+    }
+  }
+
+  /** 维护模式是否允许新的调度推进。 */
+  isDispatchAllowed(): boolean {
+    return !this.maintenance || this.maintenance.isSchedulerAllowed()
+  }
+
+  private async tickInternal(runId: string, options: TickOptions = {}): Promise<TickResult> {
+    if (!this.isDispatchAllowed()) return { ...EMPTY_RESULT }
     const now = this.now()
     const run = this.runs.get(runId)
     if (run === null || run.status !== 'running') return { ...EMPTY_RESULT }
@@ -210,6 +235,7 @@ export class WorkflowScheduler {
       )
 
     for (const nodeRun of readyRuns) {
+      if (!this.isDispatchAllowed()) break
       const definitionNode = nodesByKey.get(nodeRun.workflowNodeKey)
       if (definitionNode === undefined) continue
 
@@ -273,7 +299,14 @@ export class WorkflowScheduler {
       }
 
       // CAS：并发下只有一个调度者能把 ready 推到 running（与重读同一同步块）
+      if (!this.isDispatchAllowed()) break
       if (!this.nodes.transition(nodeRun.id, ['ready'], 'running', now)) continue
+
+      if (!this.isDispatchAllowed()) {
+        this.deferForMaintenance(nodeRun, now)
+        continue
+      }
+
       startedAttempts.push(definitionNode.key)
       startedNodes.push({
         runId,
@@ -310,6 +343,14 @@ export class WorkflowScheduler {
           })
         }
       }
+      if (!this.isDispatchAllowed()) {
+        this.logger?.warn('maintenance entered while node start handler was in flight', {
+          runId,
+          branchRunId: nodeRun.branchRunId,
+          nodeKey: definitionNode.key,
+          nodeRunId: nodeRun.id,
+        })
+      }
     }
 
     return {
@@ -318,6 +359,20 @@ export class WorkflowScheduler {
       skippedGates,
       failedPredecessors: Object.fromEntries(readiness.failedPredecessors),
       startedNodes,
+    }
+  }
+
+  /**
+   * CAS 已发生但维护模式在 handler 启动前生效：节点不能留在 running，也不能标记成功。
+   * 使用 reconciliation_required，等待后续人工/恢复对账，不自动重跑。
+   */
+  private deferForMaintenance(nodeRun: NodeRunRecord, now: string): void {
+    const moved = this.nodes.transition(nodeRun.id, ['running'], 'reconciliation_required', now)
+    if (!moved) {
+      this.logger?.warn('node maintenance defer transition skipped; state changed concurrently', {
+        nodeRunId: nodeRun.id,
+        nodeKey: nodeRun.workflowNodeKey,
+      })
     }
   }
 

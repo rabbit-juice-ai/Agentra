@@ -20,16 +20,24 @@ const startedAt = Date.now()
  */
 export function coreHealthMethods(version: string, daemonSocketPath: string): MethodTable {
   return {
-    [CORE_HEALTH_METHOD]: defineMethod(HealthParams, HealthResult, () => ({
-      status: 'ok' as const,
-      service: 'core' as const,
-      protocolVersion: PROTOCOL_VERSION,
-      pid: process.pid,
-      uptimeSeconds: (Date.now() - startedAt) / 1000,
-      version,
-    })),
-    [DAEMON_HEALTH_METHOD]: defineMethod(HealthParams, HealthResult, () =>
-      proxyDaemonHealth(daemonSocketPath),
+    [CORE_HEALTH_METHOD]: defineMethod(
+      HealthParams,
+      HealthResult,
+      () => ({
+        status: 'ok' as const,
+        service: 'core' as const,
+        protocolVersion: PROTOCOL_VERSION,
+        pid: process.pid,
+        uptimeSeconds: (Date.now() - startedAt) / 1000,
+        version,
+      }),
+      'read',
+    ),
+    [DAEMON_HEALTH_METHOD]: defineMethod(
+      HealthParams,
+      HealthResult,
+      () => proxyDaemonHealth(daemonSocketPath),
+      'read',
     ),
   }
 }

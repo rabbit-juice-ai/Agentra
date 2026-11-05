@@ -4,8 +4,10 @@
  */
 export {
   createDispatcher,
+  type DispatchHooks,
   defineMethod,
   type MethodTable,
   type RpcContext,
+  type RpcMethodAccess,
   type RpcMethodDef,
 } from '@agentra/protocol'

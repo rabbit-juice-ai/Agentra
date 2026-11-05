@@ -204,6 +204,7 @@ function setup(rework?: TestResultReworkPort): {
     now: () => NOW,
   })
   const bridge = new WorkflowExecutionBridge({
+    db,
     runs,
     nodes,
     works: workRepo,

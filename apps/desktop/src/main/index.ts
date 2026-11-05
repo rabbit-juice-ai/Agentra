@@ -26,9 +26,11 @@ import {
   BACKUP_CREATE_METHOD,
   BACKUP_EXPORT_METHOD,
   BACKUP_LIST_METHOD,
+  BACKUP_RESTORE_METHOD,
   BACKUP_RESTORE_PRECHECK_METHOD,
   BackupExportResultValue,
   BackupListResultValue,
+  BackupRestoreAcceptedValue,
   BackupRestorePrecheckResultValue,
   BackupResultValue,
   CORE_HEALTH_METHOD,
@@ -48,6 +50,8 @@ import {
   ExecutionResult,
   ExecutionSendMessageResult,
   HealthResult,
+  RESTORE_STATUS_METHOD,
+  RestoreStatusResultValue,
   RUNTIME_PROVIDER_LIST_METHOD,
   RUNTIME_PROVIDER_REFRESH_METHOD,
   RuntimeProviderListResult,
@@ -102,6 +106,7 @@ import { agentraPaths } from '@agentra/shared'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { BACKUP_LIST_DEFAULT_LIMIT, backupRpcTimeoutMs, type RpcResult } from '../shared/api'
 import { ensureCore } from './core-launcher'
+import { waitForCoreNormal } from './core-status'
 import { CoreRpcClient } from './rpc-client'
 
 // 窗口级单实例：第二次启动聚焦已有窗口（与 Core/Daemon 的 socket 探活是两回事）。
@@ -354,6 +359,20 @@ function registerIpc(): void {
       backupRpcTimeoutMs('precheck'),
     ),
   )
+
+  // 阶段 5.5 S55-2C：恢复执行（异步受理；UI 在 2E）与状态查询（只读）。
+  // 受理前 Core 会执行完整预检（复制/哈希 DB 与 Artifact），复用 precheck 超时预算。
+  ipcMain.handle('agentra:backup-restore', (_event, params: unknown) =>
+    callCore(
+      BACKUP_RESTORE_METHOD,
+      params,
+      BackupRestoreAcceptedValue,
+      backupRpcTimeoutMs('precheck'),
+    ),
+  )
+  ipcMain.handle('agentra:restore-status', (_event, params: unknown) =>
+    callCore(RESTORE_STATUS_METHOD, params ?? {}, RestoreStatusResultValue),
+  )
 }
 
 function broadcastEvent(event: unknown): void {
@@ -377,6 +396,10 @@ function scheduleReconnect(): void {
   }, RECONNECT_DELAY_MS)
 }
 
+/**
+ * S55-2B-1B（R2）：连接后先等待 Core 进入 normal，再做业务初始化。
+ * 实现移至 core-status.ts（无 Electron 依赖，可用真实 UDS 测试）。
+ */
 async function connectCore(): Promise<void> {
   if (connecting) return
   connecting = true
@@ -396,6 +419,9 @@ async function connectCore(): Promise<void> {
         scheduleReconnect()
       }
     })
+    // S55-2B-1B（R2）：先等 Core 进入 normal（booting/recovering 只轮询 status），
+    // 再订阅事件与拉首屏——recovering 期不产生任何业务请求。
+    await waitForCoreNormal(next)
     // 订阅事件：renderer 通过 IPC 接收 execution.output / execution.state。
     await next.call(EVENTS_SUBSCRIBE_METHOD, {})
     // Core 就绪：通知 renderer 补拉首屏数据。

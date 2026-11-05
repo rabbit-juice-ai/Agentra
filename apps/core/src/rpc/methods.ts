@@ -43,15 +43,19 @@ import {
   BACKUP_CREATE_METHOD,
   BACKUP_EXPORT_METHOD,
   BACKUP_LIST_METHOD,
+  BACKUP_RESTORE_METHOD,
   BACKUP_RESTORE_PRECHECK_METHOD,
   BackupCreateParamsValue,
   BackupExportParamsValue,
   BackupExportResultValue,
   BackupListParamsValue,
   BackupListResultValue,
+  BackupRestoreAcceptedValue,
+  BackupRestoreParamsValue,
   BackupRestorePrecheckParamsValue,
   BackupRestorePrecheckResultValue,
   BackupResultValue,
+  CORE_MAINTENANCE_STATUS_METHOD,
   defineMethod,
   EVENTS_SUBSCRIBE_METHOD,
   EventsSubscribeParams,
@@ -78,6 +82,13 @@ import {
   ExecutionSendMessageResult,
   ExecutionStartParams,
   ExecutionStatusParams,
+  type MaintenanceStatusParams,
+  MaintenanceStatusParamsValue,
+  type MaintenanceStatusResult,
+  MaintenanceStatusResultValue,
+  RESTORE_STATUS_METHOD,
+  RestoreStatusParamsValue,
+  RestoreStatusResultValue,
   RpcMethodError,
   RUNTIME_PROVIDER_LIST_METHOD,
   RUNTIME_PROVIDER_REFRESH_METHOD,
@@ -163,6 +174,8 @@ import {
   WorktreeRemoveResult,
 } from '@agentra/protocol'
 import { validateWorkflowDefinition } from '@agentra/workflow-schema'
+import { DrainCoordinator } from '../lifecycle/drain-coordinator'
+import { MaintenanceController } from '../lifecycle/maintenance-controller'
 import type { AgentService } from '../services/agent-service'
 import type { ApprovalRpcService } from '../services/approval-rpc-service'
 import type { ArtifactRpcService } from '../services/artifact-rpc-service'
@@ -173,6 +186,8 @@ import type { CoreEventHub } from '../services/event-hub'
 import type { ExecutionService } from '../services/execution-service'
 import { coreHealthMethods } from '../services/health'
 import type { ProviderRegistry } from '../services/provider-registry'
+import type { RestoreCoordinator } from '../services/restore-coordinator'
+import { RestoreCoordinatorError } from '../services/restore-coordinator'
 import type { TeamService } from '../services/team-service'
 import type { WorkService } from '../services/work-service'
 import {
@@ -181,7 +196,7 @@ import {
 } from '../services/workflow-definition-service'
 import type { WorktreeService } from '../services/worktree-service'
 import { WorkflowRunQueryError, type WorkflowRunQueryService } from '../workflow/run-query-service'
-import type { MethodTable } from './dispatcher'
+import type { MethodTable, RpcMethodDef } from './dispatcher'
 
 export type CoreMethodServices = {
   agents: AgentService
@@ -198,6 +213,13 @@ export type CoreMethodServices = {
   artifacts: ArtifactRpcService
   backups: BackupRpcService
   backupPrecheck: BackupRestorePrecheckService
+  /** S55-2C：老 Core 的 Restore 异步接受编排（进入 maintenance 后由其接管）。 */
+  restore?: Pick<RestoreCoordinator, 'request' | 'status'>
+}
+
+export type CoreLifecycleServices = {
+  maintenance: MaintenanceController
+  drain: DrainCoordinator
 }
 
 /**
@@ -238,21 +260,58 @@ function runWorkflow<T>(action: () => T): T {
   }
 }
 
+/**
+ * S55-2B-1B：`core.maintenance.status` 定义工厂。
+ * 业务 socket 与最小 boot socket 共用同一实现，避免双份定义漂移。
+ */
+export function maintenanceStatusMethod(
+  maintenance: MaintenanceController,
+  drain: DrainCoordinator,
+): RpcMethodDef<MaintenanceStatusParams, MaintenanceStatusResult> {
+  return defineMethod(
+    MaintenanceStatusParamsValue,
+    MaintenanceStatusResultValue,
+    () => ({
+      ...maintenance.snapshot(),
+      drain: drain.snapshot(),
+    }),
+    'read',
+  )
+}
+
 /** Desktop 可见的全部 RPC 方法（Core 是唯一业务入口）。 */
 export function coreMethods(
   version: string,
   daemonSocketPath: string,
   services: CoreMethodServices,
+  lifecycle: CoreLifecycleServices = {
+    maintenance: new MaintenanceController(),
+    drain: new DrainCoordinator(),
+  },
 ): MethodTable {
   return {
     ...coreHealthMethods(version, daemonSocketPath),
+    [CORE_MAINTENANCE_STATUS_METHOD]: maintenanceStatusMethod(
+      lifecycle.maintenance,
+      lifecycle.drain,
+    ),
 
-    [AGENT_LIST_METHOD]: defineMethod(AgentListParams, AgentListResult, (params) => ({
-      agents: services.agents.list(params.includeArchived ?? false),
-    })),
-    [AGENT_GET_METHOD]: defineMethod(AgentGetParams, AgentResult, (params) => ({
-      agent: services.agents.get(params.id),
-    })),
+    [AGENT_LIST_METHOD]: defineMethod(
+      AgentListParams,
+      AgentListResult,
+      (params) => ({
+        agents: services.agents.list(params.includeArchived ?? false),
+      }),
+      'read',
+    ),
+    [AGENT_GET_METHOD]: defineMethod(
+      AgentGetParams,
+      AgentResult,
+      (params) => ({
+        agent: services.agents.get(params.id),
+      }),
+      'read',
+    ),
     [AGENT_CREATE_METHOD]: defineMethod(AgentCreateParams, AgentResult, (params) => ({
       agent: services.agents.create(params),
     })),
@@ -267,6 +326,7 @@ export function coreMethods(
       RuntimeProviderListParams,
       RuntimeProviderListResult,
       () => ({ providers: services.registry.list() }),
+      'read',
     ),
     [RUNTIME_PROVIDER_REFRESH_METHOD]: defineMethod(
       RuntimeProviderRefreshParams,
@@ -279,16 +339,31 @@ export function coreMethods(
       ExecutionResult,
       async (params) => ({ execution: await services.executions.start(params) }),
     ),
-    [EXECUTION_GET_METHOD]: defineMethod(ExecutionGetParams, ExecutionGetResult, (params) => ({
-      execution: services.executions.get(params.executionId),
-      logs: services.executions.logsFor({ executionId: params.executionId }),
-    })),
-    [EXECUTION_LIST_METHOD]: defineMethod(ExecutionListParams, ExecutionListResult, (params) => ({
-      executions: services.executions.list(params.limit ?? 50),
-    })),
-    [EXECUTION_LOGS_METHOD]: defineMethod(ExecutionLogsParams, ExecutionLogsResult, (params) => ({
-      logs: services.executions.logsFor(params),
-    })),
+    [EXECUTION_GET_METHOD]: defineMethod(
+      ExecutionGetParams,
+      ExecutionGetResult,
+      (params) => ({
+        execution: services.executions.get(params.executionId),
+        logs: services.executions.logsFor({ executionId: params.executionId }),
+      }),
+      'read',
+    ),
+    [EXECUTION_LIST_METHOD]: defineMethod(
+      ExecutionListParams,
+      ExecutionListResult,
+      (params) => ({
+        executions: services.executions.list(params.limit ?? 50),
+      }),
+      'read',
+    ),
+    [EXECUTION_LOGS_METHOD]: defineMethod(
+      ExecutionLogsParams,
+      ExecutionLogsResult,
+      (params) => ({
+        logs: services.executions.logsFor(params),
+      }),
+      'read',
+    ),
     [EXECUTION_SEND_MESSAGE_METHOD]: defineMethod(
       ExecutionSendMessageParams,
       ExecutionSendMessageResult,
@@ -304,17 +379,32 @@ export function coreMethods(
       ExecutionResult,
       async (params) => ({ execution: await services.executions.cancel(params) }),
     ),
-    [EXECUTION_STATUS_METHOD]: defineMethod(ExecutionStatusParams, ExecutionResult, (params) => ({
-      execution: services.executions.get(params.executionId),
-    })),
+    [EXECUTION_STATUS_METHOD]: defineMethod(
+      ExecutionStatusParams,
+      ExecutionResult,
+      (params) => ({
+        execution: services.executions.get(params.executionId),
+      }),
+      'read',
+    ),
 
     // ---- 阶段 2：Team ----
-    [TEAM_LIST_METHOD]: defineMethod(TeamListParams, TeamListResult, (params) => ({
-      teams: services.teams.list(params.includeArchived ?? false),
-    })),
-    [TEAM_GET_METHOD]: defineMethod(TeamGetParams, TeamResult, (params) => ({
-      team: services.teams.get(params.id),
-    })),
+    [TEAM_LIST_METHOD]: defineMethod(
+      TeamListParams,
+      TeamListResult,
+      (params) => ({
+        teams: services.teams.list(params.includeArchived ?? false),
+      }),
+      'read',
+    ),
+    [TEAM_GET_METHOD]: defineMethod(
+      TeamGetParams,
+      TeamResult,
+      (params) => ({
+        team: services.teams.get(params.id),
+      }),
+      'read',
+    ),
     [TEAM_CREATE_METHOD]: defineMethod(TeamCreateParams, TeamResult, (params) => ({
       team: services.teams.create(params),
     })),
@@ -325,6 +415,7 @@ export function coreMethods(
       TeamMemberListParams,
       TeamMemberListResult,
       (params) => ({ members: services.teams.listMembers(params.teamId) }),
+      'read',
     ),
     [TEAM_MEMBER_ADD_METHOD]: defineMethod(TeamMemberAddParams, TeamMemberResult, (params) => ({
       member: services.teams.addMember(params.teamId, params.agentId, params.teamRole),
@@ -339,14 +430,24 @@ export function coreMethods(
     ),
 
     // ---- 阶段 2：Work ----
-    [WORK_LIST_METHOD]: defineMethod(WorkListParams, WorkListResult, (params) => ({
-      works: services.works
-        .list(params.includeArchived ?? false)
-        .map((work) => ({ ...work, teamIds: services.works.listTeamIds(work.id) })),
-    })),
-    [WORK_GET_METHOD]: defineMethod(WorkGetParams, WorkResult, (params) => ({
-      work: toWorkDto(services, params.id),
-    })),
+    [WORK_LIST_METHOD]: defineMethod(
+      WorkListParams,
+      WorkListResult,
+      (params) => ({
+        works: services.works
+          .list(params.includeArchived ?? false)
+          .map((work) => ({ ...work, teamIds: services.works.listTeamIds(work.id) })),
+      }),
+      'read',
+    ),
+    [WORK_GET_METHOD]: defineMethod(
+      WorkGetParams,
+      WorkResult,
+      (params) => ({
+        work: toWorkDto(services, params.id),
+      }),
+      'read',
+    ),
     [WORK_CREATE_METHOD]: defineMethod(WorkCreateParams, WorkResult, (params) => ({
       work: { ...services.works.create(params), teamIds: [] },
     })),
@@ -375,9 +476,14 @@ export function coreMethods(
 
     // ---- 阶段 2：Assignment ----
     // ---- 阶段 2：Worktree ----
-    [WORKTREE_LIST_METHOD]: defineMethod(WorktreeListParams, WorktreeListResult, (params) => ({
-      worktrees: services.worktrees.list(params.workId),
-    })),
+    [WORKTREE_LIST_METHOD]: defineMethod(
+      WorktreeListParams,
+      WorktreeListResult,
+      (params) => ({
+        worktrees: services.worktrees.list(params.workId),
+      }),
+      'read',
+    ),
     [WORKTREE_CREATE_METHOD]: defineMethod(
       WorktreeCreateParams,
       WorktreeCreateResult,
@@ -397,10 +503,16 @@ export function coreMethods(
       AssignmentListParams,
       AssignmentListResult,
       (params) => ({ assignments: services.assignments.listByWork(params.workId) }),
+      'read',
     ),
-    [ASSIGNMENT_GET_METHOD]: defineMethod(AssignmentGetParams, AssignmentResult, (params) => ({
-      assignment: services.assignments.get(params.id),
-    })),
+    [ASSIGNMENT_GET_METHOD]: defineMethod(
+      AssignmentGetParams,
+      AssignmentResult,
+      (params) => ({
+        assignment: services.assignments.get(params.id),
+      }),
+      'read',
+    ),
     [ASSIGNMENT_CREATE_METHOD]: defineMethod(
       AssignmentCreateParams,
       AssignmentResult,
@@ -427,11 +539,13 @@ export function coreMethods(
           .listTemplates()
           .filter((template) => params.includeArchived === true || template.archivedAt === null),
       }),
+      'read',
     ),
     [WORKFLOW_TEMPLATE_GET_METHOD]: defineMethod(
       WorkflowTemplateGetParams,
       WorkflowTemplateResult,
       (params) => runWorkflow(() => ({ template: services.workflows.getTemplate(params.id) })),
+      'read',
     ),
     [WORKFLOW_TEMPLATE_CREATE_METHOD]: defineMethod(
       WorkflowTemplateCreateParams,
@@ -464,11 +578,13 @@ export function coreMethods(
       WorkflowVersionListParams,
       WorkflowVersionListResult,
       (params) => services.workflows.listVersions(params.templateId),
+      'read',
     ),
     [WORKFLOW_VERSION_GET_METHOD]: defineMethod(
       WorkflowVersionGetParams,
       WorkflowVersionResult,
       (params) => runWorkflow(() => ({ version: services.workflows.getVersion(params.versionId) })),
+      'read',
     ),
     [WORKFLOW_VERSION_CREATE_DRAFT_METHOD]: defineMethod(
       WorkflowVersionCreateDraftParams,
@@ -494,14 +610,20 @@ export function coreMethods(
         }
         return { valid: false, violations: outcome.violations }
       },
+      'read',
     ),
 
     [BACKUP_CREATE_METHOD]: defineMethod(BackupCreateParamsValue, BackupResultValue, (params) => ({
       backup: services.backups.create(params.type),
     })),
-    [BACKUP_LIST_METHOD]: defineMethod(BackupListParamsValue, BackupListResultValue, (params) => ({
-      backups: services.backups.list(params.limit),
-    })),
+    [BACKUP_LIST_METHOD]: defineMethod(
+      BackupListParamsValue,
+      BackupListResultValue,
+      (params) => ({
+        backups: services.backups.list(params.limit),
+      }),
+      'read',
+    ),
     [BACKUP_EXPORT_METHOD]: defineMethod(
       BackupExportParamsValue,
       BackupExportResultValue,
@@ -511,33 +633,102 @@ export function coreMethods(
       BackupRestorePrecheckParamsValue,
       BackupRestorePrecheckResultValue,
       (params) => services.backupPrecheck.precheck(params.backupId),
+      'read',
+    ),
+
+    // S55-2C：异步接受（进入 maintenance 前的最后外部写入口）；maintenance gate 仍拦截
+    // entering_maintenance 之后的重复请求（RESTORE_ALREADY_ACTIVE 由服务层返回）。
+    [BACKUP_RESTORE_METHOD]: defineMethod(
+      BackupRestoreParamsValue,
+      BackupRestoreAcceptedValue,
+      (params) => {
+        if (!services.restore) {
+          throw new RpcMethodError('INTERNAL', 'restore coordinator is not configured')
+        }
+        try {
+          return services.restore.request(params.backupId)
+        } catch (error) {
+          if (error instanceof RestoreCoordinatorError) {
+            throw new RpcMethodError(error.code, error.message)
+          }
+          throw error
+        }
+      },
+    ),
+
+    // S55-2C：只读状态查询，可对照 boot.sock / 业务 socket 任一入口。
+    [RESTORE_STATUS_METHOD]: defineMethod(
+      RestoreStatusParamsValue,
+      RestoreStatusResultValue,
+      (params) => {
+        const journal = services.restore?.status() ?? null
+        const target =
+          journal && (!params.journalId || journal.journalId === params.journalId) ? journal : null
+        if (params.journalId && !target) {
+          throw new RpcMethodError(
+            'EXECUTION_NOT_FOUND',
+            `restore journal not found: ${params.journalId}`,
+          )
+        }
+        return {
+          active: target !== null,
+          journalId: target?.journalId ?? null,
+          backupId: target?.backupId ?? null,
+          phase: target?.phase ?? null,
+          globalRevision: target?.globalRevision ?? null,
+          operations:
+            target?.operations.map((operation) => ({
+              operationId: operation.operationId,
+              kind: operation.kind,
+              status: operation.status,
+              opRev: operation.opRev,
+            })) ?? [],
+          currentOperationId: target?.currentOperationId ?? null,
+          errorCode: target?.lastError?.code ?? null,
+          recoveryLocked:
+            target?.phase === 'recovery_locked' || target?.phase === 'rollback_failed',
+          manualInterventionRequired:
+            target?.phase === 'recovery_locked' || target?.phase === 'rollback_failed',
+          updatedAt: target?.updatedAt ?? null,
+        }
+      },
+      'read',
     ),
 
     [ARTIFACT_PREVIEW_METHOD]: defineMethod(
       ArtifactPreviewParams,
       ArtifactPreviewResult,
       (params) => services.artifacts.preview(params),
+      'read',
     ),
-    [ARTIFACT_LIST_METHOD]: defineMethod(ArtifactListParams, ArtifactListResult, (params) =>
-      services.artifacts.listByWork(params.workId),
+    [ARTIFACT_LIST_METHOD]: defineMethod(
+      ArtifactListParams,
+      ArtifactListResult,
+      (params) => services.artifacts.listByWork(params.workId),
+      'read',
     ),
 
     [WORKFLOW_RUN_LIST_BY_WORK_METHOD]: defineMethod(
       WorkflowRunListByWorkParams,
       WorkflowRunListByWorkResult,
       (params) => ({ runs: services.workflowRuns.listByWork(params.workId) }),
+      'read',
     ),
 
     [APPROVAL_DECIDE_METHOD]: defineMethod(ApprovalDecideParams, ApprovalResult, (params) => ({
       approval: services.approvals.decide(params),
     })),
-    [APPROVAL_GET_METHOD]: defineMethod(ApprovalGetParams, ApprovalGetResult, (params) =>
-      services.approvals.get(params.nodeRunId),
+    [APPROVAL_GET_METHOD]: defineMethod(
+      ApprovalGetParams,
+      ApprovalGetResult,
+      (params) => services.approvals.get(params.nodeRunId),
+      'read',
     ),
     [APPROVAL_LIST_PENDING_METHOD]: defineMethod(
       ApprovalListPendingParams,
       ApprovalListPendingResult,
       (params) => ({ approvals: services.approvals.listPending(params.runId) }),
+      'read',
     ),
 
     [WORKFLOW_RUN_GET_METHOD]: defineMethod(
@@ -568,6 +759,7 @@ export function coreMethods(
           throw error
         }
       },
+      'read',
     ),
 
     [EVENTS_SUBSCRIBE_METHOD]: defineMethod(
@@ -578,6 +770,7 @@ export function coreMethods(
         ctx.onClose(unsubscribe)
         return { subscribed: true }
       },
+      'read',
     ),
   }
 }

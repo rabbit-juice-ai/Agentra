@@ -1,6 +1,7 @@
 import { RpcMethodError, type RuntimeProviderRecord } from '@agentra/protocol'
 import type { RuntimeClient } from '../daemon/daemon-client'
 import type { ProviderRepository } from '../db/repositories/provider-repository'
+import type { DrainCoordinator } from '../lifecycle/drain-coordinator'
 
 export type RegistryLogger = {
   info: (message: string, data?: Record<string, unknown>) => void
@@ -18,6 +19,7 @@ export class ProviderRegistry {
     private readonly runtime: RuntimeClient,
     private readonly logger?: RegistryLogger,
     private readonly now: () => string = () => new Date().toISOString(),
+    private readonly drain?: DrainCoordinator,
   ) {}
 
   list(): RuntimeProviderRecord[] {
@@ -31,17 +33,22 @@ export class ProviderRegistry {
   }
 
   async refresh(): Promise<RuntimeProviderRecord[]> {
-    const infos = await this.runtime.discover()
-    const now = this.now()
-    const updated = infos.map((info) => this.providers.upsertDiscovered(info, now))
-    this.logger?.info('runtime providers refreshed', {
-      providers: updated.map((provider) => ({
-        id: provider.id,
-        version: provider.version,
-        healthStatus: provider.healthStatus,
-      })),
-    })
-    return updated
+    const lease = this.drain?.acquire('provider-refresh', 'provider:refresh')
+    try {
+      const infos = await this.runtime.discover()
+      const now = this.now()
+      const updated = infos.map((info) => this.providers.upsertDiscovered(info, now))
+      this.logger?.info('runtime providers refreshed', {
+        providers: updated.map((provider) => ({
+          id: provider.id,
+          version: provider.version,
+          healthStatus: provider.healthStatus,
+        })),
+      })
+      return updated
+    } finally {
+      lease?.release()
+    }
   }
 
   /** 启动路径使用：发现失败不阻断 Core 启动，保留上次已知状态。 */

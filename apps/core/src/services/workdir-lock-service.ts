@@ -183,6 +183,14 @@ export class WorkdirLockService {
     return Number(result.changes)
   }
 
+  /** S55-2B-1B：该执行当前持有的锁数量（终态补偿 S4 验证用）。 */
+  countByExecution(executionId: string): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS c FROM workdir_locks WHERE execution_id = ?')
+      .get(executionId) as { c: number }
+    return row.c
+  }
+
   release(workdirInput: string, executionId: string): boolean {
     const workdir = path.resolve(workdirInput)
     const result = this.db

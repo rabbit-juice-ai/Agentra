@@ -4,6 +4,7 @@ import type { AuditRepository } from '../db/repositories/audit-repository'
 import type { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import type { NodeRunRepository } from '../db/repositories/node-run-repository'
 import type { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
+import type { DrainCoordinator } from '../lifecycle/drain-coordinator'
 import type { ApprovalService } from './approval-service'
 import {
   type ControlEventSink,
@@ -45,6 +46,10 @@ export type WorkflowEngineDeps = {
   executions: { getNodeRunId(executionId: string): string | null }
   eventSink?: ControlEventSink
   logger?: WorkflowEngineLogger
+  /** S55-2B：维护模式门禁；缺省视为 normal（测试/旧装配兼容）。 */
+  maintenance?: { isSchedulerAllowed(): boolean }
+  /** S55-2B：workflow-kick 在途计数；缺省不跟踪。 */
+  drain?: DrainCoordinator
   now?: () => string
 }
 
@@ -140,6 +145,8 @@ export class WorkflowEngine {
   }
 
   async kick(runId: string): Promise<void> {
+    if (!this.isDispatchAllowed()) return
+    const lease = this.deps.drain?.acquire('workflow-kick', `kick:${runId}`)
     try {
       if (this.deps.dispatcher) {
         await this.deps.dispatcher.tickAll()
@@ -151,6 +158,12 @@ export class WorkflowEngine {
         runId,
         error: error instanceof Error ? error.message : String(error),
       })
+    } finally {
+      lease?.release()
     }
+  }
+
+  private isDispatchAllowed(): boolean {
+    return !this.deps.maintenance || this.deps.maintenance.isSchedulerAllowed()
   }
 }

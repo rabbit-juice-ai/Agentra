@@ -10,6 +10,7 @@ import { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { WorkflowRepository } from '../db/repositories/workflow-repository'
 import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
+import { DrainCoordinator } from '../lifecycle/drain-coordinator'
 import { WorkflowDefinitionService } from '../services/workflow-definition-service'
 import { assertWorkflowConsistency } from './consistency'
 import {
@@ -90,6 +91,8 @@ type Harness = {
       gates: DispatchGate[]
       ports: ResourcePorts
       logger: { warn: (message: string, meta?: Record<string, unknown>) => void }
+      maintenance: { isSchedulerAllowed(): boolean }
+      drain: DrainCoordinator
       onNodeStarted: (context: {
         nodeRun: { id: string }
         node: { key: string }
@@ -151,6 +154,8 @@ function harness(): Harness {
       gates: overrides.gates ?? defaultDispatchGates(overrides.ports ?? allowAllResourcePorts()),
       audit,
       logger: overrides.logger,
+      maintenance: overrides.maintenance,
+      drain: overrides.drain,
       onNodeStarted:
         overrides.onNodeStarted ??
         (defaultHandler as unknown as (context: {
@@ -558,6 +563,97 @@ describe('WorkflowScheduler · 失败兜底可观测性（O-1）', () => {
           targetType: 'workflow_run',
           targetId: 'run-1',
         })
+      } finally {
+        h.close()
+      }
+    })
+  })
+
+  describe('WorkflowScheduler · 维护模式', () => {
+    it('does not tick when the maintenance gate is closed', async () => {
+      const h = harness()
+      try {
+        const scheduler = h.makeScheduler({
+          maintenance: { isSchedulerAllowed: () => false },
+        })
+        const result = await scheduler.tick(h.runId)
+        expect(result.startedAttempts).toEqual([])
+        expect(result.promoted).toEqual([])
+        expect(h.started).toEqual([])
+        expect(nodeStatus(h, 'start')).toBe('blocked')
+      } finally {
+        h.close()
+      }
+    })
+
+    it('stops dispatching new nodes when maintenance enters during an awaited start handler', async () => {
+      const h = harness()
+      try {
+        h.nodes.transition('nr-start', ['blocked'], 'ready', h.now())
+        h.nodes.transition('nr-prd', ['blocked'], 'ready', h.now())
+        let allowed = true
+        const started: string[] = []
+        const scheduler = h.makeScheduler({
+          maintenance: { isSchedulerAllowed: () => allowed },
+          onNodeStarted: async (context) => {
+            started.push(context.node.key)
+            allowed = false
+            await Promise.resolve()
+          },
+        })
+
+        const result = await scheduler.tick(h.runId)
+        expect(started).toEqual(['start'])
+        expect(result.startedAttempts).toEqual(['start'])
+        expect(nodeStatus(h, 'prd')).toBe('ready')
+      } finally {
+        h.close()
+      }
+    })
+
+    it('defers a node to reconciliation_required when maintenance closes after CAS', async () => {
+      const h = harness()
+      try {
+        h.nodes.transition('nr-start', ['blocked'], 'ready', h.now())
+        let calls = 0
+        const scheduler = h.makeScheduler({
+          maintenance: {
+            isSchedulerAllowed: () => {
+              calls += 1
+              // 前四次（tick 入口、tickInternal、循环、CAS 前）允许；CAS 后拒绝。
+              return calls < 5
+            },
+          },
+        })
+        const result = await scheduler.tick(h.runId)
+        expect(result.startedAttempts).toEqual([])
+        expect(result.startedNodes).toEqual([])
+        expect(nodeStatus(h, 'start')).toBe('reconciliation_required')
+      } finally {
+        h.close()
+      }
+    })
+
+    it('tracks the in-flight tick until the start handler settles', async () => {
+      const h = harness()
+      try {
+        const drain = new DrainCoordinator()
+        let release: () => void = () => {}
+        const gate = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        const scheduler = h.makeScheduler({
+          drain,
+          onNodeStarted: async () => {
+            await gate
+          },
+        })
+        const tick = scheduler.tick(h.runId)
+        await Promise.resolve()
+        expect(drain.snapshot().counts['scheduler-tick']).toBe(1)
+        release()
+        await tick
+        expect(drain.snapshot().counts['scheduler-tick']).toBe(0)
       } finally {
         h.close()
       }

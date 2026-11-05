@@ -18,6 +18,8 @@ import type {
   AssignmentListResult,
   AssignmentResult,
   Backup,
+  BackupRestoreAccepted,
+  BackupRestoreParams,
   BackupRestorePrecheckResult,
   ExecutionGetResult,
   ExecutionInterruptResult,
@@ -29,6 +31,8 @@ import type {
   ExecutionSendMessageResult,
   ExecutionStartParams,
   HealthResult,
+  RestoreStatusParams,
+  RestoreStatusResult,
   RuntimeEvent,
   RuntimeProviderListResult,
   TeamArchiveParams,
@@ -204,6 +208,10 @@ export type AgentraApi = {
   restorePrecheck(
     params: BackupRestorePrecheckParams,
   ): Promise<RpcResult<BackupRestorePrecheckResult>>
+
+  // ---- 阶段 5.5 S55-2C：恢复执行（异步受理）与状态查询（只读；UI 在 2E） ----
+  restoreBackup(params: BackupRestoreParams): Promise<RpcResult<BackupRestoreAccepted>>
+  getRestoreStatus(params?: RestoreStatusParams): Promise<RpcResult<RestoreStatusResult>>
 
   /** 订阅 Core 推送的执行事件；返回取消订阅函数。 */
   onEvent(listener: (event: RuntimeEvent) => void): () => void

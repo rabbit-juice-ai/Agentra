@@ -60,6 +60,42 @@ try {
     checks.backupCreated = fs.existsSync(backupFile) && fs.statSync(backupFile).size > 0
     checks.integrityCheck = db.prepare('PRAGMA integrity_check').get().integrity_check === 'ok'
     checks.walFiles = fs.existsSync(`${dbFile}-wal`) || fs.existsSync(`${dbFile}-shm`)
+
+    // S55-2B-1B：JSON1 能力（recovery_state_json 的 terminalProcessing 合并依赖）。
+    db.exec('CREATE TABLE json_probe (id TEXT PRIMARY KEY, payload TEXT)')
+    const jsonInsert = db.prepare('INSERT INTO json_probe (id, payload) VALUES (?, ?)')
+    jsonInsert.run('j1', JSON.stringify({ queued: true, queuedAt: 't1', evidence: { x: 1 } }))
+    db.prepare(
+      "UPDATE json_probe SET payload = json_patch(COALESCE(payload, '{}'), ?) WHERE id = ?",
+    ).run(JSON.stringify({ terminalProcessing: { state: 'pending', source: 'event_observed' } }), 'j1')
+    const merged = JSON.parse(db.prepare('SELECT payload FROM json_probe WHERE id = ?').get('j1').payload)
+    checks.jsonPatchPreservesKeys =
+      merged.queued === true &&
+      merged.evidence?.x === 1 &&
+      merged.terminalProcessing?.state === 'pending'
+    checks.jsonValidRejectsCorrupt =
+      db.prepare("SELECT json_valid('{bad') AS v").get().v === 0 &&
+      db.prepare('SELECT json_valid(?) AS v').get('{"ok":1}').v === 1
+    checks.jsonExtractNested =
+      db.prepare("SELECT json_extract('{\"a\":{\"b\":\"c\"}}', '$.a.b') AS v").get().v === 'c'
+    jsonInsert.run('j2', null)
+    db.prepare(
+      "UPDATE json_probe SET payload = json_patch(COALESCE(payload, '{}'), ?) WHERE id = ?",
+    ).run(JSON.stringify({ k: 1 }), 'j2')
+    checks.jsonPatchNullColumn = JSON.parse(
+      db.prepare('SELECT payload FROM json_probe WHERE id = ?').get('j2').payload,
+    ).k === 1
+    jsonInsert.run('j3', '{bad')
+    let corruptThrew = false
+    try {
+      db.prepare('UPDATE json_probe SET payload = json_patch(payload, ?) WHERE id = ?').run(
+        JSON.stringify({ k: 1 }),
+        'j3',
+      )
+    } catch {
+      corruptThrew = true
+    }
+    checks.jsonPatchRejectsCorrupt = corruptThrew
   } finally {
     db.close()
   }

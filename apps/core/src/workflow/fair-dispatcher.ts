@@ -9,6 +9,8 @@ export type FairDispatcherDeps = {
   runs: WorkflowRunRepository
   scheduler: WorkflowScheduler
   logger?: FairDispatcherLogger
+  /** S55-2B：维护模式门禁；缺省视为 normal（测试/旧装配兼容）。 */
+  maintenance?: { isSchedulerAllowed(): boolean }
   /** 防止调度器空转；达到上限时停止并告警。 */
   maxPasses?: number
 }
@@ -32,20 +34,24 @@ export type FairTickReport = {
  */
 export class WorkflowFairDispatcher {
   private readonly maxPasses: number
+  private readonly maintenance: { isSchedulerAllowed(): boolean } | undefined
   /** 跨 tickAll 保留轮转起点：上一次最后启动的 Run 的下一个 Run 优先。 */
   private lastStartedRunId: string | null = null
 
   constructor(private readonly deps: FairDispatcherDeps) {
     this.maxPasses = deps.maxPasses ?? 100
+    this.maintenance = deps.maintenance
   }
 
   async tickAll(): Promise<FairTickReport> {
+    if (!this.isDispatchAllowed()) return this.emptyReport()
     const started: TickResult['startedNodes'] = []
     const deferredByAgent: FairTickReport['deferredByAgent'] = []
     const startedByRun: Record<string, number> = {}
     let passes = 0
 
     while (passes < this.maxPasses) {
+      if (!this.isDispatchAllowed()) break
       const running = this.deps.runs.listRunning()
       if (running.length === 0) break
       const baseIndex = this.lastStartedRunId
@@ -85,5 +91,13 @@ export class WorkflowFairDispatcher {
       this.deps.logger?.warn('fair dispatcher reached max passes', { passes: this.maxPasses })
     }
     return { passes, started, startedByRun, deferredByAgent }
+  }
+
+  private isDispatchAllowed(): boolean {
+    return !this.maintenance || this.maintenance.isSchedulerAllowed()
+  }
+
+  private emptyReport(): FairTickReport {
+    return { passes: 0, started: [], startedByRun: {}, deferredByAgent: [] }
   }
 }

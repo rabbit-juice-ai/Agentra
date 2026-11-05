@@ -1,5 +1,12 @@
 import type { z } from 'zod'
-import { RpcMethodError, RpcRequest, type RpcResponse, rpcFailure, rpcSuccess } from './envelope'
+import {
+  type RpcFailure,
+  RpcMethodError,
+  RpcRequest,
+  type RpcResponse,
+  rpcFailure,
+  rpcSuccess,
+} from './envelope'
 import { PROTOCOL_VERSION } from './version'
 
 /**
@@ -17,9 +24,13 @@ export type RpcContext = {
   onClose: (listener: () => void) => void
 }
 
+/** 方法访问级别：默认 write，只读方法必须显式标记。 */
+export type RpcMethodAccess = 'read' | 'write'
+
 export type RpcMethodDef<P, R> = {
   paramsSchema: z.ZodType<P>
   resultSchema: z.ZodType<R>
+  access: RpcMethodAccess
   // 方法语法（而非属性箭头函数）是刻意的：让参数位置按双变（bivariant）检查，
   // 使具体签名的方法可以放进擦除后的 MethodTable，同时保留定义处的类型推断。
   handler(params: P, ctx: RpcContext): R | Promise<R>
@@ -28,13 +39,22 @@ export type RpcMethodDef<P, R> = {
 /** 擦除具体 params/result 的分发表；类型安全由 defineMethod 在定义处保证。 */
 export type MethodTable = Record<string, RpcMethodDef<unknown, unknown>>
 
+/** 分发前授权/分发生命周期钩子；由 Core 维护模式接线使用。 */
+export type DispatchHooks = {
+  /** 返回非 null 时直接以该失败响应结束，不进入 params/handler。 */
+  authorize?: (requestId: string, method: string, access: RpcMethodAccess) => RpcFailure | null
+  /** 在 params 校验前调用；返回的函数在 handler/result 校验后执行。 */
+  onStart?: (method: string, access: RpcMethodAccess) => (() => void) | undefined
+}
+
 /** 定义一个 RPC 方法：params 由 schema 推断，handler 返回值受 result schema 约束。 */
 export function defineMethod<P, R>(
   paramsSchema: z.ZodType<P>,
   resultSchema: z.ZodType<R>,
   handler: (params: P, ctx: RpcContext) => R | Promise<R>,
+  access: RpcMethodAccess = 'write',
 ): RpcMethodDef<P, R> {
-  return { paramsSchema, resultSchema, handler }
+  return { paramsSchema, resultSchema, access, handler }
 }
 
 const NOOP_CONTEXT: RpcContext = { push: () => {}, onClose: () => {} }
@@ -44,7 +64,7 @@ const NOOP_CONTEXT: RpcContext = { push: () => {}, onClose: () => {} }
  * 校验顺序：JSON 解析 → 信封（含 protocolVersion）→ method 查表 → params 校验 → handler → result 校验。
  * 业务处理器抛 RpcMethodError 时保留其错误码（如 CLI_UNAVAILABLE / CLI_NOT_AUTHENTICATED）。
  */
-export function createDispatcher(methods: MethodTable) {
+export function createDispatcher(methods: MethodTable, hooks: DispatchHooks = {}) {
   return async function dispatch(
     frame: string,
     ctx: RpcContext = NOOP_CONTEXT,
@@ -80,36 +100,44 @@ export function createDispatcher(methods: MethodTable) {
       return rpcFailure(request.requestId, 'METHOD_NOT_FOUND', `unknown method: ${request.method}`)
     }
 
-    let params: unknown
-    try {
-      params = entry.paramsSchema.parse(request.params)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      return rpcFailure(request.requestId, 'INVALID_PARAMS', message)
-    }
+    const denied = hooks.authorize?.(request.requestId, request.method, entry.access)
+    if (denied) return denied
 
-    let result: unknown
+    const release = hooks.onStart?.(request.method, entry.access)
     try {
-      result = await entry.handler(params, ctx)
-    } catch (error) {
-      if (error instanceof RpcMethodError) {
-        return rpcFailure(request.requestId, error.code, error.message, error.detail)
+      let params: unknown
+      try {
+        params = entry.paramsSchema.parse(request.params)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return rpcFailure(request.requestId, 'INVALID_PARAMS', message)
       }
-      // 处理器内部失败不是入参问题：回 INTERNAL，避免客户端误判为可重试的入参错误。
-      const message = error instanceof Error ? error.message : String(error)
-      return rpcFailure(request.requestId, 'INTERNAL', message)
-    }
 
-    // 出站校验：handler 返回值必须满足 result schema，否则说明实现与协议契约已经漂移。
-    const checkedResult = entry.resultSchema.safeParse(result)
-    if (!checkedResult.success) {
-      return rpcFailure(
-        request.requestId,
-        'INTERNAL',
-        `handler for ${request.method} returned a value that violates its result schema: ${checkedResult.error.message}`,
-      )
-    }
+      let result: unknown
+      try {
+        result = await entry.handler(params, ctx)
+      } catch (error) {
+        if (error instanceof RpcMethodError) {
+          return rpcFailure(request.requestId, error.code, error.message, error.detail)
+        }
+        // 处理器内部失败不是入参问题：回 INTERNAL，避免客户端误判为可重试的入参错误。
+        const message = error instanceof Error ? error.message : String(error)
+        return rpcFailure(request.requestId, 'INTERNAL', message)
+      }
 
-    return rpcSuccess(request.requestId, checkedResult.data)
+      // 出站校验：handler 返回值必须满足 result schema，否则说明实现与协议契约已经漂移。
+      const checkedResult = entry.resultSchema.safeParse(result)
+      if (!checkedResult.success) {
+        return rpcFailure(
+          request.requestId,
+          'INTERNAL',
+          `handler for ${request.method} returned a value that violates its result schema: ${checkedResult.error.message}`,
+        )
+      }
+
+      return rpcSuccess(request.requestId, checkedResult.data)
+    } finally {
+      release?.()
+    }
   }
 }
