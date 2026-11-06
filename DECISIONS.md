@@ -263,6 +263,44 @@
 
 **本批决策只记录阶段 3 已批准的设计口径，不构成阶段 3 关闭；阶段 3 关闭仍需 CTO 单独审批。**
 
+### D-028：移除工作流产品面，保留计划执行内核（2026-11-06，用户批准）
+
+- 背景：产品默认工作模式确定为「自主规划 + 老板控制」。用户不再编辑工作流模板/版本/画布；产品面只有 目标 → 计划 → 任务 → 讨论 → 执行 → 审批/返工。
+- 决策：
+  - 删除面向用户的工作流定义入口：`workflow.template.*`、`workflow.version.*`、`workflow.run.start`、`workflow.run.listByWork` RPC，以及桌面端 Work 运行页、WorkflowRunsPanel、RunFailuresPanel 和相关 IPC/API。
+  - PlanCompiler 仍把 Plan 编译为内部 7 节点 DAG；Workflow Engine、Scheduler、ReworkService、ExecutionBridge、Approval/Artifact 链路保留为执行内核，不对外暴露。
+  - `workflow.run.get` 仅保留为审批上下文的只读查询，不是执行入口。
+  - 返工超限的人工处理移到 Plan 任务线程：`plan.continueRework`（增加一轮）与 `plan.takeOverRework`（保持暂停、人工接管）。
+- 边界：本决策不改变 D-010 的 7 节点执行语义、D-015 的返工状态机，也不改变数据库执行表；改变的是产品入口与命名边界。
+- 文档同步：README 产品形态与“7 节点”表述改为内部执行内核；PRD/ARCHITECTURE/WORKFLOW 中关于模板/画布的用户面描述降级为内部实现文档，后续统一修订。
+
+### D-029：项目 = 任务的合集；任务详情以群聊为主（2026-11-06，用户批准）
+
+- 背景：用户要求新增项目概念，项目是任务的合集；打开任务应以群聊为主，概览/团队/交付物/设置放到右侧；群聊里可以 @ Agent 协作（参考 Multica）。
+- 决策：
+  - 新增 `projects` 表（迁移 v21）；任务（Work）通过 `project_id` 归属项目，新建任务默认进入「默认项目」。
+  - 导航改为：项目 / 任务 / 团队；项目页展示项目卡片与任务数，点击「查看任务」进入按项目过滤的任务看板。
+  - 任务详情改为群聊主视图 + 右侧栏（概览/团队/交付物/设置）；群聊展示最新计划的各任务线程。
+  - 任务群聊支持 @ Agent：Core 为被 @ 且在该任务有 active Assignment 的 Agent 启动一次协作执行，完成后把 Agent 输出写回同一线程；执行失败/未分配会以系统消息说明。
+  - 规划页保留任务群聊，作为计划级视图；任务详情成为日常协作入口。
+- 边界：项目只做分组与状态，不承载执行语义；执行仍由任务下的计划与执行内核完成。@ 协作不改变任务的正式 Assignment，改派仍走 `plan.reassignTask`。
+- 安全：@ 执行的 prompt 明确把线程内容标记为任务数据而非系统指令；Agent 输出经凭据脱敏后再写回线程。
+
+### D-030：独立规划、任务内规划、弹框交互与多 CLI Provider（2026-11-07，用户批准）
+
+- 独立规划：Plan 不再强制绑定任务。`plans.work_id` 改为可空（迁移 v22 重建表）；Plan 页默认「独立规划（不关联任务）」，生成后可 `plan.convertToTask` 转为任务，或 `plan.convertToProject` 创建项目并在项目下创建承载该计划的任务。先建任务再规划仍然保留。
+- 任务内规划：任务详情群聊可以直接让 Planner 规划当前任务；计划生成后在同一群聊里批准/启动执行，不必跳到规划页。
+- 交互：创建/编辑/确认类操作（新建项目、新建任务、新建团队、添加成员、分配 Agent、关联团队、创建 Worktree、拒绝计划、转任务/转项目）统一使用弹框；非人工操作的消息改为右下角轻提示，数秒后自动消失，不挤压页面内容。
+- Provider：在 Claude Code 之外新增 Codex 与 Gemini CLI 的自动发现和 headless 适配器。Codex 使用 `codex exec --json`，Gemini 使用 `gemini -p ... --output-format stream-json`；两者均为单回合执行，能力声明如实标注 resume/sessionPersistence/permissionRequests 不支持，interrupt/toolControl 为 emulated。Codex 已做真实执行 E2E；Gemini 已发现（本机账号层级不可用，认证状态在首次执行时校验）。
+- 边界：Provider 选择仍由 Agent 的 `defaultProviderId` 决定；未指定时 Core 选择健康 Provider。工具权限不因 Provider 增加而扩大，Codex/Gemini 的 sandbox/approval 映射保持最小权限。
+
+### D-031：设置页、弹框居中、默认窗口与任务详情信息分区；Provider 扩展（2026-11-07，用户批准）
+
+- 设置页：左下角「设置」接入真实页面，展示 Core/Daemon 状态、Provider 健康与版本、数据目录、项目/任务/Agent 计数、应用版本；提供「重新发现 Provider」「打开数据目录」「备份中心」入口，不放没有实现的开关。
+- 弹框：创建/编辑/确认弹框改为视口垂直居中；默认窗口从 1180×760 调整为 1360×840，并设置最小尺寸 1100×700。
+- 任务详情：概览只保留任务信息；Assignment/关联团队归入「团队」tab，Git Worktree/任务设置归入「设置」tab，交付物归入「交付物」tab，互不重复。
+- Provider：新增 CodeBuddy（Claude Code 兼容 stream-json 会话）与 Grok CLI（headless `streaming-messages-json`）自动发现和适配器；Grok 通过 `grok models` 检测未登录并显示「未认证」，CodeBuddy 认证状态在首次执行时校验。当前共发现 5 个 Provider：Claude Code、CodeBuddy、Codex、Gemini CLI、Grok CLI。
+
 ## 暂定事项（实施前需验证，不可当作已确认事实）
 
 1. ~~Antumi 当前仓库的准确技术栈、模块边界、可复用代码和许可证适用范围。~~ **已核实（2026-10-30）**：Apache-2.0，pnpm monorepo（core/daemon/desktop/protocol 等），core 用 node:sqlite+zod，daemon 用 node-pty，desktop 用 electron-vite；无工作流引擎。

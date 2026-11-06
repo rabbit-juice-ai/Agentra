@@ -1,4 +1,5 @@
 import {
+  AgentCapabilities,
   type AgentProfile,
   AgentProfile as AgentProfileSchema,
   ToolPermissions,
@@ -17,6 +18,8 @@ type AgentRow = {
   description: string
   system_prompt: string
   skills_json: string
+  capabilities_json: string
+  model: string | null
   tool_permissions_json: string
   default_provider_id: string | null
   max_concurrency: number
@@ -34,6 +37,12 @@ function toProfile(row: AgentRow): AgentProfile {
     description: row.description,
     systemPrompt: row.system_prompt,
     skills: parseJsonColumn(SkillsSchema, row.skills_json, `agent_profiles.skills_json(${row.id})`),
+    capabilities: parseJsonColumn(
+      AgentCapabilities,
+      row.capabilities_json,
+      `agent_profiles.capabilities_json(${row.id})`,
+    ),
+    model: row.model,
     toolPermissions: parseJsonColumn(
       ToolPermissions,
       row.tool_permissions_json,
@@ -74,6 +83,11 @@ export class AgentRepository {
 
   insert(profile: AgentProfile): void {
     const skills = serializeJsonColumn(SkillsSchema, profile.skills, 'agent.skills')
+    const capabilities = serializeJsonColumn(
+      AgentCapabilities,
+      profile.capabilities,
+      'agent.capabilities',
+    )
     const toolPermissions = serializeJsonColumn(
       ToolPermissions,
       profile.toolPermissions,
@@ -82,9 +96,10 @@ export class AgentRepository {
     this.db
       .prepare(
         `INSERT INTO agent_profiles (
-          id, name, role, description, system_prompt, skills_json, tool_permissions_json,
-          default_provider_id, max_concurrency, status, created_at, updated_at, archived_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, name, role, description, system_prompt, skills_json, capabilities_json,
+          model, tool_permissions_json, default_provider_id, max_concurrency, status, created_at,
+          updated_at, archived_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         profile.id,
@@ -93,6 +108,8 @@ export class AgentRepository {
         profile.description,
         profile.systemPrompt,
         skills,
+        capabilities,
+        profile.model,
         toolPermissions,
         profile.defaultProviderId,
         profile.maxConcurrency,
@@ -105,6 +122,11 @@ export class AgentRepository {
 
   update(profile: AgentProfile): void {
     const skills = serializeJsonColumn(SkillsSchema, profile.skills, 'agent.skills')
+    const capabilities = serializeJsonColumn(
+      AgentCapabilities,
+      profile.capabilities,
+      'agent.capabilities',
+    )
     const toolPermissions = serializeJsonColumn(
       ToolPermissions,
       profile.toolPermissions,
@@ -114,8 +136,8 @@ export class AgentRepository {
       .prepare(
         `UPDATE agent_profiles SET
           name = ?, role = ?, description = ?, system_prompt = ?, skills_json = ?,
-          tool_permissions_json = ?, default_provider_id = ?, max_concurrency = ?, status = ?,
-          updated_at = ?, archived_at = ?
+          capabilities_json = ?, model = ?, tool_permissions_json = ?, default_provider_id = ?,
+          max_concurrency = ?, status = ?, updated_at = ?, archived_at = ?
         WHERE id = ?`,
       )
       .run(
@@ -124,6 +146,8 @@ export class AgentRepository {
         profile.description,
         profile.systemPrompt,
         skills,
+        capabilities,
+        profile.model,
         toolPermissions,
         profile.defaultProviderId,
         profile.maxConcurrency,

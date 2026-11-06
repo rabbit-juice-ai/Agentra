@@ -1,16 +1,8 @@
 import { type Approval, WorkflowArtifactRef } from '@agentra/protocol'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { StatusBadge } from '../../components/StatusBadge'
-import {
-  buttonStyle,
-  colors,
-  dangerButtonStyle,
-  inputStyle,
-  labelStyle,
-  panelStyle,
-  primaryButtonStyle,
-  sectionTitleStyle,
-} from '../../components/styles'
+import { approvalTypeLabel } from '../../components/approval-label'
+import { Icon } from '../../components/Icon'
+import { PageHeader } from '../../components/PageHeader'
 import { ApiError, api } from '../../services/api'
 
 /**
@@ -44,6 +36,8 @@ export function ApprovalsPage() {
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({})
   const [commentErrors, setCommentErrors] = useState<Record<string, boolean>>({})
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [runFilter, setRunFilter] = useState('all')
 
   const refresh = useCallback(async () => {
     try {
@@ -112,114 +106,216 @@ export function ApprovalsPage() {
     [commentDrafts, refresh],
   )
 
-  const sorted = useMemo(() => rows, [rows])
+  const runIds = useMemo(
+    () =>
+      [...new Set(rows.map((row) => row.runId))].sort((left, right) => left.localeCompare(right)),
+    [rows],
+  )
+  const visibleRows = useMemo(
+    () => (runFilter === 'all' ? rows : rows.filter((row) => row.runId === runFilter)),
+    [rows, runFilter],
+  )
+
+  const selectedRow =
+    visibleRows.find((row) => row.approval.id === selectedId) ?? visibleRows[0] ?? null
+
+  useEffect(() => {
+    if (visibleRows.length === 0) {
+      setSelectedId(null)
+      return
+    }
+    if (!visibleRows.some((row) => row.approval.id === selectedId)) {
+      setSelectedId(visibleRows[0]?.approval.id ?? null)
+    }
+  }, [visibleRows, selectedId])
+
+  const oldest = rows[0]
+  const commentError = selectedRow ? commentErrors[selectedRow.approval.id] : false
 
   return (
-    <div data-agentra-page={APPROVALS_PAGE_MARKER}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h2 style={sectionTitleStyle}>审批中心</h2>
-        <button type="button" style={buttonStyle} onClick={() => void refresh()} disabled={busy}>
-          刷新
-        </button>
-      </div>
-      <p style={{ color: colors.muted, fontSize: 12 }}>
-        等待中的审批按等待时长排序；request_changes 必须填写意见。MVP 无自动超时决策。
-      </p>
+    <div data-agentra-page={APPROVALS_PAGE_MARKER} className="page">
+      <PageHeader
+        title={
+          <>
+            审批中心
+            {rows.length > 0 && <span className="pill accent plain">{rows.length}</span>}
+          </>
+        }
+        subtitle={
+          rows.length === 0
+            ? '当前没有等待中的审批 · MVP 无自动超时决策'
+            : `${rows.length} 项待处理 · 最久等待 ${waitingDuration(oldest?.approval.requestedAt ?? new Date().toISOString(), nowMs)} · 按等待时长排序`
+        }
+        actions={
+          <>
+            <select
+              className="select"
+              value={runFilter}
+              onChange={(event) => setRunFilter(event.target.value)}
+              aria-label="按运行筛选"
+            >
+              <option value="all">全部运行</option>
+              {runIds.map((runId) => (
+                <option key={runId} value={runId}>
+                  {runId.slice(0, 18)}…
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="btn btn-ghost btn-icon"
+              title="刷新"
+              onClick={() => void refresh()}
+              disabled={busy}
+            >
+              <Icon name="refresh" />
+            </button>
+          </>
+        }
+      />
 
-      {error && (
-        <div
-          style={{ ...panelStyle, borderColor: colors.red, color: colors.red, marginBottom: 12 }}
-        >
-          {error}
+      {error && <div className="banner error">{error}</div>}
+
+      {loading && rows.length === 0 ? (
+        <div className="empty-state">加载中…</div>
+      ) : rows.length === 0 ? (
+        <div className="card">
+          <div className="empty-state">当前没有等待中的审批。</div>
         </div>
-      )}
-
-      {loading ? (
-        <div style={{ color: colors.muted, fontSize: 13 }}>加载中…</div>
-      ) : sorted.length === 0 ? (
-        <div style={{ color: colors.muted, fontSize: 13 }}>当前没有等待中的审批。</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {sorted.map(({ approval, runId }) => (
-            <div key={approval.id} style={panelStyle}>
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  marginBottom: 8,
-                  flexWrap: 'wrap',
-                }}
-              >
-                <StatusBadge status={approval.status} />
-                <strong style={{ fontSize: 13 }}>{approval.approvalType}</strong>
-                <span style={{ color: colors.muted, fontSize: 12 }}>round {approval.round}</span>
-                <span style={{ color: colors.muted, fontSize: 12 }}>run {runId}</span>
-                <span style={{ color: colors.amber, fontSize: 12 }}>
-                  已等待 {waitingDuration(approval.requestedAt, nowMs)}
+        <div className="split wide">
+          <div className="card list-card">
+            <div className="card-head">
+              <div className="card-title">待处理</div>
+              <div className="right">
+                <span className="faint" style={{ fontSize: 10.5 }}>
+                  等待最久优先
                 </span>
               </div>
-              <div style={{ fontSize: 12, color: colors.muted, marginBottom: 8 }}>
-                节点 {approval.nodeRunId}
-                {approval.targetNodeRunId ? ` · 目标 ${approval.targetNodeRunId}` : ''}
+            </div>
+            <div className="list-scroll">
+              {visibleRows.map((row) => {
+                const isSelected = selectedRow?.approval.id === row.approval.id
+                return (
+                  <button
+                    type="button"
+                    key={row.approval.id}
+                    className={`inbox-row ${isSelected ? 'selected' : ''}`}
+                    onClick={() => setSelectedId(row.approval.id)}
+                  >
+                    <span className="avatar" style={{ marginTop: 2 }}>
+                      {approvalTypeLabel(row.approval.approvalType).slice(0, 1) || '审'}
+                    </span>
+                    <div className="inbox-main">
+                      <div className="inbox-name">
+                        {approvalTypeLabel(row.approval.approvalType)} · 第 {row.approval.round} 轮
+                      </div>
+                      <div className="inbox-meta">
+                        <span className="mono">{row.runId.slice(0, 14)}…</span>
+                        <span>·</span>
+                        <span className="pill warn">等你回复</span>
+                      </div>
+                    </div>
+                    <span className="inbox-age">
+                      {waitingDuration(row.approval.requestedAt, nowMs)}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {selectedRow && (
+            <div className="card detail-pane">
+              <div className="detail-head">
+                <div>
+                  <div className="card-title">
+                    {approvalTypeLabel(selectedRow.approval.approvalType)}
+                    <span className="pill warn">等待审批</span>
+                  </div>
+                  <div className="card-sub" style={{ marginTop: 4 }}>
+                    run {selectedRow.runId} · 请求人 {selectedRow.approval.requestedBy} · 第{' '}
+                    {selectedRow.approval.round} 轮 · 已等待{' '}
+                    {waitingDuration(selectedRow.approval.requestedAt, nowMs)}
+                  </div>
+                </div>
               </div>
 
-              <ApprovalContext approval={approval} />
-              <div>
-                <label style={labelStyle} htmlFor={`comment-${approval.id}`}>
-                  意见（request_changes 必填）
-                </label>
-                <input
-                  id={`comment-${approval.id}`}
-                  style={{
-                    ...inputStyle,
-                    width: '100%',
-                    ...(commentErrors[approval.id] ? { borderColor: colors.red } : {}),
-                  }}
-                  value={commentDrafts[approval.id] ?? ''}
+              <div className="detail-tabs">
+                <button type="button" className="tab active">
+                  交付物
+                </button>
+              </div>
+
+              <div className="detail-body">
+                <ApprovalContext approval={selectedRow.approval} />
+                <div className="meta-grid">
+                  <div className="meta-cell">
+                    <div className="k">审批类型</div>
+                    <div className="v">{approvalTypeLabel(selectedRow.approval.approvalType)}</div>
+                  </div>
+                  <div className="meta-cell">
+                    <div className="k">轮次</div>
+                    <div className="v">第 {selectedRow.approval.round} 轮</div>
+                  </div>
+                  <div className="meta-cell">
+                    <div className="k">目标节点</div>
+                    <div className="v mono">
+                      {selectedRow.approval.targetNodeRunId ?? '执行前审批'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="decision-bar">
+                <textarea
+                  className="textarea"
+                  value={commentDrafts[selectedRow.approval.id] ?? ''}
                   onChange={(event) =>
                     setCommentDrafts((prev) => ({
                       ...prev,
-                      [approval.id]: event.target.value,
+                      [selectedRow.approval.id]: event.target.value,
                     }))
                   }
-                  placeholder="request_changes 时必须填写修改意见"
+                  placeholder="审批意见（选择“要求修改”时必填）"
                 />
-                {commentErrors[approval.id] && (
-                  <div style={{ color: colors.red, fontSize: 12, marginTop: 4 }}>
+                {commentError && (
+                  <div style={{ color: 'var(--danger)', fontSize: 11.5, marginTop: 5 }}>
                     request_changes 必须填写意见（A3）。
                   </div>
                 )}
-              </div>
-
-              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <button
-                  type="button"
-                  style={primaryButtonStyle}
-                  disabled={busy}
-                  onClick={() => void decide({ approval, runId }, 'approve')}
-                >
-                  批准
-                </button>
-                <button
-                  type="button"
-                  style={buttonStyle}
-                  disabled={busy}
-                  onClick={() => void decide({ approval, runId }, 'request_changes')}
-                >
-                  要求修改
-                </button>
-                <button
-                  type="button"
-                  style={dangerButtonStyle}
-                  disabled={busy}
-                  onClick={() => void decide({ approval, runId }, 'reject')}
-                >
-                  拒绝
-                </button>
+                <div className="decision-actions">
+                  <span className="hint">
+                    要求修改将退回目标节点并产生新的审批轮次；驳回保持分支暂停。
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-danger btn-sm"
+                    disabled={busy}
+                    onClick={() => void decide(selectedRow, 'reject')}
+                  >
+                    驳回
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={busy}
+                    onClick={() => void decide(selectedRow, 'request_changes')}
+                  >
+                    要求修改
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={busy}
+                    onClick={() => void decide(selectedRow, 'approve')}
+                  >
+                    通过
+                  </button>
+                </div>
               </div>
             </div>
-          ))}
+          )}
         </div>
       )}
     </div>
@@ -230,15 +326,18 @@ function ApprovalContext({ approval }: { approval: Approval }) {
   const [context, setContext] = useState('')
   const [refs, setRefs] = useState<WorkflowArtifactRef[]>([])
   const [preview, setPreview] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [previewName, setPreviewName] = useState('')
+
   useEffect(() => {
     let alive = true
     void api
       .getWorkflowRun(approval.workflowRunId)
       .then((view) => {
         if (!alive) return
-        const target = view.nodes.find((n) => n.id === approval.targetNodeRunId)
+        const target = view.nodes.find((node) => node.id === approval.targetNodeRunId)
         setContext(
-          `Work ${view.run.workId} · ${target?.workflowNodeKey ?? '执行前审批'} · ${target?.status ?? ''}`,
+          `Work ${view.run.workId} · 任务审批${target?.status ? ` · ${target.status}` : ''}`,
         )
         const output = target?.output
         const values =
@@ -246,35 +345,78 @@ function ApprovalContext({ approval }: { approval: Approval }) {
         setRefs(WorkflowArtifactRef.array().parse(values))
       })
       .catch((err) => {
-        if (alive) setContext(String(err))
+        if (alive) setError(String(err))
       })
     return () => {
       alive = false
     }
   }, [approval.workflowRunId, approval.targetNodeRunId])
+
+  const showPreview = (ref: WorkflowArtifactRef): void => {
+    setError(null)
+    void api
+      .previewArtifact(ref.artifactId, ref.version)
+      .then((file) => {
+        if (file.version.id !== ref.versionId || file.version.checksum !== ref.checksum) {
+          throw new Error('Artifact version mismatch')
+        }
+        const bytes = Uint8Array.from(atob(file.contentBase64), (char) => char.charCodeAt(0))
+        setPreview(new TextDecoder().decode(bytes))
+        setPreviewName(`${ref.name} v${ref.version}`)
+      })
+      .catch((err) => setError(String(err)))
+  }
+
   return (
-    <div>
-      <p>{context}</p>
-      {refs.map((ref) => (
-        <button
-          type="button"
-          key={ref.versionId}
-          onClick={() => {
-            void api
-              .previewArtifact(ref.artifactId, ref.version)
-              .then((file) => {
-                if (file.version.id !== ref.versionId || file.version.checksum !== ref.checksum)
-                  throw new Error('Artifact version mismatch')
-                const bytes = Uint8Array.from(atob(file.contentBase64), (c) => c.charCodeAt(0))
-                setPreview(new TextDecoder().decode(bytes))
-              })
-              .catch((err) => setPreview(String(err)))
-          }}
-        >
-          {ref.name} v{ref.version}
-        </button>
-      ))}
-      {preview && <pre style={{ whiteSpace: 'pre-wrap' }}>{preview}</pre>}
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div className="faint" style={{ fontSize: 11.5 }}>
+        {context || '正在加载运行上下文…'}
+      </div>
+      {error && <div className="banner error">{error}</div>}
+      {refs.length === 0 ? (
+        <div className="empty-state" style={{ padding: '16px 0' }}>
+          该审批没有关联交付物。
+        </div>
+      ) : (
+        refs.map((ref) => (
+          <div className="doc" key={ref.versionId}>
+            <div className="doc-head">
+              <span className="artifact-icon">
+                <Icon name="doc" size={14} />
+              </span>
+              <div style={{ minWidth: 0 }}>
+                <div className="doc-title">
+                  {ref.name} · v{ref.version}
+                </div>
+                <div className="doc-meta mono">SHA-256 {ref.checksum.slice(0, 16)}…</div>
+              </div>
+              <div style={{ marginLeft: 'auto' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => showPreview(ref)}
+                >
+                  预览
+                </button>
+              </div>
+            </div>
+            {preview && previewName === `${ref.name} v${ref.version}` && (
+              <div className="doc-body">
+                <pre
+                  style={{
+                    margin: 0,
+                    whiteSpace: 'pre-wrap',
+                    fontFamily: 'var(--mono)',
+                    fontSize: 11.5,
+                  }}
+                >
+                  {preview}
+                </pre>
+              </div>
+            )}
+          </div>
+        ))
+      )}
     </div>
   )
 }

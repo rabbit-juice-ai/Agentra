@@ -1,4 +1,5 @@
 import {
+  AgentCapabilities,
   type AgentCreateParams,
   type AgentProfile,
   type AgentUpdateParams,
@@ -35,6 +36,15 @@ function normalizeToolPermissions(input: ToolPermissions): ToolPermissions {
   return { version: 1, allow: clean(parsed.data.allow), deny: clean(parsed.data.deny) }
 }
 
+/** 能力标签只做结构化归一化；不读取 description，也不触碰工具权限。 */
+function normalizeCapabilities(input: unknown): AgentCapabilities {
+  const parsed = AgentCapabilities.safeParse(input ?? {})
+  if (!parsed.success) {
+    throw new RpcMethodError('INVALID_PARAMS', `Agent 能力配置非法：${parsed.error.message}`)
+  }
+  return parsed.data
+}
+
 /** AgentProfile 领域服务：CRUD + 默认 Provider 绑定（归档而非物理删除）。 */
 export class AgentService {
   constructor(
@@ -66,6 +76,8 @@ export class AgentService {
       description: params.description ?? '',
       systemPrompt: params.systemPrompt ?? '',
       skills: params.skills ?? [],
+      capabilities: normalizeCapabilities(params.capabilities),
+      model: params.model?.trim() || null,
       toolPermissions:
         params.toolPermissions === undefined
           ? DEFAULT_TOOL_PERMISSIONS
@@ -100,6 +112,11 @@ export class AgentService {
       description: params.description ?? existing.description,
       systemPrompt: params.systemPrompt ?? existing.systemPrompt,
       skills: params.skills ?? existing.skills,
+      capabilities:
+        params.capabilities === undefined
+          ? existing.capabilities
+          : normalizeCapabilities(params.capabilities),
+      model: params.model === undefined ? existing.model : params.model?.trim() || null,
       toolPermissions:
         params.toolPermissions === undefined
           ? existing.toolPermissions

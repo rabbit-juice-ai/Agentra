@@ -86,6 +86,57 @@ import {
   MaintenanceStatusParamsValue,
   type MaintenanceStatusResult,
   MaintenanceStatusResultValue,
+  PLAN_APPROVE_METHOD,
+  PLAN_COMMENT_METHOD,
+  PLAN_CONTINUE_REWORK_METHOD,
+  PLAN_CONVERT_TO_PROJECT_METHOD,
+  PLAN_CONVERT_TO_TASK_METHOD,
+  PLAN_CREATE_DRAFT_METHOD,
+  PLAN_GENERATE_METHOD,
+  PLAN_GET_METHOD,
+  PLAN_LIST_BY_WORK_METHOD,
+  PLAN_LIST_RECENT_METHOD,
+  PLAN_REASSIGN_TASK_METHOD,
+  PLAN_REJECT_METHOD,
+  PLAN_START_RUN_METHOD,
+  PLAN_TAKE_OVER_REWORK_METHOD,
+  PLAN_THREAD_LIST_METHOD,
+  PlanApproveParams,
+  PlanCommentParams,
+  PlanCommentResult,
+  PlanConvertToProjectParams,
+  PlanConvertToProjectResult,
+  PlanConvertToTaskParams,
+  PlanConvertToTaskResult,
+  PlanCreateDraftParams,
+  PlanDecisionResult,
+  PlanGenerateParams,
+  PlanGenerateResult,
+  PlanGetParams,
+  PlanGetResult,
+  PlanListByWorkParams,
+  PlanListByWorkResult,
+  PlanListRecentParams,
+  PlanListRecentResult,
+  PlanReassignTaskParams,
+  PlanReassignTaskResult,
+  PlanRejectParams,
+  PlanReworkActionParams,
+  PlanReworkActionResult,
+  PlanStartRunParams,
+  PlanStartRunResult,
+  PlanThreadListParams,
+  PlanThreadListResult,
+  PROJECT_CREATE_METHOD,
+  PROJECT_GET_METHOD,
+  PROJECT_LIST_METHOD,
+  PROJECT_UPDATE_METHOD,
+  ProjectCreateParams,
+  ProjectGetParams,
+  ProjectListParams,
+  ProjectListResult,
+  ProjectResult,
+  ProjectUpdateParams,
   RESTORE_STATUS_METHOD,
   RestoreStatusParamsValue,
   RestoreStatusResultValue,
@@ -125,18 +176,6 @@ import {
   WORK_RESUME_METHOD,
   WORK_TERMINATE_METHOD,
   WORKFLOW_RUN_GET_METHOD,
-  WORKFLOW_RUN_LIST_BY_WORK_METHOD,
-  WORKFLOW_RUN_START_METHOD,
-  WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
-  WORKFLOW_TEMPLATE_CREATE_METHOD,
-  WORKFLOW_TEMPLATE_GET_METHOD,
-  WORKFLOW_TEMPLATE_LIST_METHOD,
-  WORKFLOW_TEMPLATE_UPDATE_METHOD,
-  WORKFLOW_VERSION_CREATE_DRAFT_METHOD,
-  WORKFLOW_VERSION_GET_METHOD,
-  WORKFLOW_VERSION_LIST_METHOD,
-  WORKFLOW_VERSION_PUBLISH_METHOD,
-  WORKFLOW_VERSION_VALIDATE_METHOD,
   WORKTREE_CREATE_METHOD,
   WORKTREE_LIST_METHOD,
   WORKTREE_REMOVE_METHOD,
@@ -144,25 +183,6 @@ import {
   type Work as WorkDto,
   WorkflowRunGetParams,
   WorkflowRunGetResult,
-  WorkflowRunListByWorkParams,
-  WorkflowRunListByWorkResult,
-  WorkflowRunStartParams,
-  WorkflowRunStartResult,
-  WorkflowTemplateCreateParams,
-  WorkflowTemplateGetParams,
-  WorkflowTemplateIdParams,
-  WorkflowTemplateListParams,
-  WorkflowTemplateListResult,
-  WorkflowTemplateResult,
-  WorkflowTemplateUpdateParams,
-  WorkflowVersionCreateDraftParams,
-  WorkflowVersionGetParams,
-  WorkflowVersionListParams,
-  WorkflowVersionListResult,
-  WorkflowVersionPublishParams,
-  WorkflowVersionResult,
-  WorkflowVersionValidateParams,
-  WorkflowVersionValidateResult,
   WorkGetParams,
   WorkIdParams,
   WorkLinkTeamParams,
@@ -176,7 +196,6 @@ import {
   WorktreeRemoveParams,
   WorktreeRemoveResult,
 } from '@agentra/protocol'
-import { validateWorkflowDefinition } from '@agentra/workflow-schema'
 import { DrainCoordinator } from '../lifecycle/drain-coordinator'
 import { MaintenanceController } from '../lifecycle/maintenance-controller'
 import type { AgentService } from '../services/agent-service'
@@ -188,25 +207,26 @@ import type { BackupRpcService } from '../services/backup-rpc-service'
 import type { CoreEventHub } from '../services/event-hub'
 import type { ExecutionService } from '../services/execution-service'
 import { coreHealthMethods } from '../services/health'
+import type { PlanService } from '../services/plan-service'
+import { PlanServiceError } from '../services/plan-service'
+import type { PlannerService } from '../services/planner-service'
+import type { ProjectService } from '../services/project-service'
+import { ProjectServiceError } from '../services/project-service'
 import type { ProviderRegistry } from '../services/provider-registry'
 import type { RestoreCoordinator } from '../services/restore-coordinator'
 import { RestoreCoordinatorError } from '../services/restore-coordinator'
 import type { TeamService } from '../services/team-service'
 import type { WorkService } from '../services/work-service'
-import {
-  WorkflowDefinitionError,
-  type WorkflowDefinitionService,
-} from '../services/workflow-definition-service'
 import type { WorktreeService } from '../services/worktree-service'
-import { WorkflowAssignmentError } from '../workflow/assignment-resolver'
 import type { WorkflowEngine } from '../workflow/engine'
-import { WorkflowDefinitionLoadError } from '../workflow/published-definition-provider'
 import { WorkflowRunQueryError, type WorkflowRunQueryService } from '../workflow/run-query-service'
-import { WorkflowRunCreationError } from '../workflow/run-service'
 import type { MethodTable, RpcMethodDef } from './dispatcher'
 
 export type CoreMethodServices = {
   agents: AgentService
+  planner?: PlannerService
+  plans?: PlanService
+  projects?: ProjectService
   registry: ProviderRegistry
   executions: ExecutionService
   hub: CoreEventHub
@@ -215,9 +235,8 @@ export type CoreMethodServices = {
   workEffects?: (id: string, action: string) => Promise<void>
   assignments: AssignmentService
   worktrees: WorktreeService
-  workflows: WorkflowDefinitionService
   workflowRuns: WorkflowRunQueryService
-  workflowEngine?: Pick<WorkflowEngine, 'startRun' | 'kick'>
+  workflowEngine?: Pick<WorkflowEngine, 'kick'>
   approvals: ApprovalRpcService
   artifacts: ArtifactRpcService
   backups: BackupRpcService
@@ -271,26 +290,6 @@ function toWorkDtoAfter(
 }
 
 /**
- * 定义层错误 → RPC 错误码：
- * - UNKNOWN_NODE_TYPE 是错误码，不是 violation；
- * - 其余定义/版本错误统一 INVALID_PARAMS，violations 放 detail（与 validate 返回结构一致）。
- */
-function runWorkflow<T>(action: () => T): T {
-  try {
-    return action()
-  } catch (error) {
-    if (error instanceof WorkflowDefinitionError) {
-      const detail = error.violations.length > 0 ? { violations: error.violations } : undefined
-      if (error.code === 'UNKNOWN_NODE_TYPE') {
-        throw new RpcMethodError('UNKNOWN_NODE_TYPE', error.message, detail)
-      }
-      throw new RpcMethodError('INVALID_PARAMS', error.message, detail)
-    }
-    throw error
-  }
-}
-
-/**
  * S55-2B-1B：`core.maintenance.status` 定义工厂。
  * 业务 socket 与最小 boot socket 共用同一实现，避免双份定义漂移。
  */
@@ -319,33 +318,31 @@ export function coreMethods(
     drain: new DrainCoordinator(),
   },
 ): MethodTable {
+  const requirePlans = (): PlanService => {
+    if (!services.plans) throw new RpcMethodError('NOT_READY', 'plans are not configured')
+    return services.plans
+  }
+  const requireProjects = (): ProjectService => {
+    if (!services.projects) throw new RpcMethodError('NOT_READY', 'projects are not configured')
+    return services.projects
+  }
+  const projectError = (error: unknown): never => {
+    if (error instanceof ProjectServiceError) {
+      throw new RpcMethodError('INVALID_PARAMS', error.message)
+    }
+    throw error
+  }
+  const planError = (error: unknown): never => {
+    if (error instanceof PlanServiceError) {
+      throw new RpcMethodError('INVALID_PARAMS', error.message)
+    }
+    throw error
+  }
   return {
     ...coreHealthMethods(version, daemonSocketPath),
     [CORE_MAINTENANCE_STATUS_METHOD]: maintenanceStatusMethod(
       lifecycle.maintenance,
       lifecycle.drain,
-    ),
-
-    [WORKFLOW_RUN_START_METHOD]: defineMethod(
-      WorkflowRunStartParams,
-      WorkflowRunStartResult,
-      async (params) => {
-        if (!services.workflowEngine)
-          throw new RpcMethodError('NOT_READY', 'workflow engine is not configured')
-        try {
-          return await services.workflowEngine.startRun(params)
-        } catch (error) {
-          if (
-            error instanceof WorkflowRunCreationError ||
-            error instanceof WorkflowDefinitionLoadError ||
-            error instanceof WorkflowAssignmentError
-          ) {
-            throw new RpcMethodError('INVALID_PARAMS', error.message)
-          }
-          throw error
-        }
-      },
-      'write',
     ),
 
     [AGENT_LIST_METHOD]: defineMethod(
@@ -373,6 +370,148 @@ export function coreMethods(
     [AGENT_ARCHIVE_METHOD]: defineMethod(AgentArchiveParams, AgentResult, (params) => ({
       agent: services.agents.archive(params.id),
     })),
+
+    [PLAN_GENERATE_METHOD]: defineMethod(PlanGenerateParams, PlanGenerateResult, async (params) => {
+      try {
+        return await requirePlans().generate(params)
+      } catch (error) {
+        return planError(error)
+      }
+    }),
+    [PLAN_CREATE_DRAFT_METHOD]: defineMethod(
+      PlanCreateDraftParams,
+      PlanGenerateResult,
+      (params) => {
+        try {
+          return requirePlans().createDraft(params)
+        } catch (error) {
+          return planError(error)
+        }
+      },
+    ),
+    [PLAN_GET_METHOD]: defineMethod(
+      PlanGetParams,
+      PlanGetResult,
+      (params) => {
+        try {
+          return requirePlans().get(params.planId)
+        } catch (error) {
+          return planError(error)
+        }
+      },
+      'read',
+    ),
+    [PLAN_LIST_BY_WORK_METHOD]: defineMethod(
+      PlanListByWorkParams,
+      PlanListByWorkResult,
+      (params) => ({ plans: requirePlans().listByWork(params.workId) }),
+      'read',
+    ),
+    [PLAN_LIST_RECENT_METHOD]: defineMethod(
+      PlanListRecentParams,
+      PlanListRecentResult,
+      (params) => ({ plans: requirePlans().listRecent(params.limit) }),
+      'read',
+    ),
+    [PLAN_APPROVE_METHOD]: defineMethod(PlanApproveParams, PlanDecisionResult, (params) => {
+      try {
+        return requirePlans().approve(params.planId, params.decidedBy)
+      } catch (error) {
+        return planError(error)
+      }
+    }),
+    [PLAN_REJECT_METHOD]: defineMethod(PlanRejectParams, PlanDecisionResult, (params) => {
+      try {
+        return requirePlans().reject(params.planId, params.decidedBy, params.comment)
+      } catch (error) {
+        return planError(error)
+      }
+    }),
+    [PLAN_START_RUN_METHOD]: defineMethod(
+      PlanStartRunParams,
+      PlanStartRunResult,
+      async (params) => {
+        try {
+          return await requirePlans().startRun(params.planId, params.requestId)
+        } catch (error) {
+          return planError(error)
+        }
+      },
+    ),
+    [PLAN_THREAD_LIST_METHOD]: defineMethod(
+      PlanThreadListParams,
+      PlanThreadListResult,
+      (params) => {
+        try {
+          return requirePlans().listThreads(params.planId)
+        } catch (error) {
+          return planError(error)
+        }
+      },
+      'read',
+    ),
+    [PLAN_COMMENT_METHOD]: defineMethod(PlanCommentParams, PlanCommentResult, async (params) => {
+      try {
+        return await requirePlans().comment(params)
+      } catch (error) {
+        return planError(error)
+      }
+    }),
+    [PLAN_REASSIGN_TASK_METHOD]: defineMethod(
+      PlanReassignTaskParams,
+      PlanReassignTaskResult,
+      (params) => {
+        try {
+          return requirePlans().reassignTask(params)
+        } catch (error) {
+          return planError(error)
+        }
+      },
+    ),
+    [PLAN_CONTINUE_REWORK_METHOD]: defineMethod(
+      PlanReworkActionParams,
+      PlanReworkActionResult,
+      async (params) => {
+        try {
+          return await requirePlans().continueRework(params)
+        } catch (error) {
+          return planError(error)
+        }
+      },
+    ),
+    [PLAN_TAKE_OVER_REWORK_METHOD]: defineMethod(
+      PlanReworkActionParams,
+      PlanReworkActionResult,
+      (params) => {
+        try {
+          return requirePlans().takeOverRework(params)
+        } catch (error) {
+          return planError(error)
+        }
+      },
+    ),
+    [PLAN_CONVERT_TO_TASK_METHOD]: defineMethod(
+      PlanConvertToTaskParams,
+      PlanConvertToTaskResult,
+      (params) => {
+        try {
+          return requirePlans().convertToTask(params)
+        } catch (error) {
+          return planError(error)
+        }
+      },
+    ),
+    [PLAN_CONVERT_TO_PROJECT_METHOD]: defineMethod(
+      PlanConvertToProjectParams,
+      PlanConvertToProjectResult,
+      (params) => {
+        try {
+          return requirePlans().convertToProject(params)
+        } catch (error) {
+          return planError(error)
+        }
+      },
+    ),
 
     [RUNTIME_PROVIDER_LIST_METHOD]: defineMethod(
       RuntimeProviderListParams,
@@ -487,11 +626,49 @@ export function coreMethods(
       WorkListResult,
       (params) => ({
         works: services.works
-          .list(params.includeArchived ?? false)
+          .list(params.includeArchived ?? false, params.projectId)
           .map((work) => ({ ...work, teamIds: services.works.listTeamIds(work.id) })),
       }),
       'read',
     ),
+    [PROJECT_LIST_METHOD]: defineMethod(
+      ProjectListParams,
+      ProjectListResult,
+      () => {
+        try {
+          return requireProjects().list()
+        } catch (error) {
+          return projectError(error)
+        }
+      },
+      'read',
+    ),
+    [PROJECT_GET_METHOD]: defineMethod(
+      ProjectGetParams,
+      ProjectResult,
+      (params) => {
+        try {
+          return { project: requireProjects().get(params.id) }
+        } catch (error) {
+          return projectError(error)
+        }
+      },
+      'read',
+    ),
+    [PROJECT_CREATE_METHOD]: defineMethod(ProjectCreateParams, ProjectResult, (params) => {
+      try {
+        return { project: requireProjects().create(params) }
+      } catch (error) {
+        return projectError(error)
+      }
+    }),
+    [PROJECT_UPDATE_METHOD]: defineMethod(ProjectUpdateParams, ProjectResult, (params) => {
+      try {
+        return { project: requireProjects().update(params) }
+      } catch (error) {
+        return projectError(error)
+      }
+    }),
     [WORK_GET_METHOD]: defineMethod(
       WorkGetParams,
       WorkResult,
@@ -582,88 +759,6 @@ export function coreMethods(
     [ASSIGNMENT_REMOVE_METHOD]: defineMethod(AssignmentIdParams, AssignmentResult, (params) => ({
       assignment: services.assignments.remove(params.id),
     })),
-
-    [WORKFLOW_TEMPLATE_LIST_METHOD]: defineMethod(
-      WorkflowTemplateListParams,
-      WorkflowTemplateListResult,
-      (params) => ({
-        templates: services.workflows
-          .listTemplates()
-          .filter((template) => params.includeArchived === true || template.archivedAt === null),
-      }),
-      'read',
-    ),
-    [WORKFLOW_TEMPLATE_GET_METHOD]: defineMethod(
-      WorkflowTemplateGetParams,
-      WorkflowTemplateResult,
-      (params) => runWorkflow(() => ({ template: services.workflows.getTemplate(params.id) })),
-      'read',
-    ),
-    [WORKFLOW_TEMPLATE_CREATE_METHOD]: defineMethod(
-      WorkflowTemplateCreateParams,
-      WorkflowTemplateResult,
-      (params) => ({ template: services.workflows.createTemplate(params) }),
-    ),
-    [WORKFLOW_TEMPLATE_UPDATE_METHOD]: defineMethod(
-      WorkflowTemplateUpdateParams,
-      WorkflowTemplateResult,
-      (params) =>
-        runWorkflow(() => ({
-          template: services.workflows.updateTemplate(params.id, {
-            name: params.name,
-            description: params.description,
-            category: params.category,
-          }),
-        })),
-    ),
-    [WORKFLOW_TEMPLATE_ARCHIVE_METHOD]: defineMethod(
-      WorkflowTemplateIdParams,
-      WorkflowTemplateResult,
-      (params) =>
-        runWorkflow(() => {
-          services.workflows.archiveTemplate(params.id)
-          return { template: services.workflows.getTemplate(params.id) }
-        }),
-    ),
-
-    [WORKFLOW_VERSION_LIST_METHOD]: defineMethod(
-      WorkflowVersionListParams,
-      WorkflowVersionListResult,
-      (params) => services.workflows.listVersions(params.templateId),
-      'read',
-    ),
-    [WORKFLOW_VERSION_GET_METHOD]: defineMethod(
-      WorkflowVersionGetParams,
-      WorkflowVersionResult,
-      (params) => runWorkflow(() => ({ version: services.workflows.getVersion(params.versionId) })),
-      'read',
-    ),
-    [WORKFLOW_VERSION_CREATE_DRAFT_METHOD]: defineMethod(
-      WorkflowVersionCreateDraftParams,
-      WorkflowVersionResult,
-      (params) =>
-        runWorkflow(() => ({
-          version: services.workflows.createDraft(params.templateId, params.definition),
-        })),
-    ),
-    [WORKFLOW_VERSION_PUBLISH_METHOD]: defineMethod(
-      WorkflowVersionPublishParams,
-      WorkflowVersionResult,
-      (params) => runWorkflow(() => ({ version: services.workflows.publish(params.versionId) })),
-    ),
-    [WORKFLOW_VERSION_VALIDATE_METHOD]: defineMethod(
-      WorkflowVersionValidateParams,
-      WorkflowVersionValidateResult,
-      (params) => {
-        const outcome = validateWorkflowDefinition(params.definition)
-        if (outcome.ok) return { valid: true, violations: [] }
-        if (outcome.kind === 'error') {
-          throw new RpcMethodError('UNKNOWN_NODE_TYPE', outcome.message)
-        }
-        return { valid: false, violations: outcome.violations }
-      },
-      'read',
-    ),
 
     [BACKUP_CREATE_METHOD]: defineMethod(BackupCreateParamsValue, BackupResultValue, (params) => ({
       backup: services.backups.create(params.type),
@@ -757,13 +852,6 @@ export function coreMethods(
       ArtifactListParams,
       ArtifactListResult,
       (params) => services.artifacts.listByWork(params.workId),
-      'read',
-    ),
-
-    [WORKFLOW_RUN_LIST_BY_WORK_METHOD]: defineMethod(
-      WorkflowRunListByWorkParams,
-      WorkflowRunListByWorkResult,
-      (params) => ({ runs: services.workflowRuns.listByWork(params.workId) }),
       'read',
     ),
 

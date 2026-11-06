@@ -21,6 +21,7 @@ export type WorkRecord = {
   priority: string
   rootPath: string
   repositoryPath: string | null
+  projectId: string | null
   settings: Record<string, unknown>
   createdAt: string
   updatedAt: string
@@ -38,6 +39,7 @@ type WorkRow = {
   priority: string
   root_path: string
   repository_path: string | null
+  project_id: string | null
   settings_json: string
   created_at: string
   updated_at: string
@@ -57,6 +59,7 @@ function toWork(row: WorkRow): WorkRecord {
     priority: row.priority,
     rootPath: row.root_path,
     repositoryPath: row.repository_path,
+    projectId: row.project_id,
     settings: parseJsonColumn(JsonObject, row.settings_json, `works.settings_json(${row.id})`),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -73,8 +76,8 @@ export class WorkRepository {
       .prepare(
         `INSERT INTO works (
           id, name, description, objective, status, priority, root_path, repository_path,
-          settings_json, created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          project_id, settings_json, created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         work.id,
@@ -85,6 +88,7 @@ export class WorkRepository {
         work.priority,
         work.rootPath,
         work.repositoryPath,
+        work.projectId,
         serializeJsonColumn(JsonObject, work.settings, 'work.settings'),
         work.createdAt,
         work.updatedAt,
@@ -113,7 +117,7 @@ export class WorkRepository {
     const result = this.db
       .prepare(
         `UPDATE works SET name = ?, description = ?, objective = ?, priority = ?,
-          root_path = ?, repository_path = ?, settings_json = ?, updated_at = ?
+          root_path = ?, repository_path = ?, project_id = ?, settings_json = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -123,6 +127,7 @@ export class WorkRepository {
         work.priority,
         work.rootPath,
         work.repositoryPath,
+        work.projectId,
         serializeJsonColumn(JsonObject, work.settings, 'work.settings'),
         work.updatedAt,
         work.id,
@@ -144,6 +149,21 @@ export class WorkRepository {
               "SELECT * FROM works WHERE status != 'archived' ORDER BY created_at ASC, id ASC",
             )
             .all()
+    ) as WorkRow[]
+    return rows.map(toWork)
+  }
+
+  listByProject(projectId: string, includeArchived = false): WorkRecord[] {
+    const rows = (
+      includeArchived
+        ? this.db
+            .prepare('SELECT * FROM works WHERE project_id = ? ORDER BY created_at ASC, id ASC')
+            .all(projectId)
+        : this.db
+            .prepare(
+              "SELECT * FROM works WHERE project_id = ? AND status != 'archived' ORDER BY created_at ASC, id ASC",
+            )
+            .all(projectId)
     ) as WorkRow[]
     return rows.map(toWork)
   }

@@ -47,6 +47,7 @@ function harness() {
     agent,
     otherAgent,
     agentRepository,
+    agents,
     teams: new TeamService(db, teamRepository, agentRepository, () => NOW),
     works: new WorkService(db, workRepository, teamRepository, auditRepository, () => NOW),
     assignments: new AssignmentService(
@@ -65,6 +66,56 @@ function harness() {
 
 afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+describe('AgentService', () => {
+  it('defaults capabilities to empty and persists structured capability updates', () => {
+    const h = harness()
+    expect(h.agent.capabilities).toEqual({
+      taskTypes: [],
+      inputTypes: [],
+      outputTypes: [],
+      canVerify: [],
+      canApprove: [],
+      excludedTaskTypes: [],
+    })
+
+    const created = h.agents.create({
+      name: 'Frontend Agent',
+      role: 'dev',
+      capabilities: { taskTypes: ['frontend', 'react'], canVerify: ['frontend'] },
+      model: 'sonnet',
+    })
+    expect(created.capabilities).toMatchObject({
+      taskTypes: ['frontend', 'react'],
+      canVerify: ['frontend'],
+      canApprove: [],
+    })
+    expect(created.model).toBe('sonnet')
+
+    const updated = h.agents.update({
+      id: created.id,
+      capabilities: { taskTypes: ['backend'], excludedTaskTypes: ['frontend'] },
+      model: 'haiku',
+    })
+    expect(updated.capabilities.taskTypes).toEqual(['backend'])
+    expect(updated.capabilities.excludedTaskTypes).toEqual(['frontend'])
+    expect(updated.model).toBe('haiku')
+    expect(h.agents.get(created.id).capabilities.taskTypes).toEqual(['backend'])
+    expect(h.agents.get(created.id).model).toBe('haiku')
+  })
+
+  it('does not let capabilities change tool permissions', () => {
+    const h = harness()
+    const created = h.agents.create({
+      name: 'Scoped Agent',
+      role: 'dev',
+      capabilities: { taskTypes: ['frontend'] },
+      toolPermissions: { version: 1, allow: ['Read'], deny: [] },
+    })
+    expect(created.capabilities.taskTypes).toEqual(['frontend'])
+    expect(created.toolPermissions).toEqual({ version: 1, allow: ['Read'], deny: [] })
+  })
 })
 
 describe('TeamService', () => {

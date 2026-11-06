@@ -68,6 +68,39 @@ export type ToolPermissions = z.infer<typeof ToolPermissions>
 /** 未配置时的默认值：空 allow，按 U3 即「拒绝执行」。 */
 export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = { version: 1, allow: [], deny: [] }
 
+const CapabilityTag = z.string().min(1).max(64)
+
+/**
+ * Agent 的结构化能力标签。Planner 用它做确定性匹配；
+ * 职责描述（description）只用于语义理解，不能替代这里的校验，更不能扩大工具权限。
+ */
+export const AgentCapabilities = z
+  .object({
+    /** 可承担的任务类型，如 frontend / backend / testing / product / design。 */
+    taskTypes: z.array(CapabilityTag).max(50).default([]),
+    /** 可消费的输入类型，如 spec / code / test-report。 */
+    inputTypes: z.array(CapabilityTag).max(50).default([]),
+    /** 可产出的交付物类型。 */
+    outputTypes: z.array(CapabilityTag).max(50).default([]),
+    /** 可验收的任务类型（QA/Reviewer 使用）。 */
+    canVerify: z.array(CapabilityTag).max(50).default([]),
+    /** 可审批的任务类型。 */
+    canApprove: z.array(CapabilityTag).max(50).default([]),
+    /** 明确不接的任务类型，优先于 taskTypes。 */
+    excludedTaskTypes: z.array(CapabilityTag).max(50).default([]),
+  })
+  .strict()
+export type AgentCapabilities = z.infer<typeof AgentCapabilities>
+
+export const EMPTY_AGENT_CAPABILITIES: AgentCapabilities = {
+  taskTypes: [],
+  inputTypes: [],
+  outputTypes: [],
+  canVerify: [],
+  canApprove: [],
+  excludedTaskTypes: [],
+}
+
 export const AgentProfile = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -75,6 +108,9 @@ export const AgentProfile = z.object({
   description: z.string(),
   systemPrompt: z.string(),
   skills: z.array(z.string()),
+  capabilities: AgentCapabilities,
+  /** 可选模型别名/ID；null 表示使用 Provider 默认模型。 */
+  model: z.string().min(1).max(200).nullable().default(null),
   toolPermissions: ToolPermissions,
   defaultProviderId: z.string().min(1).nullable(),
   maxConcurrency: z.number().int().min(1),
@@ -209,6 +245,8 @@ export const Work = z.object({
   priority: z.string().min(1),
   rootPath: z.string().min(1),
   repositoryPath: z.string().min(1).nullable(),
+  /** 所属项目；项目是任务的合集。 */
+  projectId: z.string().min(1).nullable().default(null),
   /** 关联的 Team（来自 work_teams），只读派生字段。 */
   teamIds: z.array(z.string().min(1)),
   createdAt: IsoTimestamp,

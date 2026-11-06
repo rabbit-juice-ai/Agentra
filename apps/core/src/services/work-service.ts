@@ -3,6 +3,7 @@ import { newId } from '@agentra/shared'
 import type { Database } from '../db/database'
 import { transaction } from '../db/database'
 import type { AuditRepository } from '../db/repositories/audit-repository'
+import type { ProjectRepository } from '../db/repositories/project-repository'
 import type { TeamRepository } from '../db/repositories/team-repository'
 import type { WorkRecord, WorkRepository, WorkStatus } from '../db/repositories/work-repository'
 
@@ -35,6 +36,7 @@ export type CreateWorkInput = {
   rootPath: string
   repositoryPath?: string | null
   priority?: string
+  projectId?: string | null
 }
 
 /** Work 领域服务：CRUD + 与 Team 关联 + 暂停/恢复/完成/终止/归档。 */
@@ -48,12 +50,17 @@ export class WorkService {
     private readonly audit: AuditRepository,
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly onTransition?: (workId: string, to: WorkStatus, now: string) => void,
+    private readonly projects?: Pick<ProjectRepository, 'get'>,
   ) {
     this.works = works
   }
 
   create(input: CreateWorkInput): WorkRecord {
     const now = this.now()
+    const projectId = input.projectId ?? 'prj-default'
+    if (this.projects && !this.projects.get(projectId)) {
+      throw new RpcMethodError('INVALID_PARAMS', `project not found: ${projectId}`)
+    }
     const work: WorkRecord = {
       id: newId('work'),
       name: requireText(input.name, 'name'),
@@ -63,6 +70,7 @@ export class WorkService {
       priority: input.priority?.trim() || 'normal',
       rootPath: requireText(input.rootPath, 'rootPath'),
       repositoryPath: input.repositoryPath ?? null,
+      projectId,
       settings: {},
       createdAt: now,
       updatedAt: now,
@@ -80,8 +88,14 @@ export class WorkService {
     return work
   }
 
-  list(includeArchived = false): WorkRecord[] {
-    return this.works.list(includeArchived)
+  list(includeArchived = false, projectId?: string): WorkRecord[] {
+    return projectId
+      ? this.works.listByProject(projectId, includeArchived)
+      : this.works.list(includeArchived)
+  }
+
+  listByProject(projectId: string, includeArchived = false): WorkRecord[] {
+    return this.works.listByProject(projectId, includeArchived)
   }
 
   linkTeam(workId: string, teamId: string): void {

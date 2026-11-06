@@ -1,0 +1,1514 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agentra · UI 重设计稿 v1</title>
+<style>
+  :root{
+    --bg:#f8f8f8; --surface:#fff;
+    --surface-muted:rgb(0 0 0 / 4%); --fill:rgb(0 0 0 / 3%); --fill-2:rgb(0 0 0 / 6%);
+    --border:#eee; --border-2:#e3e3e3;
+    --text:#080808; --muted:#666; --text-3:#999;
+    --accent:#c2542d; --accent-text:#fff; --accent-bg:rgb(194 84 45 / 9%);
+    --info:#0072f5; --danger:#b3261e; --warning:#c79a1c;
+    --done:#3b8a4f; --running:#2f6fdb; --pending:#8a8578;
+    --radius:8px; --radius-sm:6px; --radius-xs:4px; --radius-lg:12px;
+    --font:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+    --mono:'SF Mono',Menlo,Consolas,'PingFang SC',monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#ececec;color:var(--text);font-family:var(--font);-webkit-font-smoothing:antialiased}
+  button{font-family:inherit}
+  .icon{width:16px;height:16px;flex:0 0 auto;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+  .icon.sm{width:14px;height:14px}
+  .icon.lg{width:20px;height:20px}
+
+  /* ---------- viewer chrome (not part of the product) ---------- */
+  .viewer-head{position:sticky;top:0;z-index:200;background:#fff;border-bottom:1px solid var(--border-2);padding:12px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .viewer-brand{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:650;letter-spacing:-.01em;white-space:nowrap}
+  .viewer-brand i{width:20px;height:20px;border-radius:6px;background:var(--accent);color:#fff;display:grid;place-items:center;font-style:normal;font-size:11px;font-weight:700}
+  .viewer-brand span{color:var(--text-3);font-weight:400}
+  .viewer-tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none;flex:1;min-width:300px}
+  .viewer-tabs::-webkit-scrollbar{display:none}
+  .viewer-tab{height:30px;padding:0 10px;border:0;background:transparent;border-radius:6px;color:var(--muted);font-size:12.5px;cursor:pointer;white-space:nowrap}
+  .viewer-tab:hover{background:var(--fill);color:var(--text)}
+  .viewer-tab.active{background:var(--text);color:#fff;font-weight:600}
+  .viewer-toggle{height:30px;padding:0 11px;border:1px solid var(--border-2);background:#fff;border-radius:7px;font-size:12px;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .viewer-toggle.on{background:var(--accent-bg);border-color:rgb(194 84 45 / 30%);color:var(--accent);font-weight:600}
+  .stage{padding:22px;display:flex;justify-content:center}
+  .screen{display:none;width:100%;max-width:1440px}
+  .screen.active{display:block}
+  .app-scale{position:relative;margin:0 auto}
+  .app{width:1440px;height:900px;position:absolute;top:0;left:0;transform-origin:top left;background:var(--bg);border:1px solid #dcdcdc;border-radius:14px;overflow:hidden;display:flex;box-shadow:0 10px 40px rgb(0 0 0 / 8%)}
+
+  /* ---------- shell ---------- */
+  .sidebar{width:228px;flex:0 0 228px;background:var(--bg);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:14px 10px 10px}
+  .brand{display:flex;align-items:center;gap:9px;padding:4px 10px 16px;font-size:16px;font-weight:650;letter-spacing:-.01em}
+  .brand-mark{width:22px;height:22px;border-radius:6px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:11px;font-weight:700}
+  .nav-group{margin-bottom:12px}
+  .nav-label{font-size:10.5px;color:var(--text-3);padding:0 10px 5px;letter-spacing:.04em}
+  .nav-item{display:flex;align-items:center;gap:9px;width:100%;height:34px;padding:0 10px;border:0;background:transparent;border-radius:7px;font-size:13px;color:var(--muted);cursor:pointer;text-align:left;white-space:nowrap}
+  .nav-item:hover{background:var(--fill);color:var(--text)}
+  .nav-item.active{background:var(--fill-2);color:var(--text);font-weight:600}
+  .nav-item .icon{color:var(--text-3)}
+  .nav-item.active .icon{color:var(--accent)}
+  .nav-count{margin-left:auto;font-size:10.5px;color:var(--text-3);background:var(--fill);border-radius:999px;padding:1px 6px;font-weight:500}
+  .nav-count.hot{color:var(--accent);background:var(--accent-bg);font-weight:650}
+  .sidebar-foot{margin-top:auto;border-top:1px solid var(--border);padding-top:10px;display:flex;flex-direction:column;gap:6px}
+  .provider-card{border:1px solid var(--border);background:var(--surface);border-radius:10px;padding:10px 11px;display:flex;flex-direction:column;gap:6px}
+  .provider-row{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600}
+  .provider-meta{font-size:11px;color:var(--text-3);display:flex;align-items:center;gap:5px}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--done);flex:0 0 auto}
+  .dot.blue{background:var(--running)} .dot.amber{background:var(--warning)} .dot.gray{background:var(--pending)} .dot.red{background:var(--danger)}
+  .side-settings{display:flex;align-items:center;gap:9px;height:32px;padding:0 10px;border:0;background:transparent;border-radius:7px;color:var(--muted);font-size:12.5px;cursor:pointer;text-align:left}
+
+  .main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
+  .topbar{display:flex;align-items:flex-start;gap:14px;padding:18px 24px 14px;border-bottom:1px solid var(--border);background:var(--bg);flex:0 0 auto}
+  .page-head{min-width:0}
+  .page-title{font-size:24px;font-weight:650;letter-spacing:-.025em;margin:0;line-height:1.15;display:flex;align-items:center;gap:10px}
+  .page-sub{font-size:12.5px;color:var(--muted);margin-top:6px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .topbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px;padding-top:2px;flex:0 0 auto}
+  .content{flex:1;min-height:0;padding:18px 24px 20px;overflow:hidden}
+  .statusbar{height:28px;flex:0 0 28px;border-top:1px solid var(--border);display:flex;align-items:center;gap:14px;padding:0 16px;font-size:11px;color:var(--text-3);background:var(--bg)}
+  .statusbar .right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .status-item{display:inline-flex;align-items:center;gap:6px}
+
+  /* ---------- controls ---------- */
+  .btn{height:34px;padding:0 13px;border-radius:8px;border:1px solid transparent;font-size:12.5px;display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;white-space:nowrap;background:transparent;color:var(--text)}
+  .btn-primary{background:var(--accent);color:var(--accent-text);font-weight:600}
+  .btn-primary:hover{background:#ad4826}
+  .btn-secondary{background:var(--surface);border-color:var(--border-2);color:var(--text)}
+  .btn-secondary:hover{background:var(--fill)}
+  .btn-ghost{color:var(--muted)}
+  .btn-ghost:hover{background:var(--fill);color:var(--text)}
+  .btn-danger{background:transparent;border-color:rgb(179 38 30 / 28%);color:var(--danger)}
+  .btn-danger:hover{background:rgb(179 38 30 / 6%)}
+  .btn-sm{height:28px;padding:0 10px;font-size:12px;border-radius:7px}
+  .btn-icon{width:32px;height:32px;padding:0}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .input{height:32px;border:1px solid var(--border-2);background:var(--surface);border-radius:8px;padding:0 10px;font-size:12.5px;color:var(--text);display:flex;align-items:center;gap:7px;min-width:0}
+  .input .icon{color:var(--text-3)}
+  .input input{border:0;outline:0;background:transparent;font:inherit;color:inherit;width:100%;min-width:0}
+  .input.search{width:232px}
+  .select{height:32px;border:1px solid var(--border-2);background:var(--surface);border-radius:8px;padding:0 9px;font-size:12.5px;color:var(--muted);display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+  .segmented{display:inline-flex;background:var(--fill);border-radius:8px;padding:2px}
+  .segmented button{height:26px;padding:0 10px;border:0;background:transparent;border-radius:6px;font-size:12px;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+  .segmented button.on{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 2px rgb(0 0 0 / 6%)}
+  .link{color:var(--accent);font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+  .muted{color:var(--muted)} .faint{color:var(--text-3)}
+  .mono{font-family:var(--mono);font-size:11.5px}
+
+  .pill{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:10.5px;font-weight:550;white-space:nowrap;background:var(--fill);color:var(--muted)}
+  .pill::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
+  .pill.running{color:var(--running);background:rgb(47 111 219 / 8%)}
+  .pill.done{color:var(--done);background:rgb(59 138 79 / 9%)}
+  .pill.pending{color:#7d786c;background:rgb(138 133 120 / 12%)}
+  .pill.warn{color:#8f6a0d;background:rgb(199 154 28 / 14%)}
+  .pill.danger{color:var(--danger);background:rgb(179 38 30 / 8%)}
+  .pill.accent{color:var(--accent);background:var(--accent-bg)}
+  .pill.plain::before{display:none}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;min-width:0}
+  .card-head{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--border)}
+  .card-title{font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .card-sub{font-size:11.5px;color:var(--text-3)}
+  .card-head .right{margin-left:auto;display:flex;align-items:center;gap:6px}
+  .card-body{padding:14px 16px}
+  .card-foot{border-top:1px solid var(--border);padding:11px 16px;display:flex;align-items:center;gap:8px}
+  .card-foot .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+
+  .avatar{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:650;color:#6b4a3c;background:#efe3dd;border:2px solid var(--surface);flex:0 0 auto}
+  .avatar.a2{background:#e2e8ef;color:#3f546b}
+  .avatar.a3{background:#e5ece3;color:#456042}
+  .avatar.a4{background:#efe9dc;color:#6b5a37}
+  .avatar-stack{display:flex;align-items:center}
+  .avatar-stack .avatar+.avatar{margin-left:-7px}
+
+  /* provider identity: neutral monogram badges, never a second accent */
+  .provider-badge{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px 0 3px;border-radius:5px;background:var(--fill);font-size:10.5px;color:var(--muted);font-weight:550;white-space:nowrap}
+  .provider-mark{width:15px;height:15px;border-radius:4px;display:grid;place-items:center;font-size:8px;font-weight:750;letter-spacing:0;background:#f0e2dc;color:#8a4b31;flex:0 0 auto}
+  .provider-mark.cx{background:#e3e6ea;color:#414957}
+  .provider-mark.gm{background:#e2ece7;color:#3d5f51}
+  .provider-line{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text);min-width:0}
+  .provider-line .ver{font-size:9.5px;color:var(--text-3);margin-left:auto}
+  .provider-line .dot{margin-left:2px}
+  .provider-card-head{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--text-3);margin-bottom:3px}
+  .filter-chips{display:flex;align-items:center;gap:6px;margin-bottom:12px}
+  .chip-filter{height:26px;padding:0 10px;border-radius:999px;background:var(--fill);font-size:11.5px;color:var(--muted);display:inline-flex;align-items:center;gap:6px;border:1px solid transparent;cursor:pointer;white-space:nowrap}
+  .chip-filter.on{background:var(--surface);border-color:var(--border-2);color:var(--text);font-weight:600}
+  .chip-filter .count{font-size:10.5px;color:var(--text-3);font-weight:500}
+  .agent-table{width:100%;border-collapse:collapse;font-size:12px}
+  .agent-table th{text-align:left;font-size:10.5px;font-weight:500;color:var(--text-3);padding:9px 14px;border-bottom:1px solid var(--border);background:var(--bg)}
+  .agent-table td{padding:9px 14px;border-bottom:1px solid var(--border);color:var(--muted);vertical-align:middle}
+  .agent-table tr:last-child td{border-bottom:0}
+  .agent-table tbody tr:hover td{background:#fcfcfc}
+  .agent-id{display:flex;align-items:center;gap:9px;min-width:0}
+  .agent-id .avatar{width:28px;height:28px;font-size:10px;border:0}
+  .agent-id .name{font-size:12px;font-weight:600;color:var(--text)}
+  .agent-id .sub{font-size:10px;color:var(--text-3);margin-top:1px}
+  .tool-chips{display:flex;gap:4px;overflow:hidden}
+  .tool-chips .chip{height:20px;font-size:10px;padding:0 6px}
+  .task-link{color:var(--accent);font-size:11.5px;text-decoration:none;display:block;max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .task-none{color:var(--text-3);font-size:11.5px}
+  .meta-grid.four{grid-template-columns:repeat(4,1fr)}
+
+  .progress{height:4px;background:var(--fill-2);border-radius:2px;overflow:hidden}
+  .progress>i{display:block;height:100%;border-radius:2px;background:var(--running)}
+  .progress.done>i{background:var(--done)}
+  .progress.accent>i{background:var(--accent)}
+
+  /* ---------- overview ---------- */
+  .stat-strip{display:grid;grid-template-columns:repeat(5,1fr);background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .stat{padding:13px 18px;border-left:1px solid var(--border);min-width:0}
+  .stat:first-child{border-left:0}
+  .stat-label{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .stat-value{font-size:26px;font-weight:650;letter-spacing:-.03em;margin-top:5px;line-height:1}
+  .stat-value.accent{color:var(--accent)}
+  .stat-foot{font-size:11px;color:var(--text-3);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .overview-grid{display:grid;grid-template-columns:1.9fr 1fr;gap:14px;margin-top:14px;height:352px}
+  .task-row{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border);min-height:62px}
+  .task-row:last-child{border-bottom:0}
+  .task-icon{width:30px;height:30px;border-radius:8px;background:var(--accent-bg);color:var(--accent);display:grid;place-items:center;flex:0 0 auto}
+  .task-icon.blue{background:rgb(47 111 219 / 9%);color:var(--running)}
+  .task-main{min-width:0;flex:1}
+  .task-name{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:7px}
+  .task-meta{font-size:11px;color:var(--text-3);margin-top:3px;display:flex;align-items:center;gap:7px}
+  .task-age{font-size:11px;color:var(--text-3);white-space:nowrap}
+  .run-row{display:flex;align-items:flex-start;gap:11px;padding:12px 16px;border-bottom:1px solid var(--border)}
+  .run-row:last-child{border-bottom:0}
+  .run-main{flex:1;min-width:0}
+  .run-name{font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .run-meta{font-size:11px;color:var(--text-3);margin-top:3px}
+  .run-row .progress{margin-top:8px}
+  .bottom-grid{display:grid;grid-template-columns:1.9fr 1fr;gap:14px;margin-top:14px;height:276px}
+  table.plain{width:100%;border-collapse:collapse;font-size:12px}
+  table.plain th{text-align:left;font-size:10.5px;font-weight:500;color:var(--text-3);padding:9px 16px;border-bottom:1px solid var(--border);background:var(--bg)}
+  table.plain td{padding:10px 16px;border-bottom:1px solid var(--border);color:var(--muted)}
+  table.plain tr:last-child td{border-bottom:0}
+  table.plain td strong{color:var(--text);font-weight:550}
+
+  /* ---------- board ---------- */
+  .board{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;height:100%;min-height:0}
+  .col{background:var(--fill);border-radius:12px;padding:10px;display:flex;flex-direction:column;min-height:0}
+  .col.running{background:rgb(47 111 219 / 4%)}
+  .col.paused{background:rgb(199 154 28 / 5%)}
+  .col.done{background:rgb(59 138 79 / 4%)}
+  .col-head{display:flex;align-items:center;gap:7px;padding:2px 4px 10px;font-size:12.5px;font-weight:600;flex:0 0 auto}
+  .col-count{font-size:11px;color:var(--text-3);font-weight:500}
+  .col-add{margin-left:auto;width:24px;height:24px;border:0;background:transparent;border-radius:6px;color:var(--text-3);display:grid;place-items:center;cursor:pointer}
+  .col-add:hover{background:var(--fill-2);color:var(--text)}
+  .work-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px;cursor:pointer}
+  .work-card:hover{border-color:var(--border-2)}
+  .work-card-top{display:flex;align-items:flex-start;gap:8px}
+  .work-card-title{font-size:12.5px;font-weight:600;line-height:1.35;flex:1;min-width:0}
+  .work-card-desc{font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .work-card .progress{margin-top:10px}
+  .work-card-meta{display:flex;align-items:center;gap:7px;margin-top:9px;font-size:10.5px;color:var(--text-3)}
+  .work-card-foot{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid var(--border)}
+  .work-card-foot .right{margin-left:auto}
+
+  /* ---------- detail layouts ---------- */
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:14px;flex:0 0 auto}
+  .tab{height:34px;padding:0 11px;border:0;background:transparent;font-size:12.5px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .tab:hover{color:var(--text)}
+  .tab.active{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
+  .tab .count{font-size:10.5px;color:var(--text-3);background:var(--fill);border-radius:999px;padding:1px 6px}
+  .detail-grid{display:grid;grid-template-columns:1.9fr 1fr;gap:14px;height:calc(100% - 48px);min-height:0}
+  .stack{display:flex;flex-direction:column;gap:12px;min-height:0}
+  .kv{display:grid;grid-template-columns:82px 1fr;gap:8px 10px;font-size:12px}
+  .kv dt{color:var(--text-3)}
+  .kv dd{margin:0;color:var(--text);min-width:0;word-break:break-all}
+  .activity{display:flex;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);font-size:12px}
+  .activity:last-child{border-bottom:0}
+  .activity .dot{margin-top:5px}
+  .activity time{color:var(--text-3);font-size:11px;margin-left:auto;white-space:nowrap}
+  .artifact-row{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border)}
+  .artifact-row:last-child{border-bottom:0}
+  .artifact-icon{width:28px;height:28px;border-radius:7px;background:var(--fill);color:var(--muted);display:grid;place-items:center;flex:0 0 auto}
+  .artifact-name{font-size:12px;font-weight:550}
+  .artifact-meta{font-size:10.5px;color:var(--text-3);margin-top:2px}
+
+  /* ---------- editor ---------- */
+  .editor{display:flex;flex-direction:column;height:100%;min-width:0}
+  .editor-toolbar{height:54px;flex:0 0 54px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);background:var(--surface)}
+  .editor-title{display:flex;align-items:center;gap:9px;min-width:0}
+  .editor-title .name{font-size:13.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .editor-tools{display:flex;align-items:center;gap:2px;margin-left:18px;padding-left:14px;border-left:1px solid var(--border)}
+  .editor-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .editor-body{flex:1;display:flex;min-height:0}
+  .palette{width:220px;flex:0 0 220px;border-right:1px solid var(--border);background:var(--surface);padding:12px;overflow:hidden}
+  .palette-search{margin-bottom:12px}
+  .palette-label{font-size:10.5px;color:var(--text-3);letter-spacing:.04em;padding:0 4px 6px;margin-top:10px}
+  .palette-item{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:7px;font-size:12px;color:var(--muted);cursor:grab;border:1px solid transparent}
+  .palette-item:hover{background:var(--fill);color:var(--text)}
+  .palette-item .icon{color:var(--text-3)}
+  .canvas{flex:1;min-width:0;position:relative;background-color:var(--bg);background-image:radial-gradient(#d9d9d9 1px,transparent 1px);background-size:16px 16px;overflow:hidden}
+  .canvas-tools{position:absolute;left:12px;bottom:12px;display:flex;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:2px;z-index:5}
+  .canvas-tools button{width:28px;height:28px;border:0;background:transparent;border-radius:6px;color:var(--muted);display:grid;place-items:center;cursor:pointer}
+  .canvas-tools button:hover{background:var(--fill)}
+  .node{position:absolute;width:170px;background:var(--surface);border:1px solid var(--border-2);border-radius:10px;padding:8px 10px;cursor:pointer;z-index:2}
+  .node.selected{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+  .node-type{font-size:9.5px;color:var(--text-3);letter-spacing:.05em;text-transform:uppercase}
+  .node-name{font-size:12px;font-weight:600;margin-top:2px;display:flex;align-items:center;gap:6px}
+  .node-sub{font-size:10px;color:var(--text-3);margin-top:2px}
+  .node .icon{width:13px;height:13px;color:var(--muted)}
+  .node.start .icon,.node.end .icon{color:var(--text-3)}
+  .node.approval .icon{color:var(--warning)}
+  .node.parallel .icon,.node.join .icon{color:var(--running)}
+  .edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
+  .edges path{fill:none;stroke:#c9c9c9;stroke-width:1.5}
+  .edges path.active{stroke:var(--accent)}
+  .inspector{width:320px;flex:0 0 320px;border-left:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;min-height:0}
+  .inspector-head{padding:13px 16px;border-bottom:1px solid var(--border)}
+  .inspector-title{font-size:13px;font-weight:650;display:flex;align-items:center;gap:7px}
+  .inspector-sub{font-size:11px;color:var(--text-3);margin-top:3px}
+  .inspector-body{flex:1;overflow:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:14px}
+  .field label{display:block;font-size:11px;color:var(--text-3);margin-bottom:5px}
+  .field .input{width:100%}
+  .field textarea{width:100%;min-height:64px;border:1px solid var(--border-2);border-radius:8px;background:var(--surface);padding:8px 9px;font:inherit;font-size:12px;color:var(--text);resize:none;outline:0}
+  .field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .chip{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:6px;background:var(--fill);font-size:11px;color:var(--muted)}
+  .inspector-foot{border-top:1px solid var(--border);padding:11px 16px;display:flex;align-items:center;gap:8px}
+  .inspector-foot .right{margin-left:auto}
+  .run-drawer{height:44px;flex:0 0 44px;border-top:1px solid var(--border);background:var(--surface);display:flex;align-items:center;gap:10px;padding:0 16px}
+  .run-drawer .title{font-size:12px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .run-drawer .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .mini-runs{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-3)}
+
+  /* ---------- run / approvals / artifacts split ---------- */
+  .split{display:grid;grid-template-columns:320px 1fr;gap:14px;height:100%;min-height:0}
+  .split.wide{grid-template-columns:400px 1fr}
+  .split.artifacts{grid-template-columns:380px 1fr}
+  .list-card{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .list-scroll{flex:1;overflow:hidden}
+  .node-item{display:flex;align-items:flex-start;gap:10px;padding:11px 14px;border-bottom:1px solid var(--border);cursor:pointer}
+  .node-item:last-child{border-bottom:0}
+  .node-item.selected{background:var(--accent-bg)}
+  .node-state{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;flex:0 0 auto;margin-top:1px;background:rgb(59 138 79 / 10%);color:var(--done)}
+  .node-state.wait{background:rgb(199 154 28 / 14%);color:#8f6a0d}
+  .node-state.run{background:rgb(47 111 219 / 10%);color:var(--running)}
+  .node-state.idle{background:var(--fill);color:var(--text-3)}
+  .node-item .icon{width:11px;height:11px;stroke-width:2.2}
+  .node-item-main{flex:1;min-width:0}
+  .node-item-name{font-size:12px;font-weight:550;display:flex;align-items:center;gap:6px}
+  .node-item-meta{font-size:10.5px;color:var(--text-3);margin-top:3px;display:flex;align-items:center;gap:6px}
+  .detail-pane{display:flex;flex-direction:column;min-height:0}
+  .detail-head{padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:10px}
+  .detail-head .right{margin-left:auto;display:flex;align-items:center;gap:6px}
+  .detail-tabs{display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--border);flex:0 0 auto}
+  .detail-body{flex:1;overflow:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:12px;min-height:0}
+  .doc{border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  .doc-head{display:flex;align-items:center;gap:9px;padding:10px 12px;background:var(--bg);border-bottom:1px solid var(--border)}
+  .doc-title{font-size:12px;font-weight:600}
+  .doc-meta{font-size:10.5px;color:var(--text-3);margin-top:2px}
+  .doc-body{padding:14px 16px;font-size:12px;line-height:1.75;color:var(--muted)}
+  .doc-body h4{margin:0 0 6px;font-size:12.5px;color:var(--text)}
+  .doc-body p{margin:0 0 8px}
+  .doc-body ul{margin:0;padding-left:17px}
+  .code-block{background:#fafafa;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-family:var(--mono);font-size:11px;line-height:1.6;color:#444;overflow:hidden}
+  .meta-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:9px;overflow:hidden}
+  .meta-cell{background:var(--surface);padding:9px 11px}
+  .meta-cell .k{font-size:10px;color:var(--text-3)}
+  .meta-cell .v{font-size:11.5px;margin-top:3px;color:var(--text);font-weight:550;word-break:break-all}
+  .decision-bar{border-top:1px solid var(--border);background:var(--surface);padding:12px 16px;flex:0 0 auto}
+  .decision-bar textarea{width:100%;height:46px;border:1px solid var(--border-2);border-radius:8px;padding:8px 9px;font:inherit;font-size:12px;resize:none;outline:0;color:var(--text)}
+  .decision-actions{display:flex;align-items:center;gap:8px;margin-top:9px}
+  .decision-actions .hint{font-size:10.5px;color:var(--text-3);margin-right:auto}
+  .inbox-row{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer}
+  .inbox-row:last-child{border-bottom:0}
+  .inbox-row.selected{background:var(--accent-bg)}
+  .inbox-main{flex:1;min-width:0}
+  .inbox-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .inbox-meta{font-size:10.5px;color:var(--text-3);margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .inbox-age{margin-left:auto;font-size:10.5px;color:var(--text-3);white-space:nowrap;padding-top:2px}
+
+  /* ---------- agents ---------- */
+  .agent-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .agent-card{padding:14px}
+  .agent-top{display:flex;align-items:flex-start;gap:10px}
+  .agent-avatar{width:38px;height:38px;border-radius:10px;background:var(--accent-bg);color:var(--accent);display:grid;place-items:center;font-size:13px;font-weight:700;flex:0 0 auto}
+  .agent-name{font-size:13px;font-weight:650}
+  .agent-role{font-size:11px;color:var(--text-3);margin-top:2px}
+  .agent-desc{font-size:11.5px;color:var(--muted);line-height:1.55;margin-top:10px;min-height:36px}
+  .agent-chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}
+  .agent-foot{display:flex;align-items:center;gap:8px;margin-top:11px;padding-top:10px;border-top:1px solid var(--border)}
+  .agent-foot .right{margin-left:auto}
+  .team-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+  .team-card{padding:14px;display:flex;align-items:center;gap:12px}
+  .team-icon{width:38px;height:38px;border-radius:10px;background:var(--fill);color:var(--muted);display:grid;place-items:center;flex:0 0 auto}
+  .team-name{font-size:12.5px;font-weight:600}
+  .team-meta{font-size:11px;color:var(--text-3);margin-top:3px}
+
+  /* ---------- backups ---------- */
+  .backup-table{font-size:12px}
+  .backup-table th{text-align:left;font-size:10.5px;font-weight:500;color:var(--text-3);padding:9px 16px;border-bottom:1px solid var(--border);background:var(--bg)}
+  .backup-table td{padding:11px 16px;border-bottom:1px solid var(--border);color:var(--muted);vertical-align:middle}
+  .backup-table tr:last-child td{border-bottom:0}
+  .backup-table td strong{color:var(--text);font-weight:550}
+  .backup-table .right{text-align:right;white-space:nowrap}
+  .danger-zone{margin-top:14px;border:1px solid rgb(179 38 30 / 18%);border-radius:12px;background:rgb(179 38 30 / 2%);padding:16px;display:flex;align-items:center;gap:16px}
+  .danger-zone .text{flex:1}
+  .danger-zone h4{margin:0 0 5px;font-size:12.5px;color:var(--danger)}
+  .danger-zone p{margin:0;font-size:11.5px;color:var(--muted);line-height:1.6;max-width:760px}
+
+  /* ---------- spec page ---------- */
+  .spec-app{display:block;overflow:auto}
+  .spec-layout{display:grid;grid-template-columns:1.05fr .95fr;gap:28px;padding:34px 38px}
+  .spec-kicker{font-size:11px;color:var(--accent);font-weight:650;letter-spacing:.06em}
+  .spec-h1{font-size:28px;font-weight:680;letter-spacing:-.03em;margin:7px 0 8px}
+  .spec-lead{font-size:13px;color:var(--muted);line-height:1.7;margin:0 0 18px;max-width:560px}
+  .wireframe{position:relative;border:1px solid var(--border-2);border-radius:12px;background:var(--surface);height:544px;overflow:hidden}
+  .wf-zone{position:absolute;border:1px dashed #cfcfcf;border-radius:8px;background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-3);text-align:center;padding:8px}
+  .wf-zone.filled{background:var(--surface);border-style:solid;border-color:var(--border)}
+  .wf-num{position:absolute;top:6px;left:6px;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:10px;font-weight:650;display:grid;place-items:center}
+  .wf-side{left:12px;top:12px;bottom:44px;width:112px;flex-direction:column;gap:8px;align-items:stretch;justify-content:flex-start;padding:10px}
+  .wf-side div{height:24px;border-radius:5px;background:var(--fill);display:flex;align-items:center;padding:0 7px;font-size:10px;color:var(--muted)}
+  .wf-side div.on{background:var(--fill-2);color:var(--text);font-weight:600}
+  .wf-top{left:136px;right:12px;top:12px;height:52px;display:grid;grid-template-columns:1.3fr 1fr auto;gap:10px;padding:9px;align-items:center}
+  .wf-title{height:100%;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding-left:4px}
+  .wf-title b{font-size:12px;color:var(--text)}
+  .wf-title span{font-size:9.5px;color:var(--text-3);margin-top:2px}
+  .wf-filters{display:flex;gap:5px;justify-content:center}
+  .wf-filters i{height:22px;width:64px;border:1px solid var(--border);border-radius:5px;background:var(--surface);display:block}
+  .wf-actions{display:flex;gap:5px;justify-content:flex-end}
+  .wf-actions i{height:24px;width:52px;border-radius:5px;background:var(--fill-2);display:block}
+  .wf-actions i:last-child{background:var(--accent);width:64px}
+  .wf-main{left:136px;top:76px;bottom:44px;width:calc(100% - 136px - 12px - 158px);display:block;padding:0;background:transparent;border:0}
+  .wf-content{position:absolute;inset:0;border:1px dashed #cfcfcf;border-radius:8px;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:11px}
+  .wf-rail{right:12px;top:76px;bottom:44px;width:146px;display:flex;align-items:center;justify-content:center}
+  .wf-status{left:12px;right:12px;bottom:12px;height:24px;display:flex;align-items:center;justify-content:space-between;padding:0 8px;font-size:9.5px}
+  .wf-status span{display:inline-flex;align-items:center;gap:4px}
+  .rule-card{border:1px solid var(--border);border-radius:12px;background:var(--surface);padding:14px 16px;margin-bottom:10px}
+  .rule-card h3{margin:0 0 5px;font-size:12.5px;display:flex;align-items:center;gap:7px}
+  .rule-card h3 .n{width:18px;height:18px;border-radius:50%;background:var(--accent-bg);color:var(--accent);font-size:10px;display:grid;place-items:center;font-weight:650;flex:0 0 auto}
+  .rule-card p{margin:0;font-size:11.5px;color:var(--muted);line-height:1.65}
+  .rule-card code{font-family:var(--mono);font-size:10.5px;background:var(--fill);border-radius:4px;padding:1px 4px;color:var(--text)}
+  .btn-spec{width:100%;border-collapse:collapse;font-size:11px;margin-top:4px}
+  .btn-spec th{text-align:left;color:var(--text-3);font-weight:500;padding:7px 8px;border-bottom:1px solid var(--border)}
+  .btn-spec td{padding:8px;border-bottom:1px solid var(--border);color:var(--muted);vertical-align:top}
+  .btn-spec tr:last-child td{border-bottom:0}
+  .btn-spec .sample{display:inline-flex;height:24px;align-items:center;padding:0 8px;border-radius:6px;font-size:10.5px;font-weight:600}
+  .s-primary{background:var(--accent);color:#fff}
+  .s-secondary{background:var(--surface);border:1px solid var(--border-2);color:var(--text)}
+  .s-ghost{background:transparent;color:var(--muted)}
+  .s-danger{background:transparent;border:1px solid rgb(179 38 30 / 28%);color:var(--danger)}
+
+  .coverage{margin-top:16px;border:1px solid var(--border);border-radius:12px;background:var(--surface);padding:14px 16px}
+  .coverage-label{font-size:10.5px;color:var(--text-3);letter-spacing:.04em}
+  .coverage-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+  .coverage-chips span{height:24px;display:inline-flex;align-items:center;padding:0 9px;border-radius:6px;background:var(--fill);font-size:11px;color:var(--muted)}
+  .coverage p{margin:10px 0 0;font-size:11px;line-height:1.6;color:var(--text-3)}
+
+  /* ---------- notes ---------- */
+  .screen-notes{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:16px 0 40px}
+  .note-card{background:#fff;border:1px solid var(--border-2);border-radius:10px;padding:11px 13px}
+  .note-card h4{margin:0 0 4px;font-size:11.5px;display:flex;align-items:center;gap:6px}
+  .note-card h4 .n{width:17px;height:17px;border-radius:50%;background:var(--accent);color:#fff;font-size:9.5px;display:grid;place-items:center;font-weight:650;flex:0 0 auto}
+  .note-card p{margin:0;font-size:11px;line-height:1.6;color:var(--muted)}
+  .note-card p b{color:var(--text);font-weight:600}
+
+  /* annotation markers */
+  [data-note]{position:relative}
+  .app [data-note]::after{content:attr(data-note);position:absolute;top:-9px;left:-9px;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:10px;font-weight:700;display:none;place-items:center;z-index:60;box-shadow:0 0 0 2px var(--bg)}
+  .annotated .app [data-note]::after{display:grid}
+  .annotated .screen-notes .note-card{outline:2px solid var(--accent-bg)}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-briefcase" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18M10 12v2h4v-2"/></symbol>
+  <symbol id="i-flow" viewBox="0 0 24 24"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h5a4 4 0 0 1 4 4v5M6 9v9h9"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4V8Z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.8-5"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0M16 5.2a3.2 3.2 0 0 1 0 5.6M17.5 14.2A5.5 5.5 0 0 1 21 20"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16l-6 7v6l-4 2v-8L4 5Z"/></symbol>
+  <symbol id="i-grid-view" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2-1.2L14.3 3h-4.6l-.3 2.7a7 7 0 0 0-2 1.2l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2 1.2l.3 2.7h4.6l.3-2.7a7 7 0 0 0 2-1.2l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2Z"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></symbol>
+  <symbol id="i-git" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 7v10M8 12h5a3 3 0 0 0 3-3V7"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19L12 3Z"/><path d="M12 9v5M12 17.5v.1"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7V3Z"/><path d="M14 3v5h5M10 13h5M10 17h5"/></symbol>
+  <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 12V6.5a1.5 1.5 0 0 1 3 0V11M11 11V5.5a1.5 1.5 0 0 1 3 0V11M14 11V7a1.5 1.5 0 0 1 3 0v6M17 11V9.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-3l-2.5-4a1.6 1.6 0 0 1 2.6-1.8L8 14"/></symbol>
+</svg>
+
+<header class="viewer-head">
+  <div class="viewer-brand"><i>A</i>Agentra <span>· UI 重设计稿 v1</span></div>
+  <nav class="viewer-tabs" id="viewer-tabs">
+    <button class="viewer-tab active" data-screen="spec">布局规范</button>
+    <button class="viewer-tab" data-screen="overview">总览</button>
+    <button class="viewer-tab" data-screen="works">Works</button>
+    <button class="viewer-tab" data-screen="work-detail">Work 详情</button>
+    <button class="viewer-tab" data-screen="workflow">工作流编辑器</button>
+    <button class="viewer-tab" data-screen="run">运行详情</button>
+    <button class="viewer-tab" data-screen="approvals">审批中心</button>
+    <button class="viewer-tab" data-screen="artifacts">交付物</button>
+    <button class="viewer-tab" data-screen="agents">Agents</button>
+    <button class="viewer-tab" data-screen="backups">备份中心</button>
+  </nav>
+  <button class="viewer-toggle" id="annotate-toggle">显示布局标注</button>
+</header>
+
+<template id="tpl-sidebar">
+  <div class="brand"><span class="brand-mark">A</span>Agentra</div>
+  <div class="nav-group">
+    <div class="nav-label">工作台</div>
+    <button class="nav-item" data-goto="overview"><svg class="icon"><use href="#i-grid"/></svg>总览</button>
+    <button class="nav-item" data-goto="works"><svg class="icon"><use href="#i-briefcase"/></svg>Works<span class="nav-count">8</span></button>
+    <button class="nav-item" data-goto="workflow"><svg class="icon"><use href="#i-flow"/></svg>工作流</button>
+    <button class="nav-item" data-goto="run"><svg class="icon"><use href="#i-play"/></svg>运行记录<span class="nav-count">3</span></button>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">协作</div>
+    <button class="nav-item" data-goto="approvals"><svg class="icon"><use href="#i-check"/></svg>审批中心<span class="nav-count hot">4</span></button>
+    <button class="nav-item" data-goto="artifacts"><svg class="icon"><use href="#i-box"/></svg>交付物<span class="nav-count">23</span></button>
+    <button class="nav-item" data-goto="agents"><svg class="icon"><use href="#i-users"/></svg>Agents<span class="nav-count">6</span></button>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">系统</div>
+    <button class="nav-item" data-goto="backups"><svg class="icon"><use href="#i-archive"/></svg>备份中心</button>
+  </div>
+  <div class="sidebar-foot">
+    <div class="provider-card">
+      <div class="provider-card-head">Providers<span class="pill done" style="margin-left:auto;height:18px;font-size:9.5px">2 正常</span></div>
+      <div class="provider-line"><span class="provider-mark">CC</span><span>Claude Code</span><span class="ver">2.1.318</span><span class="dot"></span></div>
+      <div class="provider-line"><span class="provider-mark cx">CX</span><span>Codex</span><span class="ver">0.165.0</span><span class="dot"></span></div>
+    </div>
+    <button class="side-settings"><svg class="icon"><use href="#i-settings"/></svg>设置</button>
+  </div>
+</template>
+
+<!-- ===================================================================== -->
+<!-- 0. 布局规范 -->
+<!-- ===================================================================== -->
+<section class="screen active" data-screen="spec" data-nav="">
+  <div class="app-scale"><div class="app spec-app">
+    <div class="spec-layout">
+      <div>
+        <div class="spec-kicker">LAYOUT SYSTEM</div>
+        <h1 class="spec-h1">先定工作区，再定按钮</h1>
+        <p class="spec-lead">所有页面共用一套骨架：左侧导航、页面头三段式、内容区。按钮只出现在三个固定位置——页面头右侧、内容行尾、详情底部；破坏性操作永远离开主操作区。</p>
+        <div class="wireframe">
+          <div class="wf-zone wf-side"><span class="wf-num">1</span>
+            <div class="on">总览</div><div>Works</div><div>工作流</div><div>运行记录</div><div>审批中心</div><div>交付物</div><div>Agents</div><div>备份中心</div>
+          </div>
+          <div class="wf-zone wf-top">
+            <div class="wf-title"><span class="wf-num">2</span><b>页面标题 + 一句说明</b><span>当前页面做什么、有多少条</span></div>
+            <div class="wf-filters"><span class="wf-num">3</span><i></i><i></i></div>
+            <div class="wf-actions"><span class="wf-num">4</span><i></i><i></i></div>
+          </div>
+          <div class="wf-zone wf-main"><span class="wf-num">5</span><div class="wf-content">主工作区<br/>看板 / 表格 / 画布 / 时间线</div></div>
+          <div class="wf-zone wf-rail"><span class="wf-num">6</span>详情 / 属性 / 预览</div>
+          <div class="wf-zone wf-status"><span class="wf-num">7</span><span><i class="dot"></i>Core 正常 · Daemon 正常 · Claude Code</span><span>协议 v1 · 本地数据</span></div>
+        </div>
+        <div class="coverage">
+          <div class="coverage-label">本稿覆盖页面</div>
+          <div class="coverage-chips">
+            <span>总览</span><span>Works 看板</span><span>Work 详情</span><span>工作流编辑器</span><span>运行详情</span><span>审批中心</span><span>交付物</span><span>Agents</span><span>备份中心</span>
+          </div>
+          <p>每个页面都按同一骨架出图：导航区、页面头、主工作区、详情栏、状态栏。按钮位置在页面之间不漂移。</p>
+        </div>
+      </div>
+      <div>
+        <div class="rule-card">
+          <h3><span class="n">2·3·4</span>页面头固定三段式</h3>
+          <p>左：标题 + 一句说明（数量、状态）。中：搜索与筛选，永远在主按钮左边。右：次要操作 → 主操作。主操作固定在右上角，位置不随页面内容变化。</p>
+        </div>
+        <div class="rule-card">
+          <h3><span class="n">4</span>一个视图只有一个实色主按钮</h3>
+          <p>主按钮 = 当前页面最想让你做的事：<code>新建 Work</code>、<code>发起运行</code>、<code>发布</code>、<code>通过</code>。其他操作一律描边或幽灵样式，不与主按钮抢视觉。</p>
+        </div>
+        <div class="rule-card">
+          <h3><span class="n">5·6</span>列表与详情分开，比例固定</h3>
+          <p>列表-详情：<code>380 / 1fr</code>（审批 <code>400 / 1fr</code>，运行 <code>320 / 1fr</code>）。列表只负责定位，详情承担阅读和操作；详情底部固定决策栏，滚动时不丢按钮。</p>
+        </div>
+        <div class="rule-card">
+          <h3><span class="n">!</span>破坏性操作离开主操作区</h3>
+          <p>终止、删除、恢复、驳回：列表行进 <code>…</code> 菜单；详情页放页脚 Danger Zone；审批驳回放在决策栏最左，与“通过”拉开距离。永远不做成实色红按钮。</p>
+        </div>
+        <div class="rule-card">
+          <h3><span class="n">A</span>多 Agent：按状态排，按 Provider 筛</h3>
+          <p>Agent 列表默认按“执行中 → 可用 → 空闲”排序；Provider 只做筛选 chips，不把列表拆成多组。执行者用 15px 中性徽标（<code>CC</code> / <code>CX</code> / <code>GM</code>）标识，徽标不参与排序，也不使用第二个强调色。</p>
+        </div>
+        <table class="btn-spec">
+          <thead><tr><th>层级</th><th>样式</th><th>固定位置</th><th>例子</th></tr></thead>
+          <tbody>
+            <tr><td>主操作</td><td><span class="sample s-primary">实色</span></td><td>页面头最右</td><td>新建 Work / 发布 / 通过</td></tr>
+            <tr><td>次操作</td><td><span class="sample s-secondary">描边</span></td><td>主操作左侧</td><td>保存草稿 / 暂停 / 导出</td></tr>
+            <tr><td>行内操作</td><td><span class="sample s-ghost">幽灵</span></td><td>行尾 / 卡片底部</td><td>去处理 / 打开 / 查看</td></tr>
+            <tr><td>破坏性</td><td><span class="sample s-danger">红色描边</span></td><td>… 菜单 / Danger Zone</td><td>终止 / 删除 / 恢复</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div></div>
+  <div class="screen-notes">
+    <div class="note-card"><h4><span class="n">1</span>导航区</h4><p>固定 228px。按“工作台 / 协作 / 系统”分组；审批数量用赤陶色计数，其余计数保持灰色。</p></div>
+    <div class="note-card"><h4><span class="n">2</span>页面标题区</h4><p>标题 24px，说明 12.5px。说明里直接给数量与健康状态，避免再放一排统计卡。</p></div>
+    <div class="note-card"><h4><span class="n">3</span>搜索与筛选</h4><p>固定在标题与主按钮之间，宽度 232px。切换视图（看板/列表）紧贴筛选右侧。</p></div>
+    <div class="note-card"><h4><span class="n">4</span>操作区</h4><p>从右到左：主按钮 → 次按钮 → 图标按钮。主按钮永远在最右，且一屏只有一个。</p></div>
+    <div class="note-card"><h4><span class="n">5</span>主工作区</h4><p>看板铺满；表单/阅读页限制 1152px；详情页与右侧栏按固定比例分栏，不随窗口拉长。</p></div>
+    <div class="note-card"><h4><span class="n">6</span>详情/属性栏</h4><p>只放当前选中项的属性、预览和局部操作。全局操作留在页面头，不重复。</p></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<!-- 1. 总览 -->
+<!-- ===================================================================== -->
+<section class="screen" data-screen="overview" data-nav="overview">
+  <div class="app-scale"><div class="app">
+    <aside class="sidebar" data-sidebar></aside>
+    <div class="main">
+      <div class="topbar">
+        <div class="page-head">
+          <h1 class="page-title">总览</h1>
+          <div class="page-sub">11 月 6 日 周四 · 4 项等你审批 · Core 与 Daemon 正常</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-ghost btn-icon" data-note="1" title="刷新"><svg class="icon"><use href="#i-refresh"/></svg></button>
+          <button class="btn btn-secondary" data-note="2">查看全部运行</button>
+          <button class="btn btn-primary" data-note="3"><svg class="icon sm"><use href="#i-plus"/></svg>新建 Work</button>
+        </div>
+      </div>
+      <div class="content">
+        <div class="stat-strip" data-note="4">
+          <div class="stat"><div class="stat-label">等我审批</div><div class="stat-value accent">4</div><div class="stat-foot">最久等待 2 小时 14 分</div></div>
+          <div class="stat"><div class="stat-label">进行中</div><div class="stat-value">2</div><div class="stat-foot">3 个节点正在执行</div></div>
+          <div class="stat"><div class="stat-label">今日完成</div><div class="stat-value">7</div><div class="stat-foot">较昨日 +3</div></div>
+          <div class="stat"><div class="stat-label">交付物</div><div class="stat-value">23</div><div class="stat-foot">8 个 Work · 12 个版本</div></div>
+          <div class="stat"><div class="stat-label">异常</div><div class="stat-value">1</div><div class="stat-foot">1 个节点失败，待重试</div></div>
+        </div>
+
+        <div class="overview-grid">
+          <div class="card" data-note="5">
+            <div class="card-head"><div class="card-title">需要我处理<span class="pill accent">4</span></div><div class="right"><a class="link">全部审批<svg class="icon sm"><use href="#i-chevron-right"/></svg></a></div></div>
+            <div class="task-row">
+              <div class="task-icon"><svg class="icon"><use href="#i-check"/></svg></div>
+              <div class="task-main"><div class="task-name">MVP 核心闭环 · 方案审批</div><div class="task-meta"><span>HumanApproval</span><span>·</span><span>run-95b3…</span><span class="pill warn">等你回复</span></div></div>
+              <div class="task-age">2 小时 14 分</div>
+              <button class="btn btn-secondary btn-sm" data-note="6">去处理</button>
+            </div>
+            <div class="task-row">
+              <div class="task-icon blue"><svg class="icon"><use href="#i-box"/></svg></div>
+              <div class="task-main"><div class="task-name">备份恢复 UI · 交付物验收</div><div class="task-meta"><span>HumanApproval</span><span>·</span><span>run-71c2…</span><span class="pill warn">等你回复</span></div></div>
+              <div class="task-age">48 分钟</div>
+              <button class="btn btn-secondary btn-sm">去处理</button>
+            </div>
+            <div class="task-row">
+              <div class="task-icon blue"><svg class="icon"><use href="#i-alert"/></svg></div>
+              <div class="task-main"><div class="task-name">Provider 健康检查 · 执行失败</div><div class="task-meta"><span>AgentTask</span><span>·</span><span>run-2f80…</span><span class="pill danger">失败</span></div></div>
+              <div class="task-age">21 分钟</div>
+              <button class="btn btn-secondary btn-sm">查看失败</button>
+            </div>
+            <div class="task-row">
+              <div class="task-icon"><svg class="icon"><use href="#i-hand"/></svg></div>
+              <div class="task-main"><div class="task-name">移动端离线模式 · 需求确认</div><div class="task-meta"><span>HumanApproval</span><span>·</span><span>run-9ac1…</span><span class="pill pending">排队中</span></div></div>
+              <div class="task-age">12 分钟</div>
+              <button class="btn btn-secondary btn-sm">去处理</button>
+            </div>
+          </div>
+
+          <div class="card" data-note="7">
+            <div class="card-head"><div class="card-title">正在运行<span class="pill running">2</span></div><div class="right"><button class="btn btn-ghost btn-icon"><svg class="icon"><use href="#i-refresh"/></svg></button></div></div>
+            <div class="run-row">
+              <span class="dot blue" style="margin-top:6px"></span>
+              <div class="run-main"><div class="run-name">MVP 核心闭环 <span class="pill running">执行中</span></div><div class="run-meta">研发 Agent · Claude Code · 需求分析 · 已用 3 分 12 秒</div><div class="progress"><i style="width:62%"></i></div></div>
+              <button class="btn btn-ghost btn-sm">查看</button>
+            </div>
+            <div class="run-row">
+              <span class="dot blue" style="margin-top:6px"></span>
+              <div class="run-main"><div class="run-name">备份恢复 UI <span class="pill running">执行中</span></div><div class="run-meta">代码审查 Agent · Codex · 复核 · 已用 1 分 05 秒</div><div class="progress"><i style="width:34%"></i></div></div>
+              <button class="btn btn-ghost btn-sm">查看</button>
+            </div>
+            <div class="run-row">
+              <span class="dot amber" style="margin-top:6px"></span>
+              <div class="run-main"><div class="run-name">Provider 健康检查 <span class="pill warn">等待审批</span></div><div class="run-meta">研发 Agent · Claude Code · 审批节点 · 等待 21 分钟</div><div class="progress"><i style="width:78%;background:var(--warning)"></i></div></div>
+              <button class="btn btn-ghost btn-sm">查看</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="bottom-grid">
+          <div class="card" data-note="8">
+            <div class="card-head"><div class="card-title">最近完成</div><div class="right"><a class="link">全部<svg class="icon sm"><use href="#i-chevron-right"/></svg></a></div></div>
+            <table class="plain">
+              <thead><tr><th>Work</th><th>结果</th><th>用时</th><th>完成时间</th></tr></thead>
+              <tbody>
+                <tr><td><strong>审批中心 v1</strong></td><td><span class="pill done">已通过</span></td><td>4 分 32 秒</td><td>今天 11:42</td></tr>
+                <tr><td><strong>Artifact 版本链</strong></td><td><span class="pill done">已通过</span></td><td>6 分 08 秒</td><td>今天 10:18</td></tr>
+                <tr><td><strong>Work 生命周期</strong></td><td><span class="pill done">已通过</span></td><td>3 分 41 秒</td><td>昨天 18:06</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card" data-note="9">
+            <div class="card-head"><div class="card-title">运行环境</div><div class="right"><a class="link">设置</a></div></div>
+            <div class="card-body" style="display:flex;flex-direction:column;gap:8px">
+              <div style="display:flex;align-items:center;gap:8px;font-size:12px"><span class="provider-mark">CC</span><strong style="font-weight:600">Claude Code</strong><span class="faint" style="font-size:10.5px">2.1.318</span><span class="pill done" style="margin-left:auto">健康</span></div>
+              <div style="display:flex;align-items:center;gap:8px;font-size:12px"><span class="provider-mark cx">CX</span><strong style="font-weight:600">Codex</strong><span class="faint" style="font-size:10.5px">0.165.0</span><span class="pill done" style="margin-left:auto">健康</span></div>
+              <div class="faint" style="font-size:11px">2 个 Provider · 最近检查 1 分钟前</div>
+              <div style="height:1px;background:var(--border)"></div>
+              <div style="display:flex;align-items:center;gap:9px;font-size:12px"><span class="dot"></span>Core<span class="faint" style="margin-left:auto">pid 199</span></div>
+              <div style="display:flex;align-items:center;gap:9px;font-size:12px"><span class="dot"></span>Daemon<span class="faint" style="margin-left:auto">pid 211</span></div>
+              <div style="height:1px;background:var(--border)"></div>
+              <div style="display:flex;align-items:center;gap:9px;font-size:12px"><span class="dot gray"></span>最近备份<span class="faint" style="margin-left:auto">12 分钟前</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span class="status-item"><span class="dot"></span>Core 正常</span>
+        <span class="status-item"><span class="dot"></span>Daemon 正常</span>
+        <span class="status-item"><span class="dot blue"></span>Claude Code · Codex</span>
+        <span class="right"><span>协议 v1</span><span>数据目录 ~/agt-mvp</span></span>
+      </div>
+    </div>
+  </div></div>
+  <div class="screen-notes">
+    <div class="note-card"><h4><span class="n">1</span>刷新</h4><p>图标按钮放在操作区最左，不抢主按钮。只刷新当前页数据。</p></div>
+    <div class="note-card"><h4><span class="n">2</span>次操作</h4><p>“查看全部运行”是次级入口，描边样式，紧贴主按钮左侧。</p></div>
+    <div class="note-card"><h4><span class="n">3</span>主操作</h4><p>“新建 Work”固定右上角，实色赤陶。总览页只有这一个实色按钮。</p></div>
+    <div class="note-card"><h4><span class="n">4</span>统计条</h4><p>5 个只读指标横排，等分宽度；数字用 26px，说明只留一行。统计条不承载操作。</p></div>
+    <div class="note-card"><h4><span class="n">5</span>待处理列表</h4><p>占 2/3 宽度，按等待时长排序。每行只放一个“去处理”按钮，固定在行尾。</p></div>
+    <div class="note-card"><h4><span class="n">6</span>行内操作</h4><p>行内按钮一律小号描边，不用实色；整行本身不可点击，避免与按钮冲突。</p></div>
+    <div class="note-card"><h4><span class="n">7</span>运行列表</h4><p>占 1/3 宽度，只显示进行中/等待审批。查看按钮为幽灵样式，固定在行尾。</p></div>
+    <div class="note-card"><h4><span class="n">8</span>最近完成</h4><p>只读表格，不放操作；需要操作时进入 Work 详情。</p></div>
+    <div class="note-card"><h4><span class="n">9</span>环境卡</h4><p>Provider、Core、Daemon、备份状态集中一处；设置链接在卡头右侧。</p></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<!-- 2. Works 看板 -->
+<!-- ===================================================================== -->
+<section class="screen" data-screen="works" data-nav="works">
+  <div class="app-scale"><div class="app">
+    <aside class="sidebar" data-sidebar></aside>
+    <div class="main">
+      <div class="topbar">
+        <div class="page-head">
+          <h1 class="page-title">Works</h1>
+          <div class="page-sub">8 个 Work · 2 个进行中 · 1 个等待审批 · 1 个已暂停</div>
+        </div>
+        <div class="topbar-actions">
+          <label class="input search" data-note="1"><svg class="icon sm"><use href="#i-search"/></svg><input placeholder="搜索 Work 名称或目标" /></label>
+          <button class="select" data-note="2"><svg class="icon sm"><use href="#i-filter"/></svg>全部状态<svg class="icon sm"><use href="#i-chevron-down"/></svg></button>
+          <div class="segmented" data-note="3"><button class="on"><svg class="icon sm"><use href="#i-grid-view"/></svg>看板</button><button><svg class="icon sm"><use href="#i-list"/></svg>列表</button></div>
+          <button class="btn btn-primary" data-note="4"><svg class="icon sm"><use href="#i-plus"/></svg>新建 Work</button>
+        </div>
+      </div>
+      <div class="content">
+        <div class="board">
+          <div class="col" data-note="5">
+            <div class="col-head"><span class="dot gray"></span>草稿<span class="col-count">1</span><button class="col-add"><svg class="icon sm"><use href="#i-plus"/></svg></button></div>
+            <div class="work-card">
+              <div class="work-card-top"><div class="work-card-title">移动端离线模式</div><span class="pill pending">草稿</span></div>
+              <div class="work-card-desc">为桌面端补充离线读取与本地缓存策略，断网时仍可查看最近交付物。</div>
+              <div class="work-card-meta"><div class="avatar-stack"><span class="avatar">R</span><span class="avatar a2">L</span></div><span>2 名成员</span><span>·</span><span>更新于 2 天前</span></div>
+              <div class="work-card-foot"><span class="faint" style="font-size:10.5px">尚未启动运行</span><span class="right"><button class="btn btn-ghost btn-sm">打开</button></span></div>
+            </div>
+          </div>
+
+          <div class="col running" data-note="6">
+            <div class="col-head"><span class="dot blue"></span>进行中<span class="col-count">2</span><button class="col-add"><svg class="icon sm"><use href="#i-plus"/></svg></button></div>
+            <div class="work-card">
+              <div class="work-card-top"><div class="work-card-title">MVP 核心闭环</div><span class="pill running">进行中</span></div>
+              <div class="work-card-desc">Workflow Run、Artifact 交换、审批决策与 Work 生命周期级联。</div>
+              <div class="progress"><i style="width:68%"></i></div>
+              <div class="work-card-meta"><div class="avatar-stack"><span class="avatar">R</span><span class="avatar a2">C</span><span class="avatar a3">Q</span></div><span>3 名成员</span><span>·</span><span>3 分钟前</span></div>
+              <div class="work-card-foot"><span class="pill warn">等待审批</span><span class="right"><button class="btn btn-secondary btn-sm">打开</button></span></div>
+            </div>
+            <div class="work-card">
+              <div class="work-card-top"><div class="work-card-title">备份恢复 UI</div><span class="pill running">进行中</span></div>
+              <div class="work-card-desc">备份中心页面、恢复预检与恢复进度呈现。</div>
+              <div class="progress"><i style="width:34%"></i></div>
+              <div class="work-card-meta"><div class="avatar-stack"><span class="avatar a2">L</span><span class="avatar a4">M</span></div><span>2 名成员</span><span>·</span><span>1 分钟前</span></div>
+              <div class="work-card-foot"><span class="pill running">执行中</span><span class="right"><button class="btn btn-secondary btn-sm">打开</button></span></div>
+            </div>
+          </div>
+
+          <div class="col paused" data-note="7">
+            <div class="col-head"><span class="dot amber"></span>已暂停<span class="col-count">1</span><button class="col-add"><svg class="icon sm"><use href="#i-plus"/></svg></button></div>
+            <div class="work-card">
+              <div class="work-card-top"><div class="work-card-title">Provider 健康检查</div><span class="pill warn">已暂停</span></div>
+              <div class="work-card-desc">定期探测 Claude Code 的安装、版本与认证状态，异常时阻断新执行。</div>
+              <div class="progress"><i style="width:78%;background:var(--warning)"></i></div>
+              <div class="work-card-meta"><div class="avatar-stack"><span class="avatar a4">M</span></div><span>1 名成员</span><span>·</span><span>暂停于 21 分钟前</span></div>
+              <div class="work-card-foot"><span class="pill warn">等待恢复</span><span class="right"><button class="btn btn-ghost btn-sm">恢复</button><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-more"/></svg></button></span></div>
+            </div>
+          </div>
+
+          <div class="col done" data-note="8">
+            <div class="col-head"><span class="dot"></span>已完成<span class="col-count">4</span><button class="col-add"><svg class="icon sm"><use href="#i-plus"/></svg></button></div>
+            <div class="work-card">
+              <div class="work-card-top"><div class="work-card-title">审批中心 v1</div><span class="pill done">已完成</span></div>
+              <div class="work-card-desc">全局待审批列表、Artifact 预览与三种决策。</div>
+              <div class="work-card-meta"><div class="avatar-stack"><span class="avatar">R</span><span class="avatar a3">Q</span></div><span>2 名成员</span><span>·</span><span>今天 11:42</span></div>
+              <div class="work-card-foot"><span class="faint" style="font-size:10.5px">3 个交付物</span><span class="right"><button class="btn btn-ghost btn-sm">打开</button></span></div>
+            </div>
+            <div class="work-card">
+              <div class="work-card-top"><div class="work-card-title">Artifact 版本链</div><span class="pill done">已完成</span></div>
+              <div class="work-card-desc">输出提取、版本提交与下游 checksum 校验。</div>
+              <div class="work-card-meta"><div class="avatar-stack"><span class="avatar a2">C</span></div><span>1 名成员</span><span>·</span><span>今天 10:18</span></div>
+              <div class="work-card-foot"><span class="faint" style="font-size:10.5px">5 个交付物</span><span class="right"><button class="btn btn-ghost btn-sm">打开</button></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span class="status-item"><span class="dot"></span>Core 正常</span>
+        <span class="status-item"><span class="dot"></span>Daemon 正常</span>
+        <span class="status-item"><span class="dot blue"></span>Claude Code · Codex</span>
+        <span class="right"><span>8 个 Work</span><span>2 个运行中</span></span>
+      </div>
+    </div>
+  </div></div>
+  <div class="screen-notes">
+    <div class="note-card"><h4><span class="n">1</span>搜索</h4><p>固定在操作区最左，宽 232px；输入即筛选，不单独占一行。</p></div>
+    <div class="note-card"><h4><span class="n">2</span>筛选</h4><p>状态下拉紧贴搜索右侧；筛选不改变主按钮位置。</p></div>
+    <div class="note-card"><h4><span class="n">3</span>视图切换</h4><p>看板/列表分段控件，放在筛选与主按钮之间。当前视图用白底凸起。</p></div>
+    <div class="note-card"><h4><span class="n">4</span>主操作</h4><p>“新建 Work”固定最右。看板列内的“+”只是快捷入口，不抢主按钮。</p></div>
+    <div class="note-card"><h4><span class="n">5</span>看板列</h4><p>四列等宽，列底色区分状态（灰/蓝/琥珀/绿，4–5% 透明度）。列头放状态点、名称、计数和快捷“+”。</p></div>
+    <div class="note-card"><h4><span class="n">6</span>卡片主操作</h4><p>“打开”固定在卡片底部右侧；等待审批时左侧显示状态 pill，不额外放审批按钮。</p></div>
+    <div class="note-card"><h4><span class="n">7</span>暂停卡片</h4><p>恢复是行内幽灵按钮；“终止/归档”收进“…”菜单，避免误触。</p></div>
+    <div class="note-card"><h4><span class="n">8</span>完成卡片</h4><p>只显示结果与交付物数量，不再放“重新运行”；需要时进详情页。</p></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<!-- 3. Work 详情 -->
+<!-- ===================================================================== -->
+<section class="screen" data-screen="work-detail" data-nav="works">
+  <div class="app-scale"><div class="app">
+    <aside class="sidebar" data-sidebar></aside>
+    <div class="main">
+      <div class="topbar">
+        <div class="page-head">
+          <div class="page-sub" style="margin:0 0 6px"><a class="link" style="color:var(--text-3)"><svg class="icon sm"><use href="#i-arrow-left"/></svg>Works</a></div>
+          <h1 class="page-title">MVP 核心闭环 <span class="pill running">进行中</span></h1>
+          <div class="page-sub">Workflow Run、Artifact 交换、审批决策与 Work 生命周期级联。</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-secondary" data-note="1"><svg class="icon sm"><use href="#i-pause"/></svg>暂停</button>
+          <button class="btn btn-ghost btn-icon" data-note="2"><svg class="icon"><use href="#i-more"/></svg></button>
+          <button class="btn btn-primary" data-note="3"><svg class="icon sm"><use href="#i-play"/></svg>发起运行</button>
+        </div>
+      </div>
+      <div class="content">
+        <div class="tabs" data-note="4">
+          <button class="tab active">概览</button>
+          <button class="tab">运行<span class="count">3</span></button>
+          <button class="tab">交付物<span class="count">5</span></button>
+          <button class="tab">团队</button>
+          <button class="tab">设置</button>
+        </div>
+        <div class="detail-grid">
+          <div class="stack">
+            <div class="card" data-note="5">
+              <div class="card-head"><div class="card-title">当前运行 <span class="pill running">执行中</span></div><div class="right"><span class="faint mono">run-95b38d87</span><a class="link">查看运行<svg class="icon sm"><use href="#i-chevron-right"/></svg></a></div></div>
+              <div class="card-body">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+                  <span class="chip"><svg class="icon sm"><use href="#i-check"/></svg>Start</span><span class="faint">→</span>
+                  <span class="chip" style="background:rgb(59 138 79 / 10%);color:var(--done)"><svg class="icon sm"><use href="#i-check"/></svg>需求分析</span><span class="faint">→</span>
+                  <span class="chip" style="background:rgb(199 154 28 / 14%);color:#8f6a0d"><svg class="icon sm"><use href="#i-hand"/></svg>方案审批</span><span class="faint">→</span>
+                  <span class="chip"><svg class="icon sm"><use href="#i-flow"/></svg>实现</span><span class="faint">→</span>
+                  <span class="chip"><svg class="icon sm"><use href="#i-play"/></svg>End</span>
+                </div>
+                <div class="progress"><i style="width:68%"></i></div>
+                <div style="display:flex;align-items:center;gap:14px;margin-top:12px;font-size:11.5px;color:var(--text-3)">
+                  <span>已用 3 分 12 秒</span><span>·</span><span>研发 Agent · Claude Code</span><span>·</span><span>当前节点：实现</span>
+                  <span style="margin-left:auto"><button class="btn btn-ghost btn-sm">取消运行</button></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" data-note="6" style="flex:1;min-height:0">
+              <div class="card-head"><div class="card-title">最近活动</div><div class="right"><button class="btn btn-ghost btn-sm">查看全部</button></div></div>
+              <div class="activity"><span class="dot"></span><div><strong style="font-weight:600">方案审批</strong> 已通过 · 审批人 R.J</div><time>2 分钟前</time></div>
+              <div class="activity"><span class="dot blue"></span><div><strong style="font-weight:600">需求分析</strong> 产出交付物 spec.md v1</div><time>3 分钟前</time></div>
+              <div class="activity"><span class="dot"></span><div><strong style="font-weight:600">实现</strong> 开始执行 · 研发 Agent · Claude Code</div><time>3 分钟前</time></div>
+              <div class="activity"><span class="dot gray"></span><div>运行 run-95b38d87 已启动</div><time>4 分钟前</time></div>
+            </div>
+          </div>
+
+          <div class="stack">
+            <div class="card" data-note="7">
+              <div class="card-head"><div class="card-title">Work 信息</div></div>
+              <div class="card-body"><dl class="kv">
+                <dt>目标</dt><dd>跑通 MVP 核心业务闭环</dd>
+                <dt>根目录</dt><dd class="mono">~/agt-mvp/works/mvp-core</dd>
+                <dt>创建时间</dt><dd>11 月 4 日 09:12</dd>
+                <dt>优先级</dt><dd>高</dd>
+              </dl></div>
+            </div>
+            <div class="card" data-note="8">
+              <div class="card-head"><div class="card-title">团队</div><div class="right"><button class="btn btn-ghost btn-sm">管理</button></div></div>
+              <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+                <div style="display:flex;align-items:center;gap:9px"><span class="avatar">R</span><div><div style="font-size:12px;font-weight:550">研发 Agent</div><div class="faint" style="font-size:10.5px">dev · Claude Code</div></div><span class="pill running" style="margin-left:auto">执行中</span></div>
+                <div style="display:flex;align-items:center;gap:9px"><span class="avatar a3">Q</span><div><div style="font-size:12px;font-weight:550">QA Agent</div><div class="faint" style="font-size:10.5px">review · Claude Code</div></div><span class="pill pending" style="margin-left:auto">空闲</span></div>
+                <div style="display:flex;align-items:center;gap:9px"><span class="avatar a2">审</span><div><div style="font-size:12px;font-weight:550">代码审查 Agent</div><div class="faint" style="font-size:10.5px">review · Codex</div></div><span class="pill pending" style="margin-left:auto">空闲</span></div>
+              </div>
+            </div>
+            <div class="card" data-note="9">
+              <div class="card-head"><div class="card-title">最近交付物</div><div class="right"><a class="link">全部</a></div></div>
+              <div class="artifact-row"><span class="artifact-icon"><svg class="icon sm"><use href="#i-doc"/></svg></span><div><div class="artifact-name">spec.md</div><div class="artifact-meta">v1 · 需求分析 · 2 分钟前</div></div><button class="btn btn-ghost btn-sm" style="margin-left:auto">预览</button></div>
+              <div class="artifact-row"><span class="artifact-icon"><svg class="icon sm"><use href="#i-doc"/></svg></span><div><div class="artifact-name">plan.md</div><div class="artifact-meta">v2 · 方案设计 · 1 小时前</div></div><button class="btn btn-ghost btn-sm" style="margin-left:auto">预览</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span class="status-item"><span class="dot"></span>Core 正常</span><span class="status-item"><span class="dot"></span>Daemon 正常</span>
+        <span class="right"><span>Work work-7efc3d62</span><span>3 个运行</span></span>
+      </div>
+    </div>
+  </div></div>
+  <div class="screen-notes">
+    <div class="note-card"><h4><span class="n">1</span>暂停</h4><p>次操作，描边样式，紧贴主按钮左侧。暂停只影响当前 Work，不影响其他 Work。</p></div>
+    <div class="note-card"><h4><span class="n">2</span>更多菜单</h4><p>终止、归档等破坏性操作收进“…”；菜单里用红色文字，不与主操作同排。</p></div>
+    <div class="note-card"><h4><span class="n">3</span>主操作</h4><p>“发起运行”固定右上角。已有运行进行中时仍可发起，但会在弹窗里提示当前运行状态。</p></div>
+    <div class="note-card"><h4><span class="n">4</span>页内标签</h4><p>概览 / 运行 / 交付物 / 团队 / 设置。标签只切换工作区，不改变页面头按钮位置。</p></div>
+    <div class="note-card"><h4><span class="n">5</span>当前运行</h4><p>节点链横向展示进度；“查看运行”在卡头右侧，“取消运行”在卡底右侧，避免误触。</p></div>
+    <div class="note-card"><h4><span class="n">6</span>活动流</h4><p>只读时间线，按时间倒序；不放操作，操作去对应运行或审批页面。</p></div>
+    <div class="note-card"><h4><span class="n">7</span>信息栏</h4><p>右侧 1/3 固定放 Work 元数据；键值对左对齐，路径用等宽字体。</p></div>
+    <div class="note-card"><h4><span class="n">8</span>团队</h4><p>成员状态用 pill 表示；“管理”是幽灵按钮，进团队页。</p></div>
+    <div class="note-card"><h4><span class="n">9</span>交付物</h4><p>只列最近 2–3 个；“预览”固定在行尾，完整列表进交付物标签。</p></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<!-- 4. 工作流编辑器 -->
+<!-- ===================================================================== -->
+<section class="screen" data-screen="workflow" data-nav="workflow">
+  <div class="app-scale"><div class="app">
+    <aside class="sidebar" data-sidebar></aside>
+    <div class="main">
+      <div class="editor">
+        <div class="editor-toolbar">
+          <div class="editor-title" data-note="1">
+            <button class="btn btn-ghost btn-icon"><svg class="icon"><use href="#i-arrow-left"/></svg></button>
+            <span class="name">MVP 交付流程</span>
+            <span class="pill pending plain">v3 · 草稿</span>
+          </div>
+          <div class="editor-tools" data-note="2">
+            <button class="btn btn-ghost btn-icon" title="撤销"><svg class="icon"><use href="#i-arrow-left"/></svg></button>
+            <button class="btn btn-ghost btn-icon" title="重做"><svg class="icon" style="transform:rotate(180deg)"><use href="#i-arrow-left"/></svg></button>
+            <span class="faint" style="font-size:11px;margin-left:6px">100%</span>
+          </div>
+          <div class="editor-actions" data-note="3">
+            <button class="btn btn-ghost">校验</button>
+            <button class="btn btn-secondary">保存草稿</button>
+            <button class="btn btn-primary">发布</button>
+          </div>
+        </div>
+        <div class="editor-body">
+          <div class="palette" data-note="4">
+            <label class="input palette-search"><svg class="icon sm"><use href="#i-search"/></svg><input placeholder="搜索节点" /></label>
+            <div class="palette-label">基础</div>
+            <div class="palette-item"><svg class="icon sm"><use href="#i-play"/></svg>Start</div>
+            <div class="palette-item"><svg class="icon sm"><use href="#i-check"/></svg>End</div>
+            <div class="palette-label">任务</div>
+            <div class="palette-item"><svg class="icon sm"><use href="#i-zap"/></svg>AgentTask</div>
+            <div class="palette-label">流程</div>
+            <div class="palette-item"><svg class="icon sm"><use href="#i-flow"/></svg>ParallelSplit</div>
+            <div class="palette-item"><svg class="icon sm"><use href="#i-flow"/></svg>Join</div>
+            <div class="palette-item"><svg class="icon sm"><use href="#i-flow"/></svg>Condition</div>
+            <div class="palette-label">人工</div>
+            <div class="palette-item"><svg class="icon sm"><use href="#i-hand"/></svg>HumanApproval</div>
+          </div>
+
+          <div class="canvas" data-note="5">
+            <svg class="edges" viewBox="0 0 672 802" preserveAspectRatio="none">
+              <path d="M335 92 V130" />
+              <path d="M335 182 V230" />
+              <path class="active" d="M335 282 V330" />
+              <path d="M335 382 C335 412 145 410 145 440" />
+              <path d="M335 382 C335 412 465 410 465 440" />
+              <path d="M145 492 C145 522 335 520 335 550" />
+              <path d="M465 492 C465 522 335 520 335 550" />
+              <path d="M335 602 V650" />
+            </svg>
+
+            <div class="node start" style="left:250px;top:40px"><div class="node-type">start</div><div class="node-name"><svg class="icon"><use href="#i-play"/></svg>开始</div></div>
+            <div class="node" style="left:250px;top:130px"><div class="node-type">agent_task</div><div class="node-name"><svg class="icon"><use href="#i-zap"/></svg>需求分析</div><div class="node-sub">研发 Agent · Claude Code</div></div>
+            <div class="node approval selected" style="left:250px;top:230px"><div class="node-type">human_approval</div><div class="node-name"><svg class="icon"><use href="#i-hand"/></svg>方案审批</div><div class="node-sub">after_execute · 2 轮上限</div></div>
+            <div class="node parallel" style="left:250px;top:330px"><div class="node-type">parallel_split</div><div class="node-name"><svg class="icon"><use href="#i-flow"/></svg>并行开发</div></div>
+            <div class="node" style="left:60px;top:440px"><div class="node-type">agent_task</div><div class="node-name"><svg class="icon"><use href="#i-zap"/></svg>前端实现</div><div class="node-sub">前端 Agent · Gemini</div></div>
+            <div class="node" style="left:380px;top:440px"><div class="node-type">agent_task</div><div class="node-name"><svg class="icon"><use href="#i-zap"/></svg>后端实现</div><div class="node-sub">后端 Agent · Codex</div></div>
+            <div class="node join" style="left:250px;top:550px"><div class="node-type">join</div><div class="node-name"><svg class="icon"><use href="#i-flow"/></svg>汇合</div><div class="node-sub">all_success</div></div>
+            <div class="node end" style="left:250px;top:650px"><div class="node-type">end</div><div class="node-name"><svg class="icon"><use href="#i-check"/></svg>结束</div></div>
+
+            <div class="canvas-tools"><button title="缩小">−</button><button title="放大">+</button><button title="适应画布"><svg class="icon sm"><use href="#i-grid"/></svg></button></div>
+          </div>
+
+          <div class="inspector" data-note="6">
+            <div class="inspector-head">
+              <div class="inspector-title"><svg class="icon sm" style="color:var(--warning)"><use href="#i-hand"/></svg>HumanApproval · 方案审批</div>
+              <div class="inspector-sub">节点 key：approval · 第 2 个节点</div>
+            </div>
+            <div class="inspector-body">
+              <div class="field"><label>显示名称</label><div class="input">方案审批</div></div>
+              <div class="field"><label>审批对象</label><div class="input">需求分析（after_execute）<svg class="icon sm" style="margin-left:auto"><use href="#i-chevron-down"/></svg></div></div>
+              <div class="field"><label>审批说明</label><textarea>请确认需求分析产出的 spec.md 是否覆盖本次 MVP 范围。</textarea></div>
+              <div class="field"><label>返工目标</label><div class="input">需求分析<svg class="icon sm" style="margin-left:auto"><use href="#i-chevron-down"/></svg></div></div>
+              <div class="field-row">
+                <div class="field"><label>最大轮次</label><div class="input">2</div></div>
+                <div class="field"><label>超时</label><div class="input">不超时</div></div>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap"><span class="chip">approve</span><span class="chip">request_changes</span><span class="chip">reject</span></div>
+            </div>
+            <div class="inspector-foot" data-note="7">
+              <button class="btn btn-danger btn-sm">删除节点</button>
+              <div class="right"><button class="btn btn-secondary btn-sm">取消</button><button class="btn btn-primary btn-sm">应用</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="run-drawer" data-note="8">
+          <div class="title"><svg class="icon sm"><use href="#i-play"/></svg>运行记录<span class="pill done">最近 3 次</span></div>
+          <div class="mini-runs"><span>最近一次 11:42 · 4 分 32 秒 · 已通过</span><span class="faint">·</span><span>v2 · 6 分 08 秒</span></div>
+          <div class="right"><button class="btn btn-ghost btn-sm">展开</button><button class="btn btn-secondary btn-sm">发起运行</button></div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <div class="screen-notes">
+    <div class="note-card"><h4><span class="n">1</span>模板身份</h4><p>左上角：返回、模板名、版本与状态 pill。版本状态不可编辑，只能发布新版本。</p></div>
+    <div class="note-card"><h4><span class="n">2</span>画布工具</h4><p>撤销/重做/缩放居中放，属于画布级操作，不与业务操作混排。</p></div>
+    <div class="note-card"><h4><span class="n">3</span>业务操作</h4><p>右侧从右到左：发布（主）→ 保存草稿（次）→ 校验（幽灵）。发布永远最右。</p></div>
+    <div class="note-card"><h4><span class="n">4</span>节点面板</h4><p>固定 220px，按 7 种节点分组；拖动到画布添加。只列冻结基线内的节点。</p></div>
+    <div class="note-card"><h4><span class="n">5</span>画布</h4><p>占满剩余宽度；节点可点选，选中态用赤陶色描边 + 淡底环。画布左下角只放缩放工具。</p></div>
+    <div class="note-card"><h4><span class="n">6</span>属性面板</h4><p>固定 320px，按“基本信息 → 任务 → 交付物 → 执行策略”分段；只编辑当前节点。</p></div>
+    <div class="note-card"><h4><span class="n">7</span>面板底栏</h4><p>删除节点在左（红色描边），取消/应用在右（应用为主）。删除不放进顶部工具栏。</p></div>
+    <div class="note-card"><h4><span class="n">8</span>运行抽屉</h4><p>底部 44px 常驻，显示最近运行摘要；“发起运行”在右，展开后看完整运行列表。</p></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<!-- 5. 运行详情 -->
+<!-- ===================================================================== -->
+<section class="screen" data-screen="run" data-nav="run">
+  <div class="app-scale"><div class="app">
+    <aside class="sidebar" data-sidebar></aside>
+    <div class="main">
+      <div class="topbar">
+        <div class="page-head">
+          <div class="page-sub" style="margin:0 0 6px"><a class="link" style="color:var(--text-3)"><svg class="icon sm"><use href="#i-arrow-left"/></svg>MVP 核心闭环</a></div>
+          <h1 class="page-title">运行 <span class="mono" style="font-size:16px;font-weight:600;color:var(--muted)">run-95b38d87</span> <span class="pill done">已完成</span></h1>
+          <div class="page-sub">MVP 交付流程 · v3 · 用时 4 分 32 秒 · 3 个节点 · 1 次审批</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-secondary" data-note="1"><svg class="icon sm"><use href="#i-refresh"/></svg>重新运行</button>
+          <button class="btn btn-ghost btn-icon" data-note="2"><svg class="icon"><use href="#i-more"/></svg></button>
+        </div>
+      </div>
+      <div class="content">
+        <div class="split">
+          <div class="card list-card" data-note="3">
+            <div class="card-head"><div class="card-title">节点</div><div class="right"><span class="faint" style="font-size:10.5px">5 / 5 成功</span></div></div>
+            <div class="list-scroll">
+              <div class="node-item"><span class="node-state"><svg class="icon"><use href="#i-check"/></svg></span><div class="node-item-main"><div class="node-item-name">Start</div><div class="node-item-meta">0.1 秒</div></div></div>
+              <div class="node-item"><span class="node-state"><svg class="icon"><use href="#i-check"/></svg></span><div class="node-item-main"><div class="node-item-name">需求分析 <span class="pill done">成功</span></div><div class="node-item-meta">研发 Agent · Claude Code · 1.2 秒</div></div></div>
+              <div class="node-item selected"><span class="node-state"><svg class="icon"><use href="#i-check"/></svg></span><div class="node-item-main"><div class="node-item-name">方案审批 <span class="pill done">已通过</span></div><div class="node-item-meta">HumanApproval · 2 分 14 秒 · 第 1 轮</div></div></div>
+              <div class="node-item"><span class="node-state"><svg class="icon"><use href="#i-check"/></svg></span><div class="node-item-main"><div class="node-item-name">实现 <span class="pill done">成功</span></div><div class="node-item-meta">研发 Agent · Claude Code · 1.8 秒</div></div></div>
+              <div class="node-item"><span class="node-state"><svg class="icon"><use href="#i-check"/></svg></span><div class="node-item-main"><div class="node-item-name">End</div><div class="node-item-meta">0.1 秒</div></div></div>
+            </div>
+          </div>
+
+          <div class="card detail-pane" data-note="4">
+            <div class="detail-head">
+              <div>
+                <div class="card-title">HumanApproval · 方案审批 <span class="pill done">已通过</span></div>
+                <div class="card-sub" style="margin-top:4px">审批人 R.J · 11:42 · 第 1 轮 · 用时 2 分 14 秒</div>
+              </div>
+              <div class="right"><button class="btn btn-ghost btn-sm">定位节点</button></div>
+            </div>
+            <div class="detail-tabs">
+              <button class="tab active">输出</button>
+              <button class="tab">交付物<span class="count">2</span></button>
+              <button class="tab">日志</button>
+              <button class="tab">事件</button>
+            </div>
+            <div class="detail-body">
+              <div class="meta-grid four" data-note="5">
+                <div class="meta-cell"><div class="k">执行 Agent</div><div class="v">研发 Agent · Claude Code</div></div>
+                <div class="meta-cell"><div class="k">决策</div><div class="v">approve</div></div>
+                <div class="meta-cell"><div class="k">轮次</div><div class="v">1 / 2</div></div>
+                <div class="meta-cell"><div class="k">返工请求</div><div class="v">无</div></div>
+              </div>
+              <div class="doc" data-note="6">
+                <div class="doc-head">
+                  <span class="artifact-icon"><svg class="icon sm"><use href="#i-doc"/></svg></span>
+                  <div><div class="doc-title">spec.md</div><div class="doc-meta">v1 · 需求分析 · 2 分钟前 · SHA-256 f1d9171e…</div></div>
+                  <div style="margin-left:auto;display:flex;gap:6px"><button class="btn btn-secondary btn-sm">预览</button><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-external"/></svg></button></div>
+                </div>
+                <div class="doc-body">
+                  <h4>MVP 核心闭环 · 需求摘要</h4>
+                  <p>本次交付覆盖 Work 发起运行、Agent 执行产出交付物、人工审批与 Scheduler 续跑四条主链路。</p>
+                  <ul><li>运行入口幂等，重复提交返回同一 Run</li><li>交付物按版本落库，下游校验 checksum 与归属</li><li>审批支持 approve / request_changes / reject</li></ul>
+                </div>
+              </div>
+              <div class="code-block">{"agentraOutputVersion":1,"output":{"summary":"MVP core loop"},\n "artifacts":[{"name":"spec","encoding":"utf8","content":"…"}]}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span class="status-item"><span class="dot"></span>Core 正常</span><span class="status-item"><span class="dot"></span>Daemon 正常</span>
+        <span class="right"><span>Run run-95b38d87</span><span>工作目录 ~/agt-mvp/scratch</span></span>
+      </div>
+    </div>
+  </div></div>
+  <div class="screen-notes">
+    <div class="note-card"><h4><span class="n">1</span>重新运行</h4><p>次操作，放在页面头右侧。只有终态运行才可用；进行中时禁用并说明原因。</p></div>
+    <div class="note-card"><h4><span class="n">2</span>更多菜单</h4><p>“取消运行”只在运行中可用，收进“…”；已完成的运行不显示取消。</p></div>
+    <div class="note-card"><h4><span class="n">3</span>节点列表</h4><p>左侧 320px，按执行顺序纵向排列；当前选中节点用赤陶淡底。状态图标在左，名称和耗时的层级清楚。</p></div>
+    <div class="note-card"><h4><span class="n">4</span>节点详情</h4><p>右侧自适应。标题、审批人、轮次固定在详情头；标签切换输出/交付物/日志/事件。</p></div>
+    <div class="note-card"><h4><span class="n">5</span>元信息</h4><p>三格元信息只读，放在内容最上方；决策值和轮次用等宽/数字字体。</p></div>
+    <div class="note-card"><h4><span class="n">6</span>交付物预览</h4><p>文档卡头右侧固定“预览”和“新窗口打开”；正文只读，不在运行页编辑。</p></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<!-- 6. 审批中心 -->
+<!-- ===================================================================== -->
+<section class="screen" data-screen="approvals" data-nav="approvals">
+  <div class="app-scale"><div class="app">
+    <aside class="sidebar" data-sidebar></aside>
+    <div class="main">
+      <div class="topbar">
+        <div class="page-head">
+          <h1 class="page-title">审批中心 <span class="pill accent">4</span></h1>
+          <div class="page-sub">4 项待处理 · 最久等待 2 小时 14 分 · 按等待时长排序</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="select" data-note="1"><svg class="icon sm"><use href="#i-filter"/></svg>全部运行<svg class="icon sm"><use href="#i-chevron-down"/></svg></button>
+          <button class="btn btn-ghost btn-icon" data-note="2"><svg class="icon"><use href="#i-refresh"/></svg></button>
+        </div>
+      </div>
+      <div class="content">
+        <div class="split wide">
+          <div class="card list-card" data-note="3">
+            <div class="card-head"><div class="card-title">待处理</div><div class="right"><span class="faint" style="font-size:10.5px">等待最久优先</span></div></div>
+            <div class="list-scroll">
+              <div class="inbox-row selected">
+                <span class="avatar" style="margin-top:2px">M</span>
+                <div class="inbox-main"><div class="inbox-name">MVP 核心闭环 · 方案审批</div><div class="inbox-meta"><span>run-95b3…</span><span>·</span><span>第 1 轮</span><span class="pill warn">等你回复</span></div></div>
+                <span class="inbox-age">2 小时 14 分</span>
+              </div>
+              <div class="inbox-row">
+                <span class="avatar a2" style="margin-top:2px">L</span>
+                <div class="inbox-main"><div class="inbox-name">备份恢复 UI · 交付物验收</div><div class="inbox-meta"><span>run-71c2…</span><span>·</span><span>第 1 轮</span><span class="pill warn">等你回复</span></div></div>
+                <span class="inbox-age">48 分钟</span>
+              </div>
+              <div class="inbox-row">
+                <span class="avatar a3" style="margin-top:2px">Q</span>
+                <div class="inbox-main"><div class="inbox-name">Provider 健康检查 · 失败复核</div><div class="inbox-meta"><span>run-2f80…</span><span>·</span><span>第 1 轮</span><span class="pill danger">执行失败</span></div></div>
+                <span class="inbox-age">21 分钟</span>
+              </div>
+              <div class="inbox-row">
+                <span class="avatar a4" style="margin-top:2px">M</span>
+                <div class="inbox-main"><div class="inbox-name">移动端离线模式 · 需求确认</div><div class="inbox-meta"><span>run-9ac1…</span><span>·</span><span>第 1 轮</span><span class="pill pending">排队中</span></div></div>
+                <span class="inbox-age">12 分钟</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card detail-pane" data-note="4">
+            <div class="detail-head">
+              <div>
+                <div class="card-title">AgentTask · 需求分析 <span class="pill warn">等待审批</span></div>
+                <div class="card-sub" style="margin-top:4px">MVP 核心闭环 · run-95b38d87 · 请求人 研发 Agent · Claude Code · 2 小时 14 分前</div>
+              </div>
+              <div class="right"><a class="link">打开运行<svg class="icon sm"><use href="#i-external"/></svg></a></div>
+            </div>
+            <div class="detail-tabs">
+              <button class="tab active">交付物</button>
+              <button class="tab">审批历史<span class="count">1</span></button>
+              <button class="tab">运行上下文</button>
+            </div>
+            <div class="detail-body">
+              <div class="doc" data-note="5">
+                <div class="doc-head">
+                  <span class="artifact-icon"><svg class="icon sm"><use href="#i-doc"/></svg></span>
+                  <div><div class="doc-title">spec.md</div><div class="doc-meta">v1 · 需求分析 · SHA-256 f1d9171e…</div></div>
+                  <div style="margin-left:auto"><button class="btn btn-secondary btn-sm">在新窗口预览</button></div>
+                </div>
+                <div class="doc-body">
+                  <h4>MVP 核心闭环 · 需求摘要</h4>
+                  <p>本次交付覆盖 Work 发起运行、Agent 执行产出交付物、人工审批与 Scheduler 续跑四条主链路。</p>
+                  <ul>
+                    <li>运行入口幂等，重复提交返回同一 Run</li>
+                    <li>交付物按版本落库，下游校验 checksum 与归属</li>
+                    <li>审批支持 approve / request_changes / reject</li>
+                    <li>request_changes 必须填写意见并定向返工</li>
+                  </ul>
+                </div>
+              </div>
+              <div class="meta-grid">
+                <div class="meta-cell"><div class="k">审批类型</div><div class="v">after_execute</div></div>
+                <div class="meta-cell"><div class="k">轮次</div><div class="v">第 1 轮 / 上限 2</div></div>
+                <div class="meta-cell"><div class="k">返工目标</div><div class="v">需求分析</div></div>
+              </div>
+            </div>
+            <div class="decision-bar" data-note="6">
+              <textarea placeholder="审批意见（选择“要求修改”时必填）"></textarea>
+              <div class="decision-actions">
+                <span class="hint">要求修改将退回「需求分析」并产生新的审批轮次</span>
+                <button class="btn btn-danger btn-sm">驳回</button>
+                <button class="btn btn-secondary btn-sm">要求修改</button>
+                <button class="btn btn-primary btn-sm">通过</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span class="status-item"><span class="dot"></span>Core 正常</span><span class="status-item"><span class="dot"></span>Daemon 正常</span>
+        <span class="right"><span>4 项待审批</span><span>自动刷新 · 3 秒</span></span>
+      </div>
+    </div>
+  </div></div>
+  <div class="screen-notes">
+    <div class="note-card"><h4><span class="n">1</span>筛选</h4><p>按运行筛选，放在页面头右侧、刷新按钮左侧；默认“全部运行”。</p></div>
+    <div class="note-card"><h4><span class="n">2</span>刷新</h4><p>图标按钮；页面本身每 3 秒自动刷新，手动刷新只用于立即拉取。</p></div>
+    <div class="note-card"><h4><span class="n">3</span>待处理列表</h4><p>左侧 400px，按等待时长排序。行内只显示状态与等待时长，不放决策按钮，避免误触。</p></div>
+    <div class="note-card"><h4><span class="n">4</span>审批详情</h4><p>右侧自适应。头部固定运行、请求人、等待时长；“打开运行”在右上角。</p></div>
+    <div class="note-card"><h4><span class="n">5</span>交付物预览</h4><p>审批对象是交付物本身，预览占最大面积；“在新窗口预览”固定在文档卡头右侧。</p></div>
+    <div class="note-card"><h4><span class="n">6</span>决策栏</h4><p>固定在详情底部，不随内容滚动。按钮从右到左：通过（主）→ 要求修改（次）→ 驳回（危险描边）；意见输入在按钮上方，要求修改时必填。</p></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<!-- 7. 交付物 -->
+<!-- ===================================================================== -->
+<section class="screen" data-screen="artifacts" data-nav="artifacts">
+  <div class="app-scale"><div class="app">
+    <aside class="sidebar" data-sidebar></aside>
+    <div class="main">
+      <div class="topbar">
+        <div class="page-head">
+          <h1 class="page-title">交付物</h1>
+          <div class="page-sub">23 个交付物 · 8 个 Work · 12 个版本</div>
+        </div>
+        <div class="topbar-actions">
+          <label class="input search" data-note="1"><svg class="icon sm"><use href="#i-search"/></svg><input placeholder="搜索交付物名称" /></label>
+          <button class="select" data-note="2"><svg class="icon sm"><use href="#i-filter"/></svg>全部 Work<svg class="icon sm"><use href="#i-chevron-down"/></svg></button>
+          <button class="btn btn-secondary" data-note="3"><svg class="icon sm"><use href="#i-external"/></svg>导出</button>
+        </div>
+      </div>
+      <div class="content">
+        <div class="split artifacts">
+          <div class="card list-card" data-note="4">
+            <div class="card-head"><div class="card-title">全部交付物</div><div class="right"><span class="faint" style="font-size:10.5px">按更新时间</span></div></div>
+            <div class="list-scroll">
+              <div class="inbox-row selected"><span class="artifact-icon"><svg class="icon sm"><use href="#i-doc"/></svg></span><div class="inbox-main"><div class="inbox-name">spec.md</div><div class="inbox-meta"><span>MVP 核心闭环</span><span>·</span><span>v1</span></div></div><span class="inbox-age">2 分钟前</span></div>
+              <div class="inbox-row"><span class="artifact-icon"><svg class="icon sm"><use href="#i-doc"/></svg></span><div class="inbox-main"><div class="inbox-name">implementation.md</div><div class="inbox-meta"><span>MVP 核心闭环</span><span>·</span><span>v2</span></div></div><span class="inbox-age">12 分钟前</span></div>
+              <div class="inbox-row"><span class="artifact-icon"><svg class="icon sm"><use href="#i-doc"/></svg></span><div class="inbox-main"><div class="inbox-name">backup-plan.md</div><div class="inbox-meta"><span>备份恢复 UI</span><span>·</span><span>v1</span></div></div><span class="inbox-age">1 小时前</span></div>
+              <div class="inbox-row"><span class="artifact-icon"><svg class="icon sm"><use href="#i-doc"/></svg></span><div class="inbox-main"><div class="inbox-name">approval-ui.md</div><div class="inbox-meta"><span>审批中心 v1</span><span>·</span><span>v3</span></div></div><span class="inbox-age">昨天</span></div>
+            </div>
+          </div>
+
+          <div class="card detail-pane" data-note="5">
+            <div class="detail-head">
+              <div>
+                <div class="card-title">spec.md <span class="pill done">v1</span></div>
+                <div class="card-sub" style="margin-top:4px">MVP 核心闭环 · 需求分析 · 产出节点 nrn-540e0394</div>
+              </div>
+              <div class="right"><button class="btn btn-secondary btn-sm">导出</button><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-more"/></svg></button></div>
+            </div>
+            <div class="detail-tabs">
+              <button class="tab active">内容</button>
+              <button class="tab">版本历史<span class="count">1</span></button>
+              <button class="tab">元信息</button>
+            </div>
+            <div class="detail-body">
+              <div class="meta-grid" data-note="6">
+                <div class="meta-cell"><div class="k">版本</div><div class="v">1</div></div>
+                <div class="meta-cell"><div class="k">类型</div><div class="v">markdown</div></div>
+                <div class="meta-cell"><div class="k">校验值</div><div class="v mono">f1d9171e…be149c13</div></div>
+              </div>
+              <div class="doc" data-note="7">
+                <div class="doc-head"><span class="artifact-icon"><svg class="icon sm"><use href="#i-doc"/></svg></span><div><div class="doc-title">spec.md</div><div class="doc-meta">只读 · 由运行 run-95b38d87 产出</div></div><div style="margin-left:auto"><button class="btn btn-ghost btn-sm">复制内容</button></div></div>
+                <div class="doc-body">
+                  <h4>MVP 核心闭环 · 需求摘要</h4>
+                  <p>本次交付覆盖 Work 发起运行、Agent 执行产出交付物、人工审批与 Scheduler 续跑四条主链路。</p>
+                  <ul><li>运行入口幂等，重复提交返回同一 Run</li><li>交付物按版本落库，下游校验 checksum 与归属</li><li>审批支持 approve / request_changes / reject</li></ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span class="status-item"><span class="dot"></span>Core 正常</span><span class="status-item"><span class="dot"></span>Daemon 正常</span>
+        <span class="right"><span>23 个交付物</span><span>存储 ~/agt-mvp/artifacts</span></span>
+      </div>
+    </div>
+  </div></div>
+  <div class="screen-notes">
+    <div class="note-card"><h4><span class="n">1</span>搜索</h4><p>搜索交付物名称，放在操作区最左；与 Work 筛选并列，不另起一行。</p></div>
+    <div class="note-card"><h4><span class="n">2</span>筛选</h4><p>按 Work 筛选；交付物不提供“新建”，因为只能由运行产出。</p></div>
+    <div class="note-card"><h4><span class="n">3</span>导出</h4><p>页面级次操作，放在最右（没有主按钮）；单个导出在详情头右侧。</p></div>
+    <div class="note-card"><h4><span class="n">4</span>列表</h4><p>左侧 380px，按更新时间倒序；只显示名称、来源 Work、版本、时间。</p></div>
+    <div class="note-card"><h4><span class="n">5</span>详情</h4><p>右侧预览。头部固定版本 pill 与来源节点；导出、更多菜单在右上。</p></div>
+    <div class="note-card"><h4><span class="n">6</span>元信息</h4><p>版本、类型、校验值三格；校验值用等宽字体，超出省略但可复制。</p></div>
+    <div class="note-card"><h4><span class="n">7</span>只读内容</h4><p>交付物只读，不提供编辑；“复制内容”是幽灵按钮，固定在文档卡头右侧。</p></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<!-- 8. Agents -->
+<!-- ===================================================================== -->
+<section class="screen" data-screen="agents" data-nav="agents">
+  <div class="app-scale"><div class="app">
+    <aside class="sidebar" data-sidebar></aside>
+    <div class="main">
+      <div class="topbar">
+        <div class="page-head">
+          <h1 class="page-title">Agents</h1>
+          <div class="page-sub">6 个 Agent · 3 个 Provider · 2 个执行中</div>
+        </div>
+        <div class="topbar-actions">
+          <label class="input search" data-note="1"><svg class="icon sm"><use href="#i-search"/></svg><input placeholder="搜索 Agent" /></label>
+          <button class="select" data-note="2"><svg class="icon sm"><use href="#i-filter"/></svg>全部角色<svg class="icon sm"><use href="#i-chevron-down"/></svg></button>
+          <button class="btn btn-primary" data-note="3"><svg class="icon sm"><use href="#i-plus"/></svg>新建 Agent</button>
+        </div>
+      </div>
+      <div class="content">
+        <div class="filter-chips" data-note="4">
+          <button class="chip-filter on">全部<span class="count">6</span></button>
+          <button class="chip-filter"><span class="provider-mark">CC</span>Claude Code<span class="count">3</span></button>
+          <button class="chip-filter"><span class="provider-mark cx">CX</span>Codex<span class="count">2</span></button>
+          <button class="chip-filter"><span class="provider-mark gm">GM</span>Gemini<span class="count">1</span></button>
+          <div style="margin-left:auto" class="segmented"><button class="on"><svg class="icon sm"><use href="#i-list"/></svg>列表</button><button><svg class="icon sm"><use href="#i-grid-view"/></svg>卡片</button></div>
+        </div>
+
+        <div class="card" data-note="5">
+          <table class="agent-table">
+            <thead><tr><th>Agent</th><th>角色</th><th>Provider</th><th>工具权限</th><th>并发</th><th>当前任务</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><div class="agent-id"><span class="avatar">研</span><div><div class="name">研发 Agent</div><div class="sub">dev</div></div></div></td>
+                <td>研发</td>
+                <td><span class="provider-badge"><span class="provider-mark">CC</span>Claude Code</span></td>
+                <td><div class="tool-chips"><span class="chip">Read</span><span class="chip">Edit</span><span class="chip">Bash</span></div></td>
+                <td>2</td>
+                <td><a class="task-link">MVP 核心闭环 · 需求分析</a></td>
+                <td><span class="pill running">执行中</span></td>
+                <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm">编辑</button><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-more"/></svg></button></td>
+              </tr>
+              <tr>
+                <td><div class="agent-id"><span class="avatar a2">审</span><div><div class="name">代码审查 Agent</div><div class="sub">review</div></div></div></td>
+                <td>审查</td>
+                <td><span class="provider-badge"><span class="provider-mark cx">CX</span>Codex</span></td>
+                <td><div class="tool-chips"><span class="chip">Read</span><span class="chip">Grep</span></div></td>
+                <td>1</td>
+                <td><a class="task-link">备份恢复 UI · 复核</a></td>
+                <td><span class="pill running">执行中</span></td>
+                <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm">编辑</button><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-more"/></svg></button></td>
+              </tr>
+              <tr>
+                <td><div class="agent-id"><span class="avatar a3">Q</span><div><div class="name">QA Agent</div><div class="sub">review</div></div></div></td>
+                <td>测试</td>
+                <td><span class="provider-badge"><span class="provider-mark">CC</span>Claude Code</span></td>
+                <td><div class="tool-chips"><span class="chip">Read</span><span class="chip">Grep</span></div></td>
+                <td>1</td>
+                <td><span class="task-none">—</span></td>
+                <td><span class="pill pending">空闲</span></td>
+                <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm">编辑</button><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-more"/></svg></button></td>
+              </tr>
+              <tr>
+                <td><div class="agent-id"><span class="avatar a4">架</span><div><div class="name">架构 Agent</div><div class="sub">architect</div></div></div></td>
+                <td>架构</td>
+                <td><span class="provider-badge"><span class="provider-mark">CC</span>Claude Code</span></td>
+                <td><div class="tool-chips"><span class="chip">Read</span><span class="chip">Grep</span><span class="chip">Glob</span></div></td>
+                <td>1</td>
+                <td><span class="task-none">—</span></td>
+                <td><span class="pill done">可用</span></td>
+                <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm">编辑</button><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-more"/></svg></button></td>
+              </tr>
+              <tr>
+                <td><div class="agent-id"><span class="avatar" style="background:#efe9dc;color:#6b5a37">文</span><div><div class="name">文档 Agent</div><div class="sub">writer</div></div></div></td>
+                <td>文档</td>
+                <td><span class="provider-badge"><span class="provider-mark cx">CX</span>Codex</span></td>
+                <td><div class="tool-chips"><span class="chip">Read</span><span class="chip">Write</span></div></td>
+                <td>1</td>
+                <td><span class="task-none">—</span></td>
+                <td><span class="pill done">可用</span></td>
+                <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm">编辑</button><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-more"/></svg></button></td>
+              </tr>
+              <tr>
+                <td><div class="agent-id"><span class="avatar" style="background:#e2ece7;color:#3d5f51">前</span><div><div class="name">前端 Agent</div><div class="sub">dev</div></div></div></td>
+                <td>前端</td>
+                <td><span class="provider-badge"><span class="provider-mark gm">GM</span>Gemini</span></td>
+                <td><div class="tool-chips"><span class="chip">Read</span><span class="chip">Edit</span></div></td>
+                <td>2</td>
+                <td><span class="task-none">—</span></td>
+                <td><span class="pill pending">空闲</span></td>
+                <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm">编辑</button><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-more"/></svg></button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:8px;margin-top:18px"><div class="card-title">Teams</div><span class="faint" style="font-size:11px">2 个团队</span><div style="margin-left:auto"><button class="btn btn-secondary btn-sm">新建 Team</button></div></div>
+        <div class="team-grid">
+          <div class="card team-card" data-note="6">
+            <span class="team-icon"><svg class="icon lg"><use href="#i-users"/></svg></span>
+            <div style="min-width:0"><div class="team-name">MVP 研发小队</div><div class="team-meta">4 名成员 · Claude Code 3 · Codex 1</div></div>
+            <div style="margin-left:auto;display:flex;gap:6px"><span class="avatar-stack"><span class="avatar">研</span><span class="avatar a3">Q</span><span class="avatar a4">架</span><span class="avatar a2">审</span></span><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-more"/></svg></button></div>
+          </div>
+          <div class="card team-card">
+            <span class="team-icon"><svg class="icon lg"><use href="#i-users"/></svg></span>
+            <div style="min-width:0"><div class="team-name">备份专项小队</div><div class="team-meta">3 名成员 · Claude Code 2 · Codex 1</div></div>
+            <div style="margin-left:auto;display:flex;gap:6px"><span class="avatar-stack"><span class="avatar">研</span><span class="avatar a2">审</span><span class="avatar a3">Q</span></span><button class="btn btn-ghost btn-icon btn-sm"><svg class="icon sm"><use href="#i-more"/></svg></button></div>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span class="status-item"><span class="dot"></span>Core 正常</span><span class="status-item"><span class="dot"></span>Daemon 正常</span>
+        <span class="right"><span>6 个 Agent</span><span>2 个 Team</span></span>
+      </div>
+    </div>
+  </div></div>
+  <div class="screen-notes">
+    <div class="note-card"><h4><span class="n">1</span>搜索</h4><p>按名称/角色搜索，固定操作区最左。</p></div>
+    <div class="note-card"><h4><span class="n">2</span>角色筛选</h4><p>按角色筛选；与搜索同排，不占第二行。</p></div>
+    <div class="note-card"><h4><span class="n">3</span>主操作</h4><p>“新建 Agent”固定最右。Team 的新建是区域级次操作，放在 Teams 标题行右侧。</p></div>
+    <div class="note-card"><h4><span class="n">4</span>Provider 筛选</h4><p>Provider 只做筛选 chips，不把列表拆成多组。每枚 chip 带数量；多 Provider 时仍是一张列表，按状态统一排序。</p></div>
+    <div class="note-card"><h4><span class="n">5</span>Agent 列表</h4><p>默认按“执行中 → 可用 → 空闲”排序，再按名称。列顺序固定：身份、角色、Provider、工具、并发、当前任务、状态、操作。超过 6 个 Agent 时列表比卡片更易扫读。</p></div>
+    <div class="note-card"><h4><span class="n">6</span>Team 行</h4><p>团队不按 Provider 拆分；成员头像叠放在右，摘要里写清各 Provider 人数。混合 Provider 的团队仍然是一个整体。</p></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<!-- 9. 备份中心 -->
+<!-- ===================================================================== -->
+<section class="screen" data-screen="backups" data-nav="backups">
+  <div class="app-scale"><div class="app">
+    <aside class="sidebar" data-sidebar></aside>
+    <div class="main">
+      <div class="topbar">
+        <div class="page-head">
+          <h1 class="page-title">备份中心</h1>
+          <div class="page-sub">最近备份 12 分钟前 · 完整性检查通过 · 共 6 个备份</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-secondary" data-note="1"><svg class="icon sm"><use href="#i-external"/></svg>导出</button>
+          <button class="btn btn-primary" data-note="2"><svg class="icon sm"><use href="#i-archive"/></svg>立即备份</button>
+        </div>
+      </div>
+      <div class="content">
+        <div class="card" data-note="3">
+          <div class="card-head"><div class="card-title">备份记录</div><div class="right"><button class="btn btn-ghost btn-sm"><svg class="icon sm"><use href="#i-refresh"/></svg>刷新</button></div></div>
+          <table class="backup-table" style="width:100%;border-collapse:collapse">
+            <thead><tr><th>备份</th><th>类型</th><th>创建时间</th><th>大小</th><th>完整性</th><th class="right">操作</th></tr></thead>
+            <tbody>
+              <tr><td><strong>backup-20261106-1452</strong><div class="faint mono" style="font-size:10px;margin-top:2px">sha256 9f2c…a71d</div></td><td><span class="pill plain">manual</span></td><td>今天 14:52</td><td>1.2 MB</td><td><span class="pill done">通过</span></td><td class="right"><button class="btn btn-secondary btn-sm">导出</button><button class="btn btn-ghost btn-sm">恢复</button></td></tr>
+              <tr><td><strong>backup-20261106-1213</strong><div class="faint mono" style="font-size:10px;margin-top:2px">sha256 3b81…c40e</div></td><td><span class="pill plain">pre_restore</span></td><td>今天 12:13</td><td>1.1 MB</td><td><span class="pill done">通过</span></td><td class="right"><button class="btn btn-secondary btn-sm">导出</button><button class="btn btn-ghost btn-sm">恢复</button></td></tr>
+              <tr><td><strong>backup-20261105-1830</strong><div class="faint mono" style="font-size:10px;margin-top:2px">sha256 7d0a…e552</div></td><td><span class="pill plain">manual</span></td><td>昨天 18:30</td><td>1.0 MB</td><td><span class="pill done">通过</span></td><td class="right"><button class="btn btn-secondary btn-sm">导出</button><button class="btn btn-ghost btn-sm">恢复</button></td></tr>
+              <tr><td><strong>backup-20261104-0912</strong><div class="faint mono" style="font-size:10px;margin-top:2px">sha256 1c77…9b3f</div></td><td><span class="pill plain">manual</span></td><td>11 月 4 日 09:12</td><td>0.9 MB</td><td><span class="pill warn">待校验</span></td><td class="right"><button class="btn btn-secondary btn-sm">导出</button><button class="btn btn-ghost btn-sm">恢复</button></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="danger-zone" data-note="4">
+          <span class="task-icon" style="background:rgb(179 38 30 / 8%);color:var(--danger)"><svg class="icon"><use href="#i-alert"/></svg></span>
+          <div class="text">
+            <h4>恢复数据</h4>
+            <p>恢复会以所选备份原子替换当前数据库，并在恢复前自动创建 pre_restore 备份。恢复期间 Core 进入维护模式，所有业务请求暂停；恢复完成后会重新校验完整性并对账工作流状态。此操作不可撤销。</p>
+          </div>
+          <button class="btn btn-danger" data-note="5">开始恢复</button>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span class="status-item"><span class="dot"></span>Core 正常</span><span class="status-item"><span class="dot"></span>Daemon 正常</span>
+        <span class="right"><span>最近备份 14:52</span><span>存储 ~/agt-mvp/backups</span></span>
+      </div>
+    </div>
+  </div></div>
+  <div class="screen-notes">
+    <div class="note-card"><h4><span class="n">1</span>导出</h4><p>页面级次操作，放在主按钮左侧；导出针对备份包，不导出凭据。</p></div>
+    <div class="note-card"><h4><span class="n">2</span>主操作</h4><p>“立即备份”固定右上角，实色赤陶。备份失败会以明确错误呈现，不显示成功。</p></div>
+    <div class="note-card"><h4><span class="n">3</span>备份表</h4><p>表格铺满宽度；校验值放名称下方，完整性用 pill。行内“导出”是次操作，“恢复”是幽灵操作。</p></div>
+    <div class="note-card"><h4><span class="n">4</span>危险区</h4><p>恢复单独放在页面底部 Danger Zone，不进入顶部操作区；说明文字必须写清不可撤销与维护模式。</p></div>
+    <div class="note-card"><h4><span class="n">5</span>恢复入口</h4><p>红色描边按钮，点击后仍需二次确认（选择备份 + 输入确认）。绝不使用实色红按钮。</p></div>
+  </div>
+</section>
+
+<script>
+  const SCREEN_NAV = {
+    spec: null, overview: 'overview', works: 'works', 'work-detail': 'works',
+    workflow: 'workflow', run: 'run', approvals: 'approvals', artifacts: 'artifacts',
+    agents: 'agents', backups: 'backups'
+  };
+
+  // Inject the shared sidebar into every screen.
+  const tpl = document.getElementById('tpl-sidebar');
+  document.querySelectorAll('[data-sidebar]').forEach((slot) => {
+    slot.appendChild(tpl.content.cloneNode(true));
+  });
+
+  const screens = [...document.querySelectorAll('.screen')];
+  const tabs = [...document.querySelectorAll('.viewer-tab')];
+
+  function activate(id) {
+    const target = screens.find((s) => s.dataset.screen === id) ? id : 'spec';
+    screens.forEach((s) => s.classList.toggle('active', s.dataset.screen === target));
+    tabs.forEach((t) => t.classList.toggle('active', t.dataset.screen === target));
+    const navId = SCREEN_NAV[target];
+    document.querySelectorAll('.screen.active .nav-item').forEach((item) => {
+      item.classList.toggle('active', item.dataset.goto === navId);
+    });
+    fitAll();
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }
+
+  tabs.forEach((tab) => tab.addEventListener('click', () => activate(tab.dataset.screen)));
+
+  document.addEventListener('click', (event) => {
+    const nav = event.target.closest('.nav-item[data-goto]');
+    if (nav) {
+      event.preventDefault();
+      activate(nav.dataset.goto);
+    }
+  });
+
+  const toggle = document.getElementById('annotate-toggle');
+  toggle.addEventListener('click', () => {
+    const on = document.body.classList.toggle('annotated');
+    toggle.classList.toggle('on', on);
+    toggle.textContent = on ? '隐藏布局标注' : '显示布局标注';
+  });
+
+  function fitAll() {
+    const available = Math.min(window.innerWidth - 44, 1440);
+    const scale = Math.max(0.5, Math.min(1, available / 1440));
+    document.querySelectorAll('.app').forEach((app) => {
+      app.style.transform = `scale(${scale})`;
+    });
+    document.querySelectorAll('.app-scale').forEach((wrap) => {
+      wrap.style.width = `${1440 * scale}px`;
+      wrap.style.height = `${900 * scale}px`;
+    });
+  }
+  window.addEventListener('resize', fitAll);
+  fitAll();
+</script>
+</body>
+</html>

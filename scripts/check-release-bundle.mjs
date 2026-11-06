@@ -35,12 +35,12 @@ const MARKERS = [
 const REQUIRED_MARKERS = [
   { name: 'Team 页面', value: 'agentra-product-teams' },
   { name: 'Work 页面', value: 'agentra-product-works' },
-  // 阶段 3：画布是产品功能，两种构建都必须包含；与控制台标记互不影响。
-  { name: 'Workflow 页面', value: 'agentra-product-workflow' },
+  { name: 'Project 页面', value: 'agentra-product-projects' },
+  { name: 'Settings 页面', value: 'agentra-product-settings' },
+  // 工作流编辑器 UI 已按产品决策移除；Workflow Engine 仍保留在 Core，供计划编译器复用。
   // 阶段 5 S5-3：审批中心与 Artifact 面板是产品功能，两种构建都必须包含。
   { name: '审批中心页面', value: 'agentra-product-approvals' },
   { name: 'Artifact 面板', value: 'agentra-product-artifacts' },
-  { name: '运行状态/失败终态面板', value: 'agentra-product-run-failures' },
 ]
 
 function modeLabel(devConsole) {

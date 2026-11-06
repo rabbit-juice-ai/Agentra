@@ -164,3 +164,32 @@ describe('WorkflowAssignmentResolver', () => {
     }
   })
 })
+
+describe('WorkflowAssignmentResolver · 显式改派', () => {
+  it('resolves the override agent when it has an active same-role assignment', () => {
+    const { db, resolver } = setup()
+    try {
+      addAssignment(db, 'as-1', 'agent-1', 'dev')
+      addAssignment(db, 'as-2', 'agent-2', 'dev')
+      const node = taskNode('task_1', 'dev', 'agent-1') as never
+      expect(resolver.resolveForNode('work-1', node).agentId).toBe('agent-1')
+      expect(resolver.resolveForNode('work-1', node, 'agent-2').agentId).toBe('agent-2')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('fails closed when the override agent has no active assignment', () => {
+    const { db, resolver } = setup()
+    try {
+      addAssignment(db, 'as-1', 'agent-1', 'dev')
+      addAssignment(db, 'as-2', 'agent-2', 'dev', 'paused')
+      const node = taskNode('task_1', 'dev', 'agent-1') as never
+      expect(() => resolver.resolveForNode('work-1', node, 'agent-2')).toThrow(
+        /no active assignment for reassigned agent/,
+      )
+    } finally {
+      db.close()
+    }
+  })
+})

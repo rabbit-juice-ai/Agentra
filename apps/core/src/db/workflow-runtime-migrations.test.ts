@@ -50,7 +50,7 @@ describe('migration v9 · workflow runtime tables', () => {
   it('creates workflow_runs / branch_runs / node_runs with indexes', () => {
     const db = openMigrated()
     try {
-      expect(currentUserVersion(db)).toBe(15)
+      expect(currentUserVersion(db)).toBe(22)
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
           name: string
@@ -141,7 +141,7 @@ describe('migration v9 · workflow runtime tables', () => {
     const db = openMigrated()
     try {
       const second = migrate(db)
-      expect(second).toEqual({ from: 15, to: 15, applied: [] })
+      expect(second).toEqual({ from: 22, to: 22, applied: [] })
 
       // v9 自身的 SQL 也必须幂等（CREATE … IF NOT EXISTS），重放一次再回滚
       const v9 = MIGRATIONS.find((migration) => migration.version === 9)
@@ -251,12 +251,19 @@ describe('migration v12/v13 · rework_requests + workflow_events', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 11,
-        to: 15,
+        to: 22,
         applied: [
           'phase4_rework_requests',
           'phase4_workflow_events',
           'phase5_artifacts',
           'phase5_5_backups',
+          'planner_agent_capabilities',
+          'agent_model',
+          'plan_approval',
+          'plan_version_source',
+          'node_assignment_overrides',
+          'projects',
+          'plans_nullable_work',
         ],
       })
 

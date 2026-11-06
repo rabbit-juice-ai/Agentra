@@ -2,7 +2,11 @@
 
 版本：V1.5（基于 v1.0.0 Development Baseline 的修订）\
 目标平台：macOS 本地桌面应用  
-产品形态：本地 AI Agent 团队协作与工作流管理平台  
+产品形态：本地 AI Agent 团队协作与自主任务规划平台  
+产品面（2026-11-06，D-028/D-029/D-030）：用户只面对 项目 → 任务 → 群聊 → 计划/执行 → 审批/返工；工作流引擎是内部执行内核，模板/版本/画布与原始启动入口已移除。  
+规划可以独立于任务，完成后转为任务或项目；也可以在任务群聊里直接规划、批准并启动执行。  
+任务详情以群聊为主，概览/团队/交付物/设置位于右侧；群聊支持 @ Agent 协作。  
+Provider 通过 Runtime SDK 接入：当前支持 Claude Code、Codex、Gemini CLI 的自动发现（Codex/Gemini 为单回合 headless）。
 UI/UX 参考：Antumi（参考交互与布局；源码 Apache-2.0，复用需保留版权与许可声明；其无工作流引擎，本产品 Workflow Engine 自研）
 
 ## 给本地 AI 编程 Agent 的启动说明
@@ -27,7 +31,7 @@ UI/UX 参考：Antumi（参考交互与布局；源码 Apache-2.0，复用需保
 - 不得让 Desktop 直接启动或管理 Agent CLI。
 - 工作流执行状态必须持久化；UI 关闭不能导致任务状态丢失。
 - 暂停某个分支不能影响其他分支。
-- MVP 画布节点仅 7 种（Start、Agent Task、Parallel Split、Join、Human Approval、Condition、End）；返工由引擎内建 ReworkPolicy 实现，不是画布节点。
+- 内部执行图节点仅 7 种（Start、Agent Task、Parallel Split、Join、Human Approval、Condition、End）；不再提供用户画布。返工由引擎内建 ReworkPolicy 实现，不是执行图节点。
 - MVP 人工参与 = 单一 Human Approval 原语（决策集：approve / request_changes / reject）。
 - MVP 含手动备份与恢复（SHA-256 Manifest 校验、原子替换、失败回滚）。
 - 任意节点可以配置人工参与，但不能绕过人工审批门禁。

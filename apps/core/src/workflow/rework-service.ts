@@ -65,7 +65,7 @@ export type ReworkServiceDeps = {
   now?: () => string
 }
 
-type ReworkActor = { type: 'user' | 'agent' | 'system'; id?: string }
+export type ReworkActor = { type: 'user' | 'agent' | 'system'; id?: string }
 
 type RequestOneInput = {
   run: WorkflowRunRecord
@@ -473,9 +473,80 @@ export class ReworkService {
     })
   }
 
+  /**
+   * 老板显式「继续返工」：在已超限请求之后创建下一轮，并立即启动。
+   * 轮次上限按最新请求的 maxRounds 递增，后续 requestOne 会采用较大的上限。
+   */
+  continueExhausted(requestId: string, actor: ReworkActor, extraRounds = 1): ReworkRequestRecord {
+    if (!Number.isInteger(extraRounds) || extraRounds < 1 || extraRounds > 10) {
+      throw new ReworkPolicyError('INVALID_STATE', 'extraRounds must be an integer in [1, 10]')
+    }
+    const request = this.requireRequest(requestId)
+    if (request.status !== 'exhausted') {
+      // 幂等：已经有人继续过，直接返回正在进行的请求。
+      const latest = this.deps.reworks.latestByTarget(request.targetNodeRunId)
+      if (latest && (latest.status === 'requested' || latest.status === 'in_rework')) return latest
+      throw new ReworkPolicyError(
+        'INVALID_STATE',
+        `rework request ${requestId} is ${request.status}, cannot continue`,
+      )
+    }
+    const targetNode = this.deps.nodes.get(request.targetNodeRunId)
+    if (!targetNode) throw new ReworkPolicyError('NOT_FOUND', 'rework target node run not found')
+    const now = this.now()
+    const created = this.deps.reworks.create(
+      {
+        id: newId('rwk'),
+        workflowRunId: request.workflowRunId,
+        branchRunId: request.branchRunId,
+        targetNodeRunId: request.targetNodeRunId,
+        triggerType: request.triggerType,
+        triggerApprovalId: request.triggerApprovalId,
+        testReport: request.testReport,
+        round: request.round + 1,
+        maxRounds: request.maxRounds + extraRounds,
+        status: 'requested',
+        createdBy: 'user',
+      },
+      now,
+    )
+    this.auditAction('workflow.rework.continued', created, actor, {
+      fromRound: request.round,
+      extraRounds,
+    })
+    this.deps.events?.publish({
+      type: 'rework.requested',
+      runId: created.workflowRunId,
+      reworkRequestId: created.id,
+      targetNodeKey: targetNode.workflowNodeKey,
+      round: created.round,
+    })
+    return this.start(created.id)
+  }
+
+  /**
+   * 老板接管：记录接管审计，分支保持暂停，后续由人工处理。
+   * exhausted 是状态机终态，不伪造 cancelled；接管是人工确认，不改变自动返工记录。
+   */
+  takeOverExhausted(requestId: string, actor: ReworkActor): ReworkRequestRecord {
+    const request = this.requireRequest(requestId)
+    if (request.status !== 'exhausted') {
+      throw new ReworkPolicyError(
+        'INVALID_STATE',
+        `rework request ${requestId} is ${request.status}, cannot take over`,
+      )
+    }
+    this.auditAction('workflow.rework.taken_over', request, actor, {})
+    return request
+  }
+
   private requestOne(input: RequestOneInput, events?: ReworkEvent[]): ReworkRequestRecord {
-    const maxRounds = input.definition.settings.reworkPolicy.maxRounds
     const latest = this.deps.reworks.latestByTarget(input.targetNode.id)
+    // 老板可以显式「继续返工」提高该任务的轮次上限；取定义值与最新请求上限的较大者。
+    const maxRounds = Math.max(
+      input.definition.settings.reworkPolicy.maxRounds,
+      latest?.maxRounds ?? 0,
+    )
     if (latest && (latest.status === 'requested' || latest.status === 'in_rework')) return latest
     if (latest && latest.status === 'exhausted') return latest
 

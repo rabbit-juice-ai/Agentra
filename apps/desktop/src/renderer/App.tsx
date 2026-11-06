@@ -1,180 +1,206 @@
-import type { HealthResult } from '@agentra/protocol'
-import { lazy, Suspense, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AgentsPage } from './components/AgentsPage'
 import { BackupsPage } from './components/BackupsPage'
 import { ConsolePage } from './components/ConsolePage'
-import { buttonStyle, colors } from './components/styles'
+import { Icon, type IconName } from './components/Icon'
+import { OverviewPage } from './components/OverviewPage'
+import { PlanPage } from './components/PlanPage'
+import { ProjectsPage } from './components/ProjectsPage'
+import { providerMark, providerMarkClass } from './components/ProviderBadge'
+import { SettingsPage } from './components/SettingsPage'
 import { TeamsPage } from './components/TeamsPage'
 import { WorksPage } from './components/WorksPage'
 import { ApprovalsPage } from './features/approvals/ApprovalsPage'
 import { ArtifactsPanel } from './features/approvals/ArtifactsPanel'
 import { useAgentra } from './hooks/useAgentra'
+import { api } from './services/api'
 
 type Tab =
   | 'console'
+  | 'overview'
+  | 'plan'
+  | 'projects'
   | 'agents'
   | 'teams'
   | 'works'
-  | 'workflow'
   | 'approvals'
   | 'artifacts'
+  | 'settings'
   | 'backups'
 
-// 画布必须独立成 chunk：WorkflowPage 走 React.lazy + 动态 import()。
-const WorkflowPage = lazy(() => import('./features/workflow/WorkflowPage'))
+type NavItem = { tab: Tab; label: string; icon: IconName; hot?: boolean }
 
-function HealthDot({ label, health }: { label: string; health: HealthResult | null }) {
-  const ok = health !== null
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-      <span
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: 4,
-          background: ok ? colors.green : colors.red,
-          display: 'inline-block',
-        }}
-      />
-      <span style={{ color: colors.muted }}>
-        {label} {ok ? `pid ${health.pid}` : '断连'}
-      </span>
-    </span>
-  )
-}
-
-// 导航项：执行控制台是 dev-only（U2 隔离），发布构建的 NAV_ITEMS 里没有它——
-// 「执行控制台」这个文案字面量也就不出现在发布产物里（check-release-bundle 依赖这一点）。
-const NAV_ITEMS: { tab: Tab; label: string }[] = [
-  ...(__AGENTRA_DEV_CONSOLE__ ? [{ tab: 'console' as Tab, label: '执行控制台' }] : []),
-  { tab: 'agents', label: 'Agents' },
-  { tab: 'teams', label: 'Teams' },
-  { tab: 'works', label: 'Works' },
-  { tab: 'workflow', label: 'Workflow' },
-  { tab: 'approvals', label: '审批中心' },
-  { tab: 'artifacts', label: '交付物' },
-  { tab: 'backups', label: '备份中心' },
+// 执行控制台是 dev-only（U2 隔离）：发布构建里 __AGENTRA_DEV_CONSOLE__ 被替换为 false，
+// 这一项连同「执行控制台」字面量都不会进入发布产物（check-release-bundle 依赖这一点）。
+const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
+  {
+    label: '工作台',
+    items: [
+      { tab: 'overview', label: '总览', icon: 'grid' },
+      { tab: 'plan', label: '规划', icon: 'zap' },
+      { tab: 'projects', label: '项目', icon: 'archive' },
+      { tab: 'works', label: '任务', icon: 'briefcase' },
+    ],
+  },
+  {
+    label: '协作',
+    items: [
+      { tab: 'approvals', label: '审批中心', icon: 'check', hot: true },
+      { tab: 'artifacts', label: '交付物', icon: 'box' },
+      { tab: 'agents', label: 'Agents', icon: 'users' },
+      { tab: 'teams', label: '团队', icon: 'users' },
+    ],
+  },
+  {
+    label: '系统',
+    items: [
+      { tab: 'backups', label: '备份中心', icon: 'archive' },
+      ...(__AGENTRA_DEV_CONSOLE__
+        ? [{ tab: 'console' as Tab, label: '执行控制台', icon: 'zap' as IconName }]
+        : []),
+    ],
+  },
 ]
 
-function SideNavItem({
-  active,
-  children,
-  onClick,
-}: {
-  active: boolean
-  children: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        ...buttonStyle,
-        display: 'block',
-        width: '100%',
-        textAlign: 'left',
-        border: 'none',
-        borderRadius: 6,
-        background: active ? colors.blue : 'transparent',
-        color: active ? '#fff' : colors.muted,
-        fontWeight: active ? 600 : 400,
-        padding: '8px 12px',
-      }}
-    >
-      {children}
-    </button>
-  )
+/** Nav badge: real counts only; approvals use the pending inbox. */
+function usePendingApprovalCount(): number {
+  const [count, setCount] = useState(0)
+  useEffect(() => {
+    let alive = true
+    const load = async (): Promise<void> => {
+      try {
+        const approvals = await api.listPendingApprovals()
+        if (alive) setCount(approvals.length)
+      } catch {
+        // 审批计数是装饰性信息；Core 未就绪时不打断主界面。
+      }
+    }
+    void load()
+    const timer = setInterval(() => void load(), 5000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [])
+  return count
 }
 
 export function App() {
   const store = useAgentra()
-  // 构建期常量（不是运行时判断）：发布构建里 __AGENTRA_DEV_CONSOLE__ 被替换为 false，
-  // 默认落在 Agents 页；带控制台的构建才默认进控制台。
-  const [tab, setTab] = useState<Tab>(__AGENTRA_DEV_CONSOLE__ ? 'console' : 'agents')
+  // 构建期常量（不是运行时判断）：发布构建默认落在总览；带控制台的构建才默认进控制台。
+  const [tab, setTab] = useState<Tab>(__AGENTRA_DEV_CONSOLE__ ? 'console' : 'overview')
+  const [createWorkSignal, setCreateWorkSignal] = useState(0)
+  const [projectFilter, setProjectFilter] = useState<string | null>(null)
+  const pendingApprovals = usePendingApprovalCount()
+
+  const healthyProviders = store.providers.filter(
+    (provider) => provider.healthStatus === 'healthy',
+  ).length
+
+  const runningExecutionByAgent: Record<string, string> = {}
+  for (const execution of store.consoleState.executions) {
+    if (execution.agentId && (execution.status === 'running' || execution.status === 'pending')) {
+      runningExecutionByAgent[execution.agentId] = execution.id
+    }
+  }
+
+  const badgeFor = (item: NavItem): number | null => {
+    if (item.tab === 'approvals') return pendingApprovals > 0 ? pendingApprovals : null
+    if (item.tab === 'projects') return store.projects.length > 0 ? store.projects.length : null
+    if (item.tab === 'works') return store.works.length > 0 ? store.works.length : null
+    if (item.tab === 'agents') return store.agents.length > 0 ? store.agents.length : null
+    if (item.tab === 'teams') return store.teams.length > 0 ? store.teams.length : null
+    return null
+  }
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: colors.bg,
-        color: colors.text,
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-      }}
-    >
-      {/* 左侧固定纵向主导航（Antumi 风格应用外壳） */}
-      <aside
-        style={{
-          width: 180,
-          flexShrink: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 4,
-          padding: '16px 10px',
-          background: colors.panel,
-          borderRight: `1px solid ${colors.border}`,
-          position: 'sticky',
-          top: 0,
-          height: '100vh',
-          boxSizing: 'border-box',
-        }}
-      >
-        <strong style={{ fontSize: 15, padding: '0 12px 12px' }}>Agentra</strong>
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {NAV_ITEMS.map(({ tab: item, label }) => (
-            <SideNavItem key={item} active={tab === item} onClick={() => setTab(item)}>
-              {label}
-            </SideNavItem>
-          ))}
-        </nav>
-      </aside>
-
-      {/* 右侧主内容工作区 */}
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        {/* 右上方状态区 */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 16,
-            padding: '10px 20px',
-            background: colors.panel,
-            borderBottom: `1px solid ${colors.border}`,
-            position: 'sticky',
-            top: 0,
-            zIndex: 10,
-          }}
-        >
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 16 }}>
-            <HealthDot label="Core" health={store.coreHealth} />
-            <HealthDot label="Daemon" health={store.daemonHealth} />
-          </div>
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <span className="brand-mark">A</span>
+          Agentra
         </div>
 
-        {store.banner && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              margin: '12px 20px 0',
-              padding: '8px 12px',
-              borderRadius: 6,
-              border: `1px solid ${colors.amber}`,
-              background: '#fff8c5',
-              fontSize: 13,
-              color: colors.text,
-            }}
-          >
-            <span style={{ flex: 1 }}>{store.banner}</span>
-            <button type="button" style={buttonStyle} onClick={store.dismissBanner}>
-              关闭
-            </button>
+        {NAV_GROUPS.map((group) => (
+          <div className="nav-group" key={group.label}>
+            <div className="nav-label">{group.label}</div>
+            {group.items.map((item) => {
+              const badge = badgeFor(item)
+              return (
+                <button
+                  type="button"
+                  key={item.tab}
+                  className={`nav-item ${tab === item.tab ? 'active' : ''}`}
+                  onClick={() => setTab(item.tab)}
+                >
+                  <Icon name={item.icon} />
+                  {item.label}
+                  {badge !== null && (
+                    <span className={`nav-count ${item.hot ? 'hot' : ''}`}>{badge}</span>
+                  )}
+                </button>
+              )
+            })}
           </div>
-        )}
+        ))}
 
-        <main style={{ padding: 20 }}>
+        <div className="sidebar-foot">
+          <div className="provider-card">
+            <div className="provider-card-head">
+              Providers
+              <span
+                className="pill done plain"
+                style={{ marginLeft: 'auto', height: 18, fontSize: 9.5 }}
+              >
+                {healthyProviders}/{store.providers.length} 正常
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-icon btn-sm"
+                title="重新发现 Provider"
+                onClick={() => void store.actions.refreshProviderDiscovery()}
+              >
+                <Icon name="refresh" size={12} />
+              </button>
+            </div>
+            {store.providers.length === 0 ? (
+              <div className="faint" style={{ fontSize: 11 }}>
+                尚未发现 Provider
+              </div>
+            ) : (
+              store.providers.slice(0, 3).map((provider) => (
+                <div className="provider-line" key={provider.id}>
+                  <span className={`provider-mark ${providerMarkClass(provider.providerName)}`}>
+                    {providerMark(provider.providerName)}
+                  </span>
+                  <span>{provider.providerName}</span>
+                  <span className="ver">{provider.version ?? '—'}</span>
+                  <span
+                    className={`dot ${provider.healthStatus === 'healthy' ? '' : 'red'}`}
+                    title={provider.healthStatus}
+                  />
+                </div>
+              ))
+            )}
+            {store.providers.length > 3 && (
+              <div className="faint" style={{ fontSize: 10 }}>
+                另有 {store.providers.length - 3} 个 Provider
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            className={`side-settings ${tab === 'settings' ? 'active' : ''}`}
+            onClick={() => setTab('settings')}
+          >
+            <Icon name="settings" />
+            设置
+          </button>
+        </div>
+      </aside>
+
+      <div className="main">
+        <main className="main-content">
           {__AGENTRA_DEV_CONSOLE__ && tab === 'console' ? (
             <ConsolePage
               agents={store.agents}
@@ -186,34 +212,70 @@ export function App() {
               onInterrupt={store.actions.interruptExecution}
               onSendMessage={store.actions.sendMessage}
             />
-          ) : tab === 'workflow' ? (
-            <Suspense fallback={<div style={{ fontSize: 13, color: colors.muted }}>加载画布…</div>}>
-              <WorkflowPage />
-            </Suspense>
+          ) : tab === 'overview' ? (
+            <OverviewPage
+              works={store.works}
+              agents={store.agents}
+              providers={store.providers}
+              coreHealth={store.coreHealth}
+              daemonHealth={store.daemonHealth}
+              onCreateWork={() => {
+                setCreateWorkSignal((value) => value + 1)
+                setTab('works')
+              }}
+              onNavigate={(target) => setTab(target)}
+            />
+          ) : tab === 'plan' ? (
+            <PlanPage
+              works={store.works}
+              projects={store.projects}
+              agents={store.agents}
+              providers={store.providers}
+              onWorksChanged={() => void store.actions.refreshWorks()}
+              onProjectsChanged={() => void store.actions.refreshProjects()}
+            />
           ) : tab === 'approvals' ? (
             <ApprovalsPage />
           ) : tab === 'artifacts' ? (
-            <ArtifactsPanel />
+            <ArtifactsPanel works={store.works} />
           ) : tab === 'backups' ? (
             <BackupsPage />
           ) : tab === 'teams' ? (
             <TeamsPage
               teams={store.teams}
               agents={store.agents}
+              providers={store.providers}
               membersByTeam={store.teamMembers}
               busy={store.busy}
               onCreate={store.actions.createTeam}
               onAddMember={store.actions.addTeamMember}
               onRefreshMembers={store.actions.refreshTeamMembers}
             />
+          ) : tab === 'projects' ? (
+            <ProjectsPage
+              projects={store.projects}
+              works={store.works}
+              busy={store.busy}
+              onCreateProject={store.actions.createProject}
+              onUpdateProject={store.actions.updateProject}
+              onOpenProjectTasks={(projectId) => {
+                setProjectFilter(projectId)
+                setTab('works')
+              }}
+            />
           ) : tab === 'works' ? (
             <WorksPage
               works={store.works}
+              projects={store.projects}
+              projectFilter={projectFilter}
+              onClearProjectFilter={() => setProjectFilter(null)}
               teams={store.teams}
               agents={store.agents}
+              providers={store.providers}
               assignmentsByWork={store.assignmentsByWork}
               worktreesByWork={store.worktreesByWork}
               busy={store.busy}
+              createSignal={createWorkSignal}
               onCreate={store.actions.createWork}
               onLinkTeam={store.actions.linkWorkTeam}
               onWorkAction={store.actions.workAction}
@@ -224,11 +286,23 @@ export function App() {
               onCreateWorktree={store.actions.createWorktree}
               onRemoveWorktree={store.actions.removeWorktree}
             />
+          ) : tab === 'settings' ? (
+            <SettingsPage
+              coreHealth={store.coreHealth}
+              daemonHealth={store.daemonHealth}
+              providers={store.providers}
+              worksCount={store.works.length}
+              projectsCount={store.projects.length}
+              agentsCount={store.agents.length}
+              onRefreshProviders={store.actions.refreshProviderDiscovery}
+              onOpenBackups={() => setTab('backups')}
+            />
           ) : (
             <AgentsPage
               agents={store.agents}
               providers={store.providers}
               busy={store.busy}
+              runningExecutionByAgent={runningExecutionByAgent}
               onCreate={store.actions.createAgent}
               onUpdate={store.actions.updateAgent}
               onArchive={store.actions.archiveAgent}
@@ -237,7 +311,44 @@ export function App() {
             />
           )}
         </main>
+
+        <div className="statusbar">
+          <span className="status-item">
+            <span className={`dot ${store.coreHealth ? '' : 'red'}`} />
+            Core {store.coreHealth ? '正常' : '断连'}
+          </span>
+          <span className="status-item">
+            <span className={`dot ${store.daemonHealth ? '' : 'red'}`} />
+            Daemon {store.daemonHealth ? '正常' : '断连'}
+          </span>
+          <span className="status-item">
+            <span className={`dot ${healthyProviders > 0 ? 'blue' : 'red'}`} />
+            {healthyProviders}/{store.providers.length} Provider 健康
+          </span>
+          <span className="right">
+            <span>协议 {store.coreHealth?.protocolVersion ?? '—'}</span>
+            <span>本地数据</span>
+          </span>
+        </div>
       </div>
+
+      {store.banner && (
+        <div className="toast-stack" aria-live="polite">
+          <div className={`toast ${store.banner.tone}`} role="status">
+            <span className="toast-message">{store.banner.message}</span>
+            {store.banner.sticky && (
+              <button
+                type="button"
+                className="toast-close"
+                onClick={store.dismissBanner}
+                aria-label="关闭"
+              >
+                ×
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

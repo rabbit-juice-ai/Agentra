@@ -1,41 +1,56 @@
-import { colors } from './styles'
-
-const STATUS_COLORS: Record<string, string> = {
-  running: colors.blue,
-  pending: colors.muted,
-  succeeded: colors.green,
-  failed: colors.red,
-  crashed: colors.red,
-  cancelled: colors.amber,
-  healthy: colors.green,
-  unavailable: colors.red,
-  unauthenticated: colors.amber,
-  unknown: colors.muted,
-  active: colors.green,
-  draft: colors.muted,
-  paused: colors.amber,
-  completed: colors.green,
-  removed: colors.muted,
-  disabled: colors.amber,
-  archived: colors.muted,
+const LABELS: Record<string, string> = {
+  running: '执行中',
+  pending: '待处理',
+  succeeded: '成功',
+  failed: '失败',
+  crashed: '崩溃',
+  cancelled: '已取消',
+  healthy: '健康',
+  unavailable: '不可用',
+  unauthenticated: '未认证',
+  unknown: '未知',
+  active: '启用',
+  draft: '草稿',
+  paused: '已暂停',
+  completed: '已完成',
+  removed: '已移除',
+  disabled: '已停用',
+  archived: '已归档',
+  waiting_approval: '等待审批',
+  blocked: '等待中',
+  skipped: '已跳过',
+  reconciliation_required: '待对账',
 }
 
-export function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLORS[status] ?? colors.muted
+const TONES: Record<string, string> = {
+  running: 'running',
+  pending: 'pending',
+  succeeded: 'done',
+  healthy: 'done',
+  completed: 'done',
+  active: 'done',
+  failed: 'danger',
+  crashed: 'danger',
+  unavailable: 'danger',
+  cancelled: 'warn',
+  paused: 'warn',
+  disabled: 'warn',
+  unauthenticated: 'warn',
+  draft: 'pending',
+  removed: 'pending',
+  archived: 'pending',
+  unknown: 'pending',
+  waiting_approval: 'warn',
+  blocked: 'pending',
+  skipped: 'pending',
+  reconciliation_required: 'danger',
+}
+
+/** Shared status pill. `label` lets a page give context (Work active = 进行中). */
+export function StatusBadge({ status, label }: { status: string; label?: string }) {
   return (
-    <span
-      style={{
-        display: 'inline-block',
-        fontSize: 11,
-        fontWeight: 600,
-        padding: '1px 8px',
-        borderRadius: 10,
-        color,
-        border: `1px solid ${color}`,
-        background: '#ffffff',
-      }}
-    >
-      {status}
+    <span className={`pill ${TONES[status] ?? 'pending'}`}>
+      {label ?? LABELS[status] ?? status}
     </span>
   )
 }

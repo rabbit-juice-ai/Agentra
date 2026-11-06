@@ -93,6 +93,18 @@ export type TestResultReworkPort = {
   }): void
 }
 
+/**
+ * 任务生命周期事件接缝：AgentTask 执行的关键节点回写到任务群聊线程。
+ * sink 内部失败必须自吞（记日志），不得影响引擎状态机。
+ */
+export type TaskEventSink = {
+  onTaskStarted(event: TaskEvent & { kind: 'started' }): void
+  onTaskSucceeded(event: TaskEvent & { kind: 'succeeded' }): void
+  onTaskFailed(event: TaskEvent & { kind: 'failed' }): void
+  onTaskCancelled(event: TaskEvent & { kind: 'cancelled' }): void
+  onVerificationReport(event: TaskEvent & { kind: 'verification' }): void
+}
+
 export type ExecutionBridgeDeps = {
   db: Database
   runs: WorkflowRunRepository
@@ -101,6 +113,8 @@ export type ExecutionBridgeDeps = {
   worktrees: WorktreeService
   definitions: PublishedDefinitionProvider
   resolver: WorkflowAssignmentResolver
+  /** 运行期显式改派（P5）；返回 null 表示沿用节点固定的 assignmentSelector。 */
+  assignmentOverride?: (runId: string, nodeKey: string) => string | null
   executions: ExecutionStarter
   outputs?: OutputExtractor
   workInterrupted?: (executionId: string) => boolean
@@ -112,6 +126,7 @@ export type ExecutionBridgeDeps = {
     saveNode: (snapshot: Record<string, unknown>) => void,
   ) => void
   rework?: TestResultReworkPort
+  taskEvents?: TaskEventSink
   logger?: ExecutionBridgeLogger
   now?: () => string
 }
@@ -141,7 +156,8 @@ export class WorkflowExecutionBridge {
 
     let assignment: { id: string; agentId: string }
     try {
-      assignment = this.deps.resolver.resolveForNode(run.workId, node)
+      const overrideAgentId = this.deps.assignmentOverride?.(run.id, node.key) ?? undefined
+      assignment = this.deps.resolver.resolveForNode(run.workId, node, overrideAgentId)
     } catch (error) {
       if (error instanceof WorkflowAssignmentError) {
         this.fail(nodeRun, node.key, error.code, error.message)
@@ -192,6 +208,14 @@ export class WorkflowExecutionBridge {
         prompt: this.deps.inputPrompt?.(context) ?? node.config.taskPrompt,
         ...(worktreeId ? { worktreeId } : {}),
       })
+      this.emitTaskEvent({
+        kind: 'started',
+        runId: run.id,
+        nodeKey: node.key,
+        nodeRunId: nodeRun.id,
+        attempt: nodeRun.attempt,
+        agentId: assignment.agentId,
+      })
     } catch (error) {
       this.fail(nodeRun, node.key, providerFailureCategory(error), describe(error))
     }
@@ -219,6 +243,15 @@ export class WorkflowExecutionBridge {
     if (execution.status === 'cancelled') {
       const cancelled = this.deps.nodes.transition(nodeRun.id, ['running'], 'cancelled', now)
       if (!cancelled) this.warnUnchanged(nodeRun, node.key, 'cancelled', execution.id)
+      else
+        this.emitTaskEvent({
+          kind: 'cancelled',
+          runId: run.id,
+          nodeKey: node.key,
+          nodeRunId: nodeRun.id,
+          attempt: nodeRun.attempt,
+          agentId: execution.agentId,
+        })
       return
     }
     if (execution.status !== 'succeeded') {
@@ -230,6 +263,19 @@ export class WorkflowExecutionBridge {
         { executionId: execution.id, exitCode: execution.exitCode },
         now,
       )
+      this.emitTaskEvent({
+        kind: 'failed',
+        runId: run.id,
+        nodeKey: node.key,
+        nodeRunId: nodeRun.id,
+        attempt: nodeRun.attempt,
+        agentId: execution.agentId,
+        category: 'execution_failure',
+        message: `execution ${execution.status}`,
+        willRetry:
+          nodeRun.attempt <
+          (node.config.retryPolicy?.maxAttempts ?? definition.settings.defaults.maxAttempts),
+      })
       return
     }
 
@@ -248,6 +294,17 @@ export class WorkflowExecutionBridge {
         },
         now,
       )
+      this.emitTaskEvent({
+        kind: 'failed',
+        runId: run.id,
+        nodeKey: node.key,
+        nodeRunId: nodeRun.id,
+        attempt: nodeRun.attempt,
+        agentId: execution.agentId,
+        category: 'output_contract_violation',
+        message: 'Output extraction failed (empty, invalid or oversized output)',
+        willRetry: false,
+      })
       return
     }
     const violation = validateOutputContract(node.config.outputContract, output)
@@ -264,6 +321,18 @@ export class WorkflowExecutionBridge {
         now,
       )
       if (!marked) this.warnUnchanged(nodeRun, node.key, 'output_contract_violation', execution.id)
+      else
+        this.emitTaskEvent({
+          kind: 'failed',
+          runId: run.id,
+          nodeKey: node.key,
+          nodeRunId: nodeRun.id,
+          attempt: nodeRun.attempt,
+          agentId: execution.agentId,
+          category: 'output_contract_violation',
+          message: violation,
+          willRetry: false,
+        })
       return
     }
 
@@ -291,7 +360,41 @@ export class WorkflowExecutionBridge {
         },
         now,
       )
+      this.emitTaskEvent({
+        kind: 'failed',
+        runId: run.id,
+        nodeKey: node.key,
+        nodeRunId: nodeRun.id,
+        attempt: nodeRun.attempt,
+        agentId: execution.agentId,
+        category: 'output_contract_violation',
+        message: 'Artifact/output commit failed; downstream execution blocked',
+        willRetry: false,
+      })
       return
+    }
+    this.emitTaskEvent({
+      kind: 'succeeded',
+      runId: run.id,
+      nodeKey: node.key,
+      nodeRunId: nodeRun.id,
+      attempt: nodeRun.attempt,
+      agentId: execution.agentId,
+    })
+    if (output && node.config.outputContract.profile === 'test_result') {
+      this.emitTaskEvent({
+        kind: 'verification',
+        runId: run.id,
+        nodeKey: node.key,
+        nodeRunId: nodeRun.id,
+        attempt: nodeRun.attempt,
+        agentId: execution.agentId,
+        passed: output.pass === true,
+        failureReason: typeof output.failureReason === 'string' ? output.failureReason : '',
+        relatedTasks: Array.isArray(output.relatedTasks)
+          ? output.relatedTasks.filter((item): item is string => typeof item === 'string')
+          : [],
+      })
     }
     // 契约通过后才允许触发返工；契约失败在上面的分支已经 failed 并 return。
     if (
@@ -389,7 +492,88 @@ export class WorkflowExecutionBridge {
       ...(executionId ? { executionId } : {}),
     })
   }
+
+  /** 任务事件 → sink（群聊线程）。sink 异常自吞，不影响引擎状态机。 */
+  private emitTaskEvent(event: TaskEvent): void {
+    const sink = this.deps.taskEvents
+    if (!sink) return
+    try {
+      switch (event.kind) {
+        case 'started':
+          sink.onTaskStarted(event)
+          break
+        case 'succeeded':
+          sink.onTaskSucceeded(event)
+          break
+        case 'failed':
+          sink.onTaskFailed(event)
+          break
+        case 'cancelled':
+          sink.onTaskCancelled(event)
+          break
+        case 'verification':
+          sink.onVerificationReport(event)
+          break
+      }
+    } catch (error) {
+      this.deps.logger?.warn('task event sink failed', {
+        runId: event.runId,
+        nodeKey: event.nodeKey,
+        kind: event.kind,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
 }
+
+/** 任务事件判别联合：started/succeeded/failed/cancelled/verification。 */
+export type TaskEvent =
+  | {
+      kind: 'started'
+      runId: string
+      nodeKey: string
+      nodeRunId: string
+      attempt: number
+      agentId: string | null
+    }
+  | {
+      kind: 'succeeded'
+      runId: string
+      nodeKey: string
+      nodeRunId: string
+      attempt: number
+      agentId: string | null
+    }
+  | {
+      kind: 'failed'
+      runId: string
+      nodeKey: string
+      nodeRunId: string
+      attempt: number
+      agentId: string | null
+      category: string
+      message: string
+      willRetry: boolean
+    }
+  | {
+      kind: 'cancelled'
+      runId: string
+      nodeKey: string
+      nodeRunId: string
+      attempt: number
+      agentId: string | null
+    }
+  | {
+      kind: 'verification'
+      runId: string
+      nodeKey: string
+      nodeRunId: string
+      attempt: number
+      agentId: string | null
+      passed: boolean
+      failureReason: string
+      relatedTasks: string[]
+    }
 
 function providerFailureCategory(error: unknown): NodeFailureCategory {
   const code = (error as { code?: unknown } | null)?.code

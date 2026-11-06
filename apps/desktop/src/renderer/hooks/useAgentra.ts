@@ -5,6 +5,9 @@ import type {
   Assignment,
   AssignmentCreateParams,
   HealthResult,
+  Project,
+  ProjectCreateParams,
+  ProjectUpdateParams,
   RuntimeProviderRecord,
   Team,
   TeamCreateParams,
@@ -14,7 +17,7 @@ import type {
   WorkCreateParams,
   Worktree,
 } from '@agentra/protocol'
-import { useCallback, useEffect, useReducer, useState } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { ApiError, api } from '../services/api'
 import {
   type ConsoleState,
@@ -25,6 +28,14 @@ import {
 
 const POLL_INTERVAL_MS = 5000
 
+type BannerTone = 'info' | 'warn' | 'error' | 'success'
+export type BannerMessage = {
+  message: string
+  tone: BannerTone
+  /** 需要人工处理的消息常驻，直到用户关闭；其余自动消失。 */
+  sticky: boolean
+}
+
 /**
  * 全部数据获取与状态推导集中在这里：组件只消费状态、调用 actions。
  * Desktop 只经 Core RPC（AGENTS §2）。
@@ -33,6 +44,7 @@ export function useAgentra() {
   const [agents, setAgents] = useState<AgentProfile[]>([])
   const [teams, setTeams] = useState<Team[]>([])
   const [works, setWorks] = useState<Work[]>([])
+  const [projects, setProjects] = useState<Project[]>([])
   const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({})
   const [assignmentsByWork, setAssignmentsByWork] = useState<Record<string, Assignment[]>>({})
   const [worktreesByWork, setWorktreesByWork] = useState<Record<string, Worktree[]>>({})
@@ -41,29 +53,73 @@ export function useAgentra() {
   const [coreHealth, setCoreHealth] = useState<HealthResult | null>(null)
   const [daemonHealth, setDaemonHealth] = useState<HealthResult | null>(null)
   const [busy, setBusy] = useState(false)
-  const [banner, setBanner] = useState<string | null>(null)
+  const [banner, setBanner] = useState<BannerMessage | null>(null)
+  const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const reportError = useCallback((error: unknown) => {
-    if (error instanceof ApiError) {
-      // 阶段 5 第 181 行：CLI 不可用/未认证是用户可自行修复的状态，
-      // banner 给出可执行的提示，而不是只透传错误码（Core 拦截在阶段 1 已实现）。
-      if (error.code === 'CLI_UNAVAILABLE') {
-        setBanner(
-          'CLI 不可用：未发现可用的 Claude Code 可执行文件。请安装 Claude Code（或设置 AGENTRA_CLAUDE_PATH 指向可执行文件）后重试。',
-        )
-        return
+  const showBanner = useCallback(
+    (
+      message: string,
+      options: { tone?: BannerTone; sticky?: boolean; durationMs?: number } = {},
+    ) => {
+      if (bannerTimer.current) clearTimeout(bannerTimer.current)
+      const next: BannerMessage = {
+        message,
+        tone: options.tone ?? 'warn',
+        sticky: options.sticky ?? false,
       }
-      if (error.code === 'CLI_NOT_AUTHENTICATED') {
-        setBanner(
-          'CLI 未认证：已找到 Claude Code 但登录态不可用。请在终端执行登录命令（Provider 面板可复制）后重试。',
+      setBanner(next)
+      if (!next.sticky) {
+        bannerTimer.current = setTimeout(
+          () => {
+            setBanner(null)
+            bannerTimer.current = null
+          },
+          options.durationMs ?? (next.tone === 'error' ? 6000 : 3500),
         )
-        return
       }
-      setBanner(`${error.code}: ${error.message}`)
-      return
+    },
+    [],
+  )
+
+  useEffect(() => {
+    return () => {
+      if (bannerTimer.current) clearTimeout(bannerTimer.current)
     }
-    setBanner(error instanceof Error ? error.message : String(error))
   }, [])
+
+  const dismissBanner = useCallback(() => {
+    if (bannerTimer.current) {
+      clearTimeout(bannerTimer.current)
+      bannerTimer.current = null
+    }
+    setBanner(null)
+  }, [])
+
+  const reportError = useCallback(
+    (error: unknown) => {
+      if (error instanceof ApiError) {
+        // CLI 不可用/未认证需要用户自行修复：常驻提示，直到用户关闭。
+        if (error.code === 'CLI_UNAVAILABLE') {
+          showBanner(
+            'CLI 不可用：未发现可用的 Claude Code 可执行文件。请安装 Claude Code（或设置 AGENTRA_CLAUDE_PATH 指向可执行文件）后重试。',
+            { tone: 'error', sticky: true },
+          )
+          return
+        }
+        if (error.code === 'CLI_NOT_AUTHENTICATED') {
+          showBanner(
+            'CLI 未认证：已找到 Claude Code 但登录态不可用。请在终端执行登录命令（Provider 面板可复制）后重试。',
+            { tone: 'error', sticky: true },
+          )
+          return
+        }
+        showBanner(`${error.code}: ${error.message}`, { tone: 'error' })
+        return
+      }
+      showBanner(error instanceof Error ? error.message : String(error), { tone: 'error' })
+    },
+    [showBanner],
+  )
 
   const refreshAgents = useCallback(async () => {
     try {
@@ -84,6 +140,14 @@ export function useAgentra() {
   const refreshWorks = useCallback(async () => {
     try {
       setWorks(await api.listWorks())
+    } catch (error) {
+      reportError(error)
+    }
+  }, [reportError])
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      setProjects(await api.listProjects())
     } catch (error) {
       reportError(error)
     }
@@ -175,6 +239,7 @@ export function useAgentra() {
     void refreshHealth()
     void refreshTeams()
     void refreshWorks()
+    void refreshProjects()
     const timer = setInterval(() => {
       void refreshHealth()
       void refreshExecutions()
@@ -187,6 +252,7 @@ export function useAgentra() {
     refreshHealth,
     refreshTeams,
     refreshWorks,
+    refreshProjects,
   ])
 
   // Core 就绪（含重连）后补拉首屏数据：启动时 renderer 常先于 Core 就绪，首拉会撞 NOT_READY，
@@ -199,7 +265,8 @@ export function useAgentra() {
       void refreshHealth()
       void refreshTeams()
       void refreshWorks()
-      setBanner((current) => (current?.includes('NOT_READY') ? null : current))
+      void refreshProjects()
+      setBanner((current) => (current?.message.includes('NOT_READY') ? null : current))
     })
   }, [
     refreshAgents,
@@ -208,6 +275,7 @@ export function useAgentra() {
     refreshHealth,
     refreshTeams,
     refreshWorks,
+    refreshProjects,
   ])
 
   useEffect(() => {
@@ -224,7 +292,7 @@ export function useAgentra() {
       try {
         await api.createAgent(params)
         await refreshAgents()
-        setBanner('Agent 已创建')
+        showBanner('Agent 已创建', { tone: 'success' })
         return true
       } catch (error) {
         reportError(error)
@@ -233,7 +301,7 @@ export function useAgentra() {
         setBusy(false)
       }
     },
-    [refreshAgents, reportError],
+    [refreshAgents, reportError, showBanner],
   )
 
   const updateAgent = useCallback(
@@ -242,7 +310,7 @@ export function useAgentra() {
       try {
         await api.updateAgent(params)
         await refreshAgents()
-        setBanner('Agent 已更新')
+        showBanner('Agent 已更新', { tone: 'success' })
         return true
       } catch (error) {
         reportError(error)
@@ -251,7 +319,7 @@ export function useAgentra() {
         setBusy(false)
       }
     },
-    [refreshAgents, reportError],
+    [refreshAgents, reportError, showBanner],
   )
 
   const archiveAgent = useCallback(
@@ -260,14 +328,14 @@ export function useAgentra() {
       try {
         await api.archiveAgent(id)
         await refreshAgents()
-        setBanner('Agent 已归档')
+        showBanner('Agent 已归档', { tone: 'success' })
       } catch (error) {
         reportError(error)
       } finally {
         setBusy(false)
       }
     },
-    [refreshAgents, reportError],
+    [refreshAgents, reportError, showBanner],
   )
 
   const setAgentStatus = useCallback(
@@ -276,27 +344,29 @@ export function useAgentra() {
       try {
         await api.updateAgent({ id, status })
         await refreshAgents()
-        setBanner(status === 'active' ? 'Agent 已启用' : 'Agent 已停用（不影响已运行任务）')
+        showBanner(status === 'active' ? 'Agent 已启用' : 'Agent 已停用（不影响已运行任务）', {
+          tone: 'success',
+        })
       } catch (error) {
         reportError(error)
       } finally {
         setBusy(false)
       }
     },
-    [refreshAgents, reportError],
+    [refreshAgents, reportError, showBanner],
   )
 
   const refreshProviderDiscovery = useCallback(async (): Promise<void> => {
     setBusy(true)
     try {
       setProviders(await api.refreshProviders())
-      setBanner('Provider 发现已刷新')
+      showBanner('Provider 发现已刷新', { tone: 'success' })
     } catch (error) {
       reportError(error)
     } finally {
       setBusy(false)
     }
-  }, [reportError])
+  }, [reportError, showBanner])
 
   const startExecution = useCallback(
     async (agentId: string, prompt: string): Promise<boolean> => {
@@ -342,12 +412,14 @@ export function useAgentra() {
     async (executionId: string): Promise<void> => {
       try {
         const interrupted = await api.interruptExecution(executionId)
-        setBanner(interrupted ? '已发送中断请求' : '执行已结束，中断未生效')
+        showBanner(interrupted ? '已发送中断请求' : '执行已结束，中断未生效', {
+          tone: interrupted ? 'success' : 'warn',
+        })
       } catch (error) {
         reportError(error)
       }
     },
-    [reportError],
+    [reportError, showBanner],
   )
 
   const sendMessage = useCallback(
@@ -369,7 +441,7 @@ export function useAgentra() {
       try {
         await api.createTeam(params)
         await refreshTeams()
-        setBanner('Team 已创建')
+        showBanner('Team 已创建', { tone: 'success' })
         return true
       } catch (error) {
         reportError(error)
@@ -378,7 +450,7 @@ export function useAgentra() {
         setBusy(false)
       }
     },
-    [refreshTeams, reportError],
+    [refreshTeams, reportError, showBanner],
   )
 
   const addTeamMember = useCallback(
@@ -387,7 +459,7 @@ export function useAgentra() {
       try {
         await api.addTeamMember(params)
         await refreshTeamMembers(params.teamId)
-        setBanner('成员已加入 Team')
+        showBanner('成员已加入 Team', { tone: 'success' })
         return true
       } catch (error) {
         reportError(error)
@@ -396,7 +468,43 @@ export function useAgentra() {
         setBusy(false)
       }
     },
-    [refreshTeamMembers, reportError],
+    [refreshTeamMembers, reportError, showBanner],
+  )
+
+  const createProject = useCallback(
+    async (params: ProjectCreateParams): Promise<boolean> => {
+      setBusy(true)
+      try {
+        await api.createProject(params)
+        await refreshProjects()
+        showBanner('项目已创建', { tone: 'success' })
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshProjects, reportError, showBanner],
+  )
+
+  const updateProject = useCallback(
+    async (params: ProjectUpdateParams): Promise<boolean> => {
+      setBusy(true)
+      try {
+        await api.updateProject(params)
+        await refreshProjects()
+        showBanner('项目已更新', { tone: 'success' })
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshProjects, reportError, showBanner],
   )
 
   const createWork = useCallback(
@@ -405,7 +513,7 @@ export function useAgentra() {
       try {
         await api.createWork(params)
         await refreshWorks()
-        setBanner('Work 已创建')
+        showBanner('任务已创建', { tone: 'success' })
         return true
       } catch (error) {
         reportError(error)
@@ -414,7 +522,7 @@ export function useAgentra() {
         setBusy(false)
       }
     },
-    [refreshWorks, reportError],
+    [refreshWorks, reportError, showBanner],
   )
 
   const linkWorkTeam = useCallback(
@@ -423,14 +531,14 @@ export function useAgentra() {
       try {
         await api.linkWorkTeam(workId, teamId)
         await refreshWorks()
-        setBanner('Team 已关联到 Work')
+        showBanner('团队已关联到任务', { tone: 'success' })
       } catch (error) {
         reportError(error)
       } finally {
         setBusy(false)
       }
     },
-    [refreshWorks, reportError],
+    [refreshWorks, reportError, showBanner],
   )
 
   const workAction = useCallback(
@@ -440,14 +548,14 @@ export function useAgentra() {
         await api.workAction(action, id)
         await refreshWorks()
         const label = { activate: '激活', pause: '暂停', resume: '恢复', complete: '完成' }[action]
-        setBanner(`Work 已${label}`)
+        showBanner(`任务已${label}`, { tone: 'success' })
       } catch (error) {
         reportError(error)
       } finally {
         setBusy(false)
       }
     },
-    [refreshWorks, reportError],
+    [refreshWorks, reportError, showBanner],
   )
 
   const createAssignment = useCallback(
@@ -456,7 +564,7 @@ export function useAgentra() {
       try {
         await api.createAssignment(params)
         await refreshAssignments(params.workId)
-        setBanner('Assignment 已创建')
+        showBanner('Assignment 已创建', { tone: 'success' })
         return true
       } catch (error) {
         reportError(error)
@@ -465,7 +573,7 @@ export function useAgentra() {
         setBusy(false)
       }
     },
-    [refreshAssignments, reportError],
+    [refreshAssignments, reportError, showBanner],
   )
 
   const assignmentAction = useCallback(
@@ -474,8 +582,9 @@ export function useAgentra() {
       try {
         await api.assignmentAction(action, id)
         await refreshAssignments(workId)
-        setBanner(
+        showBanner(
           `Assignment 已${action === 'pause' ? '暂停' : action === 'resume' ? '恢复' : '完成'}`,
+          { tone: 'success' },
         )
       } catch (error) {
         reportError(error)
@@ -483,7 +592,7 @@ export function useAgentra() {
         setBusy(false)
       }
     },
-    [refreshAssignments, reportError],
+    [refreshAssignments, reportError, showBanner],
   )
 
   const createWorktree = useCallback(
@@ -492,7 +601,7 @@ export function useAgentra() {
       try {
         await api.createWorktree(workId, branchName)
         await refreshWorktrees(workId)
-        setBanner('Worktree 已创建')
+        showBanner('Worktree 已创建', { tone: 'success' })
         return true
       } catch (error) {
         reportError(error)
@@ -501,7 +610,7 @@ export function useAgentra() {
         setBusy(false)
       }
     },
-    [refreshWorktrees, reportError],
+    [refreshWorktrees, reportError, showBanner],
   )
 
   const removeWorktree = useCallback(
@@ -510,20 +619,21 @@ export function useAgentra() {
       try {
         await api.removeWorktree(id)
         await refreshWorktrees(workId)
-        setBanner('Worktree 已清理')
+        showBanner('Worktree 已清理', { tone: 'success' })
       } catch (error) {
         reportError(error)
       } finally {
         setBusy(false)
       }
     },
-    [refreshWorktrees, reportError],
+    [refreshWorktrees, reportError, showBanner],
   )
 
   return {
     agents,
     teams,
     works,
+    projects,
     worktreesByWork,
     teamMembers,
     assignmentsByWork,
@@ -533,7 +643,7 @@ export function useAgentra() {
     daemonHealth,
     busy,
     banner,
-    dismissBanner: () => setBanner(null),
+    dismissBanner,
     actions: {
       createAgent,
       updateAgent,
@@ -549,7 +659,11 @@ export function useAgentra() {
       createTeam,
       addTeamMember,
       refreshTeamMembers,
+      createProject,
+      updateProject,
+      refreshProjects,
       createWork,
+      refreshWorks,
       linkWorkTeam,
       workAction,
       createAssignment,

@@ -31,6 +31,36 @@ import type {
   ExecutionSendMessageResult,
   ExecutionStartParams,
   HealthResult,
+  PlanApproveParams,
+  PlanCommentParams,
+  PlanCommentResult,
+  PlanConvertToProjectParams,
+  PlanConvertToProjectResult,
+  PlanConvertToTaskParams,
+  PlanConvertToTaskResult,
+  PlanDecisionResult,
+  PlanGenerateParams,
+  PlanGenerateResult,
+  PlanGetParams,
+  PlanGetResult,
+  PlanListByWorkParams,
+  PlanListByWorkResult,
+  PlanListRecentParams,
+  PlanListRecentResult,
+  PlanReassignTaskParams,
+  PlanReassignTaskResult,
+  PlanRejectParams,
+  PlanReworkActionParams,
+  PlanReworkActionResult,
+  PlanStartRunParams,
+  PlanStartRunResult,
+  PlanThreadListParams,
+  PlanThreadListResult,
+  ProjectCreateParams,
+  ProjectGetParams,
+  ProjectListResult,
+  ProjectResult,
+  ProjectUpdateParams,
   RestoreStatusParams,
   RestoreStatusResult,
   RuntimeEvent,
@@ -47,24 +77,6 @@ import type {
   WorkCreateParams,
   WorkflowRunGetParams,
   WorkflowRunGetResult,
-  WorkflowRunListByWorkParams,
-  WorkflowRunListByWorkResult,
-  WorkflowRunStartParams,
-  WorkflowRunStartResult,
-  WorkflowTemplateCreateParams,
-  WorkflowTemplateGetParams,
-  WorkflowTemplateIdParams,
-  WorkflowTemplateListResult,
-  WorkflowTemplateResult,
-  WorkflowTemplateUpdateParams,
-  WorkflowVersionCreateDraftParams,
-  WorkflowVersionGetParams,
-  WorkflowVersionListParams,
-  WorkflowVersionListResult,
-  WorkflowVersionPublishParams,
-  WorkflowVersionResult,
-  WorkflowVersionValidateParams,
-  WorkflowVersionValidateResult,
   WorkIdParams,
   WorkLinkTeamParams,
   WorkListResult,
@@ -89,6 +101,11 @@ export const BACKUP_EXPORT_TIMEOUT_MS = 120_000
 export const BACKUP_PRECHECK_TIMEOUT_MS = 120_000
 export const BACKUP_LIST_DEFAULT_LIMIT = 50
 
+/** Planner 会等待本地 CLI 完成规划，单独放宽 IPC 超时。 */
+export const PLAN_GENERATE_TIMEOUT_MS = 120_000
+export const PLAN_START_RUN_TIMEOUT_MS = 60_000
+export const PLAN_REASSIGN_TIMEOUT_MS = 30_000
+
 export function backupRpcTimeoutMs(
   operation: 'create' | 'list' | 'export' | 'precheck',
 ): number | undefined {
@@ -112,6 +129,8 @@ export type BackupRestorePrecheckParams = { backupId: string }
 export type AgentraApi = {
   getCoreHealth(): Promise<RpcResult<HealthResult>>
   getDaemonHealth(): Promise<RpcResult<HealthResult>>
+  getAppInfo(): Promise<{ version: string; dataDir: string }>
+  openDataDir(): Promise<{ path: string; error: string | null }>
 
   listAgents(params?: { includeArchived?: boolean }): Promise<RpcResult<AgentListResult>>
   createAgent(params: AgentCreateParams): Promise<RpcResult<AgentResult>>
@@ -120,6 +139,23 @@ export type AgentraApi = {
 
   listProviders(): Promise<RpcResult<RuntimeProviderListResult>>
   refreshProviders(): Promise<RpcResult<RuntimeProviderListResult>>
+
+  generatePlan(params: PlanGenerateParams): Promise<RpcResult<PlanGenerateResult>>
+  getPlan(params: PlanGetParams): Promise<RpcResult<PlanGetResult>>
+  listPlansByWork(params: PlanListByWorkParams): Promise<RpcResult<PlanListByWorkResult>>
+  listRecentPlans(params?: PlanListRecentParams): Promise<RpcResult<PlanListRecentResult>>
+  convertPlanToTask(params: PlanConvertToTaskParams): Promise<RpcResult<PlanConvertToTaskResult>>
+  convertPlanToProject(
+    params: PlanConvertToProjectParams,
+  ): Promise<RpcResult<PlanConvertToProjectResult>>
+  approvePlan(params: PlanApproveParams): Promise<RpcResult<PlanDecisionResult>>
+  rejectPlan(params: PlanRejectParams): Promise<RpcResult<PlanDecisionResult>>
+  startPlanRun(params: PlanStartRunParams): Promise<RpcResult<PlanStartRunResult>>
+  listPlanThreads(params: PlanThreadListParams): Promise<RpcResult<PlanThreadListResult>>
+  commentOnPlan(params: PlanCommentParams): Promise<RpcResult<PlanCommentResult>>
+  reassignPlanTask(params: PlanReassignTaskParams): Promise<RpcResult<PlanReassignTaskResult>>
+  continuePlanRework(params: PlanReworkActionParams): Promise<RpcResult<PlanReworkActionResult>>
+  takeOverPlanRework(params: PlanReworkActionParams): Promise<RpcResult<PlanReworkActionResult>>
 
   startExecution(params: ExecutionStartParams): Promise<RpcResult<ExecutionResult>>
   getExecution(params: { executionId: string }): Promise<RpcResult<ExecutionGetResult>>
@@ -141,7 +177,14 @@ export type AgentraApi = {
   removeTeamMember(params: TeamMemberRemoveParams): Promise<RpcResult<{ removed: true }>>
 
   // ---- 阶段 2：Work ----
-  listWorks(params?: { includeArchived?: boolean }): Promise<RpcResult<WorkListResult>>
+  listProjects(): Promise<RpcResult<ProjectListResult>>
+  getProject(params: ProjectGetParams): Promise<RpcResult<ProjectResult>>
+  createProject(params: ProjectCreateParams): Promise<RpcResult<ProjectResult>>
+  updateProject(params: ProjectUpdateParams): Promise<RpcResult<ProjectResult>>
+  listWorks(params?: {
+    includeArchived?: boolean
+    projectId?: string
+  }): Promise<RpcResult<WorkListResult>>
   createWork(params: WorkCreateParams): Promise<RpcResult<WorkResult>>
   linkWorkTeam(params: WorkLinkTeamParams): Promise<RpcResult<WorkResult>>
   activateWork(params: WorkIdParams): Promise<RpcResult<WorkResult>>
@@ -160,45 +203,13 @@ export type AgentraApi = {
   resumeAssignment(params: AssignmentIdParams): Promise<RpcResult<AssignmentResult>>
   completeAssignment(params: AssignmentIdParams): Promise<RpcResult<AssignmentResult>>
 
-  // ---- 阶段 3：工作流定义（只做定义层，无执行入口） ----
-  listWorkflowTemplates(params?: {
-    includeArchived?: boolean
-  }): Promise<RpcResult<WorkflowTemplateListResult>>
-  getWorkflowTemplate(params: WorkflowTemplateGetParams): Promise<RpcResult<WorkflowTemplateResult>>
-  createWorkflowTemplate(
-    params: WorkflowTemplateCreateParams,
-  ): Promise<RpcResult<WorkflowTemplateResult>>
-  updateWorkflowTemplate(
-    params: WorkflowTemplateUpdateParams,
-  ): Promise<RpcResult<WorkflowTemplateResult>>
-  archiveWorkflowTemplate(
-    params: WorkflowTemplateIdParams,
-  ): Promise<RpcResult<WorkflowTemplateResult>>
-  listWorkflowVersions(
-    params: WorkflowVersionListParams,
-  ): Promise<RpcResult<WorkflowVersionListResult>>
-  getWorkflowVersion(params: WorkflowVersionGetParams): Promise<RpcResult<WorkflowVersionResult>>
-  createWorkflowDraft(
-    params: WorkflowVersionCreateDraftParams,
-  ): Promise<RpcResult<WorkflowVersionResult>>
-  publishWorkflowVersion(
-    params: WorkflowVersionPublishParams,
-  ): Promise<RpcResult<WorkflowVersionResult>>
-  validateWorkflowDefinition(
-    params: WorkflowVersionValidateParams,
-  ): Promise<RpcResult<WorkflowVersionValidateResult>>
-
   // 阶段 5 S5-3：审批中心 + 运行态查询（无执行入口）。
   decideApproval(params: ApprovalDecideParams): Promise<RpcResult<ApprovalResult>>
   getApproval(params: ApprovalGetParams): Promise<RpcResult<ApprovalGetResult>>
   listPendingApprovals(
     params: ApprovalListPendingParams,
   ): Promise<RpcResult<ApprovalListPendingResult>>
-  startWorkflowRun(params: WorkflowRunStartParams): Promise<RpcResult<WorkflowRunStartResult>>
   getWorkflowRun(params: WorkflowRunGetParams): Promise<RpcResult<WorkflowRunGetResult>>
-  listWorkflowRunsByWork(
-    params: WorkflowRunListByWorkParams,
-  ): Promise<RpcResult<WorkflowRunListByWorkResult>>
   listArtifacts(params: ArtifactListParams): Promise<RpcResult<ArtifactListResult>>
   previewArtifact(params: ArtifactPreviewParams): Promise<RpcResult<ArtifactPreviewResult>>
 

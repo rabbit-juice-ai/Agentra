@@ -60,6 +60,15 @@ function agentProfile(overrides: Partial<AgentProfile> = {}): AgentProfile {
     description: 'builds UI',
     systemPrompt: 'be precise',
     skills: ['react', 'css'],
+    capabilities: {
+      taskTypes: ['frontend'],
+      inputTypes: ['spec'],
+      outputTypes: ['code'],
+      canVerify: [],
+      canApprove: [],
+      excludedTaskTypes: [],
+    },
+    model: null,
     toolPermissions: { version: 1, allow: ['Read', 'Edit'], deny: ['Bash'] },
     defaultProviderId: null,
     maxConcurrency: 1,
@@ -159,6 +168,20 @@ describe('AgentRepository', () => {
 
     agents.update(agentProfile({ name: 'Senior FE', updatedAt: LATER, skills: ['react'] }))
     expect(agents.get('agt-1')).toMatchObject({ name: 'Senior FE', skills: ['react'] })
+
+    agents.update(
+      agentProfile({
+        capabilities: {
+          ...agentProfile().capabilities,
+          taskTypes: ['frontend', 'design-system'],
+          canVerify: ['frontend'],
+        },
+      }),
+    )
+    expect(agents.get('agt-1')?.capabilities).toMatchObject({
+      taskTypes: ['frontend', 'design-system'],
+      canVerify: ['frontend'],
+    })
 
     agents.update(agentProfile({ status: 'archived', archivedAt: LATER, updatedAt: LATER }))
     expect(agents.list()).toHaveLength(0)

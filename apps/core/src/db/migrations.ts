@@ -659,8 +659,7 @@ BEGIN
 END;
 `
 
-const PHASE_5_5_BACKUPS = `
--- 阶段 5.5 S55-1：备份历史（DATABASE §2.10 / D-013）。
+const PHASE_5_5_BACKUPS = `-- 阶段 5.5 S55-1：备份历史（DATABASE §2.10 / D-013）。
 -- status 的 failed 是真实失败态：任何环节失败都不得呈现为 completed。
 CREATE TABLE IF NOT EXISTS backups (
   id TEXT PRIMARY KEY,
@@ -680,6 +679,164 @@ CREATE TABLE IF NOT EXISTS backups (
 );
 
 CREATE INDEX IF NOT EXISTS idx_backups_status_created ON backups(status, created_at);
+`
+
+/**
+ * P1：Agent 结构化能力标签。description 仍是自然语言职责，供 Planner 理解；
+ * capabilities_json 是确定性匹配依据，不得被职责描述隐式扩大。
+ */
+const PLANNER_AGENT_CAPABILITIES = `
+ALTER TABLE agent_profiles ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '{}';
+`
+
+/** 可选模型别名/ID；NULL 使用 Provider 默认模型。 */
+const AGENT_MODEL = `
+ALTER TABLE agent_profiles ADD COLUMN model TEXT;
+`
+
+/** P3：计划持久化、审批、任务讨论线程。 */
+const PLAN_APPROVAL = `
+CREATE TABLE IF NOT EXISTS plans (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  goal TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (
+    status IN ('pending_approval', 'approved', 'rejected', 'running', 'completed', 'failed', 'cancelled')
+  ),
+  current_version INTEGER NOT NULL DEFAULT 1 CHECK (current_version >= 1),
+  workflow_version_id TEXT,
+  workflow_run_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  approved_at TEXT,
+  approved_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_plans_work_status ON plans(work_id, status);
+
+CREATE TABLE IF NOT EXISTS plan_versions (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL CHECK (version >= 1),
+  plan_json TEXT NOT NULL,
+  validation_json TEXT NOT NULL,
+  assignments_json TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (
+    status IN ('pending_approval', 'approved', 'rejected', 'running', 'completed', 'failed', 'cancelled')
+  ),
+  created_at TEXT NOT NULL,
+  approved_at TEXT,
+  approved_by TEXT,
+  UNIQUE (plan_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS plan_threads (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+  task_key TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (plan_id, task_key)
+);
+
+CREATE TABLE IF NOT EXISTS plan_comments (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES plan_threads(id) ON DELETE CASCADE,
+  author_type TEXT NOT NULL CHECK (author_type IN ('user', 'agent', 'system')),
+  author_id TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  run_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_comments_thread ON plan_comments(thread_id, created_at);
+`
+
+/** 计划版本来源（AI 规划 / 能力匹配快速草稿）。 */
+const PLAN_VERSION_SOURCE = `
+ALTER TABLE plan_versions ADD COLUMN source TEXT NOT NULL DEFAULT 'fallback';
+ALTER TABLE plan_versions ADD COLUMN fallback_reason TEXT;
+`
+
+/** 返工换人：按 (run, node) 覆盖 assignment，显式改派，不做自动改绑。 */
+const NODE_ASSIGNMENT_OVERRIDES = `CREATE TABLE IF NOT EXISTS node_assignment_overrides (
+  id TEXT PRIMARY KEY,
+  workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  workflow_node_key TEXT NOT NULL,
+  agent_id TEXT NOT NULL REFERENCES agent_profiles(id),
+  assigned_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (workflow_run_id, workflow_node_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_node_assignment_overrides_run
+  ON node_assignment_overrides(workflow_run_id);
+`
+
+/** 项目 = 任务的合集；任务（works）通过 project_id 归属项目。 */
+const PROJECTS = `
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'completed', 'archived'))
+    DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+ALTER TABLE works ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_works_project ON works(project_id);
+
+INSERT OR IGNORE INTO projects (id, name, description, status, created_at, updated_at)
+  VALUES (
+    'prj-default',
+    '默认项目',
+    '',
+    'active',
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  );
+
+UPDATE works SET project_id = 'prj-default' WHERE project_id IS NULL;
+`
+
+/**
+ * 计划不再强制绑定任务：独立规划先落库，之后可转为任务或项目。
+ * plans.work_id 改为可空；依赖表的外键在 rebuild 事务内保持有效。
+ */
+const PLANS_NULLABLE_WORK = `
+CREATE TABLE plans_new (
+  id TEXT PRIMARY KEY,
+  work_id TEXT REFERENCES works(id) ON DELETE SET NULL,
+  goal TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (
+    status IN ('pending_approval', 'approved', 'rejected', 'running', 'completed', 'failed', 'cancelled')
+  ),
+  current_version INTEGER NOT NULL DEFAULT 1 CHECK (current_version >= 1),
+  workflow_version_id TEXT,
+  workflow_run_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  approved_at TEXT,
+  approved_by TEXT
+);
+
+INSERT INTO plans_new (
+  id, work_id, goal, status, current_version, workflow_version_id, workflow_run_id,
+  created_at, updated_at, approved_at, approved_by
+)
+SELECT
+  id, work_id, goal, status, current_version, workflow_version_id, workflow_run_id,
+  created_at, updated_at, approved_at, approved_by
+FROM plans;
+
+DROP TABLE plans;
+ALTER TABLE plans_new RENAME TO plans;
+
+CREATE INDEX IF NOT EXISTS idx_plans_work_status ON plans(work_id, status);
 `
 
 export const MIGRATIONS: Migration[] = [
@@ -790,6 +947,56 @@ export const MIGRATIONS: Migration[] = [
     name: 'phase5_5_backups',
     up: (db) => {
       db.exec(PHASE_5_5_BACKUPS)
+    },
+  },
+  {
+    version: 16,
+    name: 'planner_agent_capabilities',
+    up: (db) => {
+      db.exec(PLANNER_AGENT_CAPABILITIES)
+    },
+  },
+  {
+    version: 17,
+    name: 'agent_model',
+    up: (db) => {
+      db.exec(AGENT_MODEL)
+    },
+  },
+  {
+    version: 18,
+    name: 'plan_approval',
+    up: (db) => {
+      db.exec(PLAN_APPROVAL)
+    },
+  },
+  {
+    version: 19,
+    name: 'plan_version_source',
+    up: (db) => {
+      db.exec(PLAN_VERSION_SOURCE)
+    },
+  },
+  {
+    version: 20,
+    name: 'node_assignment_overrides',
+    up: (db) => {
+      db.exec(NODE_ASSIGNMENT_OVERRIDES)
+    },
+  },
+  {
+    version: 21,
+    name: 'projects',
+    up: (db) => {
+      db.exec(PROJECTS)
+    },
+  },
+  {
+    version: 22,
+    name: 'plans_nullable_work',
+    rebuildsTables: true,
+    up: (db) => {
+      db.exec(PLANS_NULLABLE_WORK)
     },
   },
 ]

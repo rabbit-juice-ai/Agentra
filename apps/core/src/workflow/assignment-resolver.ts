@@ -25,21 +25,25 @@ export class WorkflowAssignmentError extends Error {
  * Assignment 解析（C-8 双阶段）：
  * - Run 创建时 `precheck()` 对全部 agent_task 节点做**预检**：任一 0 命中/多命中即整次 Run 失败；
  * - 节点启动前 `resolveForNode()` **复核 active**：失效则该节点 failed，不自动改绑其他 Agent。
+ *
+ * `overrideAgentId` 是老板在运行期显式改派（P5）的唯一入口；它仍然要求该 Agent
+ * 在同一 workRole 下有 active Assignment，解析失败依旧 fail-closed。
  */
 export class WorkflowAssignmentResolver {
   constructor(private readonly assignments: AssignmentRepository) {}
 
-  resolveForNode(workId: string, node: WorkflowNode): AssignmentRecord {
+  resolveForNode(workId: string, node: WorkflowNode, overrideAgentId?: string): AssignmentRecord {
     if (node.type !== 'agent_task') {
       throw new Error(`assignment resolution is only defined for agent_task, got ${node.type}`)
     }
     const selector = node.config.assignmentSelector
+    const pinnedAgentId = overrideAgentId ?? selector.agentProfileId
     const matches = this.assignments
       .listByWork(workId)
       .filter(
         (assignment) =>
           assignment.workRole === selector.workRole &&
-          (selector.agentProfileId === undefined || assignment.agentId === selector.agentProfileId),
+          (pinnedAgentId === undefined || assignment.agentId === pinnedAgentId),
       )
     const active = matches.filter((assignment) => assignment.status === 'active')
 
@@ -56,16 +60,20 @@ export class WorkflowAssignmentResolver {
       throw new WorkflowAssignmentError(
         'assignment_inactive',
         node.key,
-        `work ${workId} has no active assignment for role "${selector.workRole}" (found ${matches
-          .map((assignment) => assignment.status)
-          .join(', ')})`,
+        overrideAgentId
+          ? `work ${workId} has no active assignment for reassigned agent "${overrideAgentId}" in role "${selector.workRole}"`
+          : `work ${workId} has no active assignment for role "${selector.workRole}" (found ${matches
+              .map((assignment) => assignment.status)
+              .join(', ')})`,
         matches.map((assignment) => assignment.agentId),
       )
     }
     throw new WorkflowAssignmentError(
       'assignment_unresolved',
       node.key,
-      `work ${workId} has no assignment for role "${selector.workRole}"`,
+      overrideAgentId
+        ? `work ${workId} has no assignment for reassigned agent "${overrideAgentId}" in role "${selector.workRole}"`
+        : `work ${workId} has no assignment for role "${selector.workRole}"`,
     )
   }
 

@@ -64,6 +64,7 @@ type SpawnJob = {
   sessionId: string
   externalSessionId: string
   systemPrompt: string | undefined
+  model: string | undefined
   allowedTools: string[]
   disallowedTools: string[]
   allowedRoots: string[] | undefined
@@ -522,6 +523,7 @@ export class ExecutionService {
       sessionId,
       externalSessionId,
       systemPrompt: agent.systemPrompt.length > 0 ? agent.systemPrompt : undefined,
+      model: agent.model ?? undefined,
       allowedTools: toolPermissions.allow,
       disallowedTools: toolPermissions.deny,
       // 阶段 2：绑定 Work 时把允许的目录根一并声明给 Daemon（Daemon 仍做边界校验）。
@@ -581,6 +583,7 @@ export class ExecutionService {
           workingDirectory: job.workingDirectory,
           sessionId: job.externalSessionId,
           systemPrompt: job.systemPrompt,
+          model: job.model,
           permissionMode: DEFAULT_PERMISSION_MODE,
           allowedTools: job.allowedTools,
           disallowedTools: job.disallowedTools,

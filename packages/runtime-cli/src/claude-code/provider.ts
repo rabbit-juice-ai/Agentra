@@ -5,6 +5,7 @@ import {
   type ExecutionState,
   type ExecutionStatus,
   type InterruptResult,
+  type ProviderCapabilities,
   type RuntimeConfig,
   RuntimeError,
   type RuntimeEvent,
@@ -63,13 +64,15 @@ const RETENTION_MS = 5 * 60 * 1000
  * 进程生命周期由本适配器管理；业务状态由 Core 决定，这里只报告事实。
  */
 export class ClaudeCodeProvider implements RuntimeProvider {
-  readonly id = CLAUDE_CODE_PROVIDER_ID
+  readonly id: string = CLAUDE_CODE_PROVIDER_ID
+  protected readonly capabilities: ProviderCapabilities = CLAUDE_CODE_CAPABILITIES
+  protected readonly cliName: string = 'Claude Code'
   private readonly executions = new Map<string, ManagedExecution>()
   private readonly pendingListeners = new Map<string, Set<RuntimeEventListener>>()
-  private readonly discovery: DiscoveryOptions
+  protected readonly discovery: DiscoveryOptions
   /** 构造时显式注入的路径（测试/自定义安装），发现时优先使用。 */
-  private readonly injectedPath: string | null
-  private executablePath: string | null
+  protected readonly injectedPath: string | null
+  protected executablePath: string | null
 
   constructor(options: { executablePath?: string | null; discovery?: DiscoveryOptions } = {}) {
     this.injectedPath = options.executablePath ?? null
@@ -78,15 +81,23 @@ export class ClaudeCodeProvider implements RuntimeProvider {
   }
 
   async discover(): Promise<RuntimeInfo[]> {
+    const info = await this.discoverInfo()
+    this.executablePath = info.executablePath
+    return [info]
+  }
+
+  protected async discoverInfo(): Promise<RuntimeInfo> {
     const discovery: DiscoveryOptions = this.injectedPath
       ? {
           ...this.discovery,
           env: { ...(this.discovery.env ?? process.env), AGENTRA_CLAUDE_PATH: this.injectedPath },
         }
       : this.discovery
-    const info = await discoverClaudeCode(discovery)
-    this.executablePath = info.executablePath
-    return [info]
+    return discoverClaudeCode(discovery)
+  }
+
+  protected buildArgs(config: StartExecutionConfig): string[] {
+    return buildClaudeArgs(config)
   }
 
   async inspect(config: RuntimeConfig): Promise<RuntimeHealth> {
@@ -120,11 +131,11 @@ export class ClaudeCodeProvider implements RuntimeProvider {
     if (!executablePath) {
       throw new RuntimeError(
         'CLI_UNAVAILABLE',
-        'Claude Code 可执行文件未知。请先运行 Provider 发现，或设置 AGENTRA_CLAUDE_PATH。',
+        `${this.cliName} 可执行文件未知。请先运行 Provider 发现，或设置对应路径环境变量。`,
       )
     }
 
-    const child = spawn(executablePath, buildClaudeArgs(config), {
+    const child = spawn(executablePath, this.buildArgs(config), {
       cwd: config.workingDirectory,
       env: buildChildEnv(config.env),
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -195,7 +206,7 @@ export class ClaudeCodeProvider implements RuntimeProvider {
   }
 
   async sendMessage(executionId: string, message: RuntimeMessage): Promise<void> {
-    if (CLAUDE_CODE_CAPABILITIES.streaming === 'unsupported') {
+    if (this.capabilities.streaming === 'unsupported') {
       throw new RuntimeError('CAPABILITY_UNSUPPORTED', 'provider does not support streaming input')
     }
     const managed = this.require(executionId)
@@ -212,7 +223,7 @@ export class ClaudeCodeProvider implements RuntimeProvider {
   }
 
   async interrupt(executionId: string): Promise<InterruptResult> {
-    if (CLAUDE_CODE_CAPABILITIES.interrupt === 'unsupported') {
+    if (this.capabilities.interrupt === 'unsupported') {
       throw new RuntimeError('CAPABILITY_UNSUPPORTED', 'provider does not support interrupt')
     }
     const managed = this.require(executionId)
@@ -233,7 +244,7 @@ export class ClaudeCodeProvider implements RuntimeProvider {
     // 与 CLAUDE_CODE_CAPABILITIES.resume=unsupported 一致：未实现即不得提供可用路径。
     throw new RuntimeError(
       'CAPABILITY_UNSUPPORTED',
-      'provider declares resume=unsupported; start a new execution instead',
+      `${this.cliName} declares resume=unsupported; start a new execution instead`,
     )
   }
 

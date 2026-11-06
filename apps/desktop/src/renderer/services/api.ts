@@ -10,6 +10,33 @@ import type {
   Execution,
   ExecutionLog,
   ExecutionSendMessageParams,
+  PlanApproveParams,
+  PlanCommentParams,
+  PlanCommentResult,
+  PlanConvertToProjectParams,
+  PlanConvertToProjectResult,
+  PlanConvertToTaskParams,
+  PlanConvertToTaskResult,
+  PlanDecisionResult,
+  PlanGenerateParams,
+  PlanGenerateResult,
+  PlanGetParams,
+  PlanGetResult,
+  PlanListByWorkParams,
+  PlanListByWorkResult,
+  PlanListRecentParams,
+  PlanListRecentResult,
+  PlanReassignTaskParams,
+  PlanReassignTaskResult,
+  PlanRejectParams,
+  PlanReworkActionParams,
+  PlanReworkActionResult,
+  PlanStartRunParams,
+  PlanStartRunResult,
+  PlanThreadListParams,
+  PlanThreadListResult,
+  ProjectCreateParams,
+  ProjectUpdateParams,
   RuntimeEvent,
   RuntimeProviderRecord,
   TeamCreateParams,
@@ -57,6 +84,36 @@ export const api = {
   refreshProviders: async (): Promise<RuntimeProviderRecord[]> =>
     (await unwrap(window.agentra.refreshProviders())).providers,
 
+  generatePlan: async (params: PlanGenerateParams): Promise<PlanGenerateResult> =>
+    unwrap(window.agentra.generatePlan(params)),
+  getPlan: async (params: PlanGetParams): Promise<PlanGetResult> =>
+    unwrap(window.agentra.getPlan(params)),
+  listPlansByWork: async (params: PlanListByWorkParams): Promise<PlanListByWorkResult> =>
+    unwrap(window.agentra.listPlansByWork(params)),
+  listRecentPlans: async (params?: PlanListRecentParams): Promise<PlanListRecentResult> =>
+    unwrap(window.agentra.listRecentPlans(params)),
+  convertPlanToTask: async (params: PlanConvertToTaskParams): Promise<PlanConvertToTaskResult> =>
+    unwrap(window.agentra.convertPlanToTask(params)),
+  convertPlanToProject: async (
+    params: PlanConvertToProjectParams,
+  ): Promise<PlanConvertToProjectResult> => unwrap(window.agentra.convertPlanToProject(params)),
+  approvePlan: async (params: PlanApproveParams): Promise<PlanDecisionResult> =>
+    unwrap(window.agentra.approvePlan(params)),
+  rejectPlan: async (params: PlanRejectParams): Promise<PlanDecisionResult> =>
+    unwrap(window.agentra.rejectPlan(params)),
+  startPlanRun: async (params: PlanStartRunParams): Promise<PlanStartRunResult> =>
+    unwrap(window.agentra.startPlanRun(params)),
+  listPlanThreads: async (params: PlanThreadListParams): Promise<PlanThreadListResult> =>
+    unwrap(window.agentra.listPlanThreads(params)),
+  commentOnPlan: async (params: PlanCommentParams): Promise<PlanCommentResult> =>
+    unwrap(window.agentra.commentOnPlan(params)),
+  reassignPlanTask: async (params: PlanReassignTaskParams): Promise<PlanReassignTaskResult> =>
+    unwrap(window.agentra.reassignPlanTask(params)),
+  continuePlanRework: async (params: PlanReworkActionParams): Promise<PlanReworkActionResult> =>
+    unwrap(window.agentra.continuePlanRework(params)),
+  takeOverPlanRework: async (params: PlanReworkActionParams): Promise<PlanReworkActionResult> =>
+    unwrap(window.agentra.takeOverPlanRework(params)),
+
   startExecution: async (agentId: string, prompt: string): Promise<Execution> =>
     (await unwrap(window.agentra.startExecution({ agentId, prompt }))).execution,
   listExecutions: async (limit = 50): Promise<Execution[]> =>
@@ -84,6 +141,12 @@ export const api = {
   addTeamMember: async (params: TeamMemberAddParams) =>
     (await unwrap(window.agentra.addTeamMember(params))).member,
 
+  listProjects: async () => (await unwrap(window.agentra.listProjects())).projects,
+  getProject: async (id: string) => (await unwrap(window.agentra.getProject({ id }))).project,
+  createProject: async (params: ProjectCreateParams) =>
+    (await unwrap(window.agentra.createProject(params))).project,
+  updateProject: async (params: ProjectUpdateParams) =>
+    (await unwrap(window.agentra.updateProject(params))).project,
   listWorks: async (includeArchived = false) =>
     (await unwrap(window.agentra.listWorks({ includeArchived }))).works,
   createWork: async (params: WorkCreateParams) =>
@@ -133,8 +196,6 @@ export const api = {
     (await unwrap(window.agentra.decideApproval(params))).approval,
   getApproval: async (nodeRunId: string) => await unwrap(window.agentra.getApproval({ nodeRunId })),
   getWorkflowRun: async (runId: string) => await unwrap(window.agentra.getWorkflowRun({ runId })),
-  listWorkflowRunsByWork: async (workId: string) =>
-    (await unwrap(window.agentra.listWorkflowRunsByWork({ workId }))).runs,
   listArtifacts: async (workId: string) =>
     (await unwrap(window.agentra.listArtifacts({ workId }))).artifacts,
   previewArtifact: async (artifactId: string, version?: number) =>

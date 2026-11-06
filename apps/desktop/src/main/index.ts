@@ -50,6 +50,38 @@ import {
   ExecutionResult,
   ExecutionSendMessageResult,
   HealthResult,
+  PLAN_APPROVE_METHOD,
+  PLAN_COMMENT_METHOD,
+  PLAN_CONTINUE_REWORK_METHOD,
+  PLAN_CONVERT_TO_PROJECT_METHOD,
+  PLAN_CONVERT_TO_TASK_METHOD,
+  PLAN_GENERATE_METHOD,
+  PLAN_GET_METHOD,
+  PLAN_LIST_BY_WORK_METHOD,
+  PLAN_LIST_RECENT_METHOD,
+  PLAN_REASSIGN_TASK_METHOD,
+  PLAN_REJECT_METHOD,
+  PLAN_START_RUN_METHOD,
+  PLAN_TAKE_OVER_REWORK_METHOD,
+  PLAN_THREAD_LIST_METHOD,
+  PlanCommentResult,
+  PlanConvertToProjectResult,
+  PlanConvertToTaskResult,
+  PlanDecisionResult,
+  PlanGenerateResult,
+  PlanGetResult,
+  PlanListByWorkResult,
+  PlanListRecentResult,
+  PlanReassignTaskResult,
+  PlanReworkActionResult,
+  PlanStartRunResult,
+  PlanThreadListResult,
+  PROJECT_CREATE_METHOD,
+  PROJECT_GET_METHOD,
+  PROJECT_LIST_METHOD,
+  PROJECT_UPDATE_METHOD,
+  ProjectListResult,
+  ProjectResult,
   RESTORE_STATUS_METHOD,
   RestoreStatusResultValue,
   RUNTIME_PROVIDER_LIST_METHOD,
@@ -75,38 +107,26 @@ import {
   WORK_PAUSE_METHOD,
   WORK_RESUME_METHOD,
   WORKFLOW_RUN_GET_METHOD,
-  WORKFLOW_RUN_LIST_BY_WORK_METHOD,
-  WORKFLOW_RUN_START_METHOD,
-  WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
-  WORKFLOW_TEMPLATE_CREATE_METHOD,
-  WORKFLOW_TEMPLATE_GET_METHOD,
-  WORKFLOW_TEMPLATE_LIST_METHOD,
-  WORKFLOW_TEMPLATE_UPDATE_METHOD,
-  WORKFLOW_VERSION_CREATE_DRAFT_METHOD,
-  WORKFLOW_VERSION_GET_METHOD,
-  WORKFLOW_VERSION_LIST_METHOD,
-  WORKFLOW_VERSION_PUBLISH_METHOD,
-  WORKFLOW_VERSION_VALIDATE_METHOD,
   WORKTREE_CREATE_METHOD,
   WORKTREE_LIST_METHOD,
   WORKTREE_REMOVE_METHOD,
   WorkflowRunGetResult,
-  WorkflowRunListByWorkResult,
-  WorkflowRunStartResult,
-  WorkflowTemplateListResult,
-  WorkflowTemplateResult,
-  WorkflowVersionListResult,
-  WorkflowVersionResult,
-  WorkflowVersionValidateResult,
   WorkListResult,
   WorkResult,
   WorktreeCreateResult,
   WorktreeListResult,
   WorktreeRemoveResult,
 } from '@agentra/protocol'
-import { agentraPaths } from '@agentra/shared'
-import { app, BrowserWindow, ipcMain } from 'electron'
-import { BACKUP_LIST_DEFAULT_LIMIT, backupRpcTimeoutMs, type RpcResult } from '../shared/api'
+import { agentraHome, agentraPaths } from '@agentra/shared'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import {
+  BACKUP_LIST_DEFAULT_LIMIT,
+  backupRpcTimeoutMs,
+  PLAN_GENERATE_TIMEOUT_MS,
+  PLAN_REASSIGN_TIMEOUT_MS,
+  PLAN_START_RUN_TIMEOUT_MS,
+  type RpcResult,
+} from '../shared/api'
 import { ensureCore } from './core-launcher'
 import { waitForCoreNormal } from './core-status'
 import { CoreRpcClient } from './rpc-client'
@@ -163,6 +183,12 @@ async function callCore<T>(
 function registerIpc(): void {
   ipcMain.handle('agentra:core-health', () => callCore(CORE_HEALTH_METHOD, {}, HealthResult))
   ipcMain.handle('agentra:daemon-health', () => callCore(DAEMON_HEALTH_METHOD, {}, HealthResult))
+  ipcMain.handle('agentra:app-info', () => ({ version: app.getVersion(), dataDir: agentraHome() }))
+  ipcMain.handle('agentra:open-data-dir', async () => {
+    const dataDir = agentraHome()
+    const error = await shell.openPath(dataDir)
+    return { path: dataDir, error: error === '' ? null : error }
+  })
 
   ipcMain.handle('agentra:agent-list', (_event, params: unknown) =>
     callCore(AGENT_LIST_METHOD, params ?? {}, AgentListResult),
@@ -182,6 +208,54 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:provider-refresh', () =>
     callCore(RUNTIME_PROVIDER_REFRESH_METHOD, {}, RuntimeProviderListResult),
+  )
+
+  ipcMain.handle('agentra:plan-generate', (_event, params: unknown) =>
+    callCore(PLAN_GENERATE_METHOD, params, PlanGenerateResult, PLAN_GENERATE_TIMEOUT_MS),
+  )
+  ipcMain.handle('agentra:plan-get', (_event, params: unknown) =>
+    callCore(PLAN_GET_METHOD, params, PlanGetResult),
+  )
+  ipcMain.handle('agentra:plan-list-by-work', (_event, params: unknown) =>
+    callCore(PLAN_LIST_BY_WORK_METHOD, params, PlanListByWorkResult),
+  )
+  ipcMain.handle('agentra:plan-list-recent', (_event, params: unknown) =>
+    callCore(PLAN_LIST_RECENT_METHOD, params ?? {}, PlanListRecentResult),
+  )
+  ipcMain.handle('agentra:plan-convert-to-task', (_event, params: unknown) =>
+    callCore(PLAN_CONVERT_TO_TASK_METHOD, params, PlanConvertToTaskResult),
+  )
+  ipcMain.handle('agentra:plan-convert-to-project', (_event, params: unknown) =>
+    callCore(PLAN_CONVERT_TO_PROJECT_METHOD, params, PlanConvertToProjectResult),
+  )
+  ipcMain.handle('agentra:plan-approve', (_event, params: unknown) =>
+    callCore(PLAN_APPROVE_METHOD, params, PlanDecisionResult),
+  )
+  ipcMain.handle('agentra:plan-reject', (_event, params: unknown) =>
+    callCore(PLAN_REJECT_METHOD, params, PlanDecisionResult),
+  )
+  ipcMain.handle('agentra:plan-start-run', (_event, params: unknown) =>
+    callCore(PLAN_START_RUN_METHOD, params, PlanStartRunResult, PLAN_START_RUN_TIMEOUT_MS),
+  )
+  ipcMain.handle('agentra:plan-thread-list', (_event, params: unknown) =>
+    callCore(PLAN_THREAD_LIST_METHOD, params, PlanThreadListResult),
+  )
+  ipcMain.handle('agentra:plan-comment', (_event, params: unknown) =>
+    callCore(PLAN_COMMENT_METHOD, params, PlanCommentResult),
+  )
+  ipcMain.handle('agentra:plan-reassign-task', (_event, params: unknown) =>
+    callCore(PLAN_REASSIGN_TASK_METHOD, params, PlanReassignTaskResult, PLAN_REASSIGN_TIMEOUT_MS),
+  )
+  ipcMain.handle('agentra:plan-continue-rework', (_event, params: unknown) =>
+    callCore(PLAN_CONTINUE_REWORK_METHOD, params, PlanReworkActionResult, PLAN_REASSIGN_TIMEOUT_MS),
+  )
+  ipcMain.handle('agentra:plan-take-over-rework', (_event, params: unknown) =>
+    callCore(
+      PLAN_TAKE_OVER_REWORK_METHOD,
+      params,
+      PlanReworkActionResult,
+      PLAN_REASSIGN_TIMEOUT_MS,
+    ),
   )
 
   ipcMain.handle('agentra:team-list', (_event, params: unknown) =>
@@ -204,6 +278,17 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:team-member-remove', (_event, params: unknown) =>
     callCore(TEAM_MEMBER_REMOVE_METHOD, params, TeamMemberRemoveResult),
+  )
+
+  ipcMain.handle('agentra:project-list', () => callCore(PROJECT_LIST_METHOD, {}, ProjectListResult))
+  ipcMain.handle('agentra:project-get', (_event, params: unknown) =>
+    callCore(PROJECT_GET_METHOD, params, ProjectResult),
+  )
+  ipcMain.handle('agentra:project-create', (_event, params: unknown) =>
+    callCore(PROJECT_CREATE_METHOD, params, ProjectResult),
+  )
+  ipcMain.handle('agentra:project-update', (_event, params: unknown) =>
+    callCore(PROJECT_UPDATE_METHOD, params, ProjectResult),
   )
 
   ipcMain.handle('agentra:work-list', (_event, params: unknown) =>
@@ -276,39 +361,7 @@ function registerIpc(): void {
     callCore(EXECUTION_SEND_MESSAGE_METHOD, params, ExecutionSendMessageResult),
   )
 
-  // 阶段 3：工作流定义层。逐条显式通道，不存在通用 RPC 透传；也没有任何 workflow.run.* 入口。
-  ipcMain.handle('agentra:workflow-template-list', (_event, params: unknown) =>
-    callCore(WORKFLOW_TEMPLATE_LIST_METHOD, params ?? {}, WorkflowTemplateListResult),
-  )
-  ipcMain.handle('agentra:workflow-template-get', (_event, params: unknown) =>
-    callCore(WORKFLOW_TEMPLATE_GET_METHOD, params, WorkflowTemplateResult),
-  )
-  ipcMain.handle('agentra:workflow-template-create', (_event, params: unknown) =>
-    callCore(WORKFLOW_TEMPLATE_CREATE_METHOD, params, WorkflowTemplateResult),
-  )
-  ipcMain.handle('agentra:workflow-template-update', (_event, params: unknown) =>
-    callCore(WORKFLOW_TEMPLATE_UPDATE_METHOD, params, WorkflowTemplateResult),
-  )
-  ipcMain.handle('agentra:workflow-template-archive', (_event, params: unknown) =>
-    callCore(WORKFLOW_TEMPLATE_ARCHIVE_METHOD, params, WorkflowTemplateResult),
-  )
-  ipcMain.handle('agentra:workflow-version-list', (_event, params: unknown) =>
-    callCore(WORKFLOW_VERSION_LIST_METHOD, params, WorkflowVersionListResult),
-  )
-  ipcMain.handle('agentra:workflow-version-get', (_event, params: unknown) =>
-    callCore(WORKFLOW_VERSION_GET_METHOD, params, WorkflowVersionResult),
-  )
-  ipcMain.handle('agentra:workflow-version-create-draft', (_event, params: unknown) =>
-    callCore(WORKFLOW_VERSION_CREATE_DRAFT_METHOD, params, WorkflowVersionResult),
-  )
-  ipcMain.handle('agentra:workflow-version-publish', (_event, params: unknown) =>
-    callCore(WORKFLOW_VERSION_PUBLISH_METHOD, params, WorkflowVersionResult),
-  )
-  ipcMain.handle('agentra:workflow-version-validate', (_event, params: unknown) =>
-    callCore(WORKFLOW_VERSION_VALIDATE_METHOD, params, WorkflowVersionValidateResult),
-  )
-
-  // 阶段 5 S5-3：审批中心 + 运行态查询。逐条显式通道，无通用透传；没有任何执行入口。
+  // 阶段 5 S5-3：审批中心 + 运行态只读查询。逐条显式通道，无通用透传；无执行入口。
   ipcMain.handle('agentra:approval-decide', (_event, params: unknown) =>
     callCore(APPROVAL_DECIDE_METHOD, params, ApprovalResult),
   )
@@ -318,14 +371,8 @@ function registerIpc(): void {
   ipcMain.handle('agentra:approval-list-pending', (_event, params: unknown) =>
     callCore(APPROVAL_LIST_PENDING_METHOD, params, ApprovalListPendingResult),
   )
-  ipcMain.handle('agentra:workflow-run-start', (_event, params: unknown) =>
-    callCore(WORKFLOW_RUN_START_METHOD, params, WorkflowRunStartResult, 60_000),
-  )
   ipcMain.handle('agentra:workflow-run-get', (_event, params: unknown) =>
     callCore(WORKFLOW_RUN_GET_METHOD, params, WorkflowRunGetResult),
-  )
-  ipcMain.handle('agentra:workflow-run-list-by-work', (_event, params: unknown) =>
-    callCore(WORKFLOW_RUN_LIST_BY_WORK_METHOD, params, WorkflowRunListByWorkResult),
   )
   ipcMain.handle('agentra:artifact-list', (_event, params: unknown) =>
     callCore(ARTIFACT_LIST_METHOD, params, ArtifactListResult),
@@ -444,8 +491,10 @@ async function connectCore(): Promise<void> {
 
 function createWindow(): void {
   const win = new BrowserWindow({
-    width: 1180,
-    height: 760,
+    width: 1360,
+    height: 840,
+    minWidth: 1100,
+    minHeight: 700,
     title: 'Agentra',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.cjs'),

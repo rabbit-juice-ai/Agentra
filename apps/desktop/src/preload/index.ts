@@ -9,6 +9,8 @@ import type { AgentraApi } from '../shared/api'
 const api: AgentraApi = {
   getCoreHealth: () => ipcRenderer.invoke('agentra:core-health'),
   getDaemonHealth: () => ipcRenderer.invoke('agentra:daemon-health'),
+  getAppInfo: () => ipcRenderer.invoke('agentra:app-info'),
+  openDataDir: () => ipcRenderer.invoke('agentra:open-data-dir'),
 
   listAgents: (params) => ipcRenderer.invoke('agentra:agent-list', params ?? {}),
   createAgent: (params) => ipcRenderer.invoke('agentra:agent-create', params),
@@ -18,6 +20,21 @@ const api: AgentraApi = {
   listProviders: () => ipcRenderer.invoke('agentra:provider-list'),
   refreshProviders: () => ipcRenderer.invoke('agentra:provider-refresh'),
 
+  generatePlan: (params) => ipcRenderer.invoke('agentra:plan-generate', params),
+  getPlan: (params) => ipcRenderer.invoke('agentra:plan-get', params),
+  listPlansByWork: (params) => ipcRenderer.invoke('agentra:plan-list-by-work', params),
+  listRecentPlans: (params) => ipcRenderer.invoke('agentra:plan-list-recent', params ?? {}),
+  convertPlanToTask: (params) => ipcRenderer.invoke('agentra:plan-convert-to-task', params),
+  convertPlanToProject: (params) => ipcRenderer.invoke('agentra:plan-convert-to-project', params),
+  approvePlan: (params) => ipcRenderer.invoke('agentra:plan-approve', params),
+  rejectPlan: (params) => ipcRenderer.invoke('agentra:plan-reject', params),
+  startPlanRun: (params) => ipcRenderer.invoke('agentra:plan-start-run', params),
+  listPlanThreads: (params) => ipcRenderer.invoke('agentra:plan-thread-list', params),
+  commentOnPlan: (params) => ipcRenderer.invoke('agentra:plan-comment', params),
+  reassignPlanTask: (params) => ipcRenderer.invoke('agentra:plan-reassign-task', params),
+  continuePlanRework: (params) => ipcRenderer.invoke('agentra:plan-continue-rework', params),
+  takeOverPlanRework: (params) => ipcRenderer.invoke('agentra:plan-take-over-rework', params),
+
   listTeams: (params) => ipcRenderer.invoke('agentra:team-list', params ?? {}),
   getTeam: (params) => ipcRenderer.invoke('agentra:team-get', params),
   createTeam: (params) => ipcRenderer.invoke('agentra:team-create', params),
@@ -26,6 +43,10 @@ const api: AgentraApi = {
   addTeamMember: (params) => ipcRenderer.invoke('agentra:team-member-add', params),
   removeTeamMember: (params) => ipcRenderer.invoke('agentra:team-member-remove', params),
 
+  listProjects: () => ipcRenderer.invoke('agentra:project-list', {}),
+  getProject: (params) => ipcRenderer.invoke('agentra:project-get', params),
+  createProject: (params) => ipcRenderer.invoke('agentra:project-create', params),
+  updateProject: (params) => ipcRenderer.invoke('agentra:project-update', params),
   listWorks: (params) => ipcRenderer.invoke('agentra:work-list', params ?? {}),
   createWork: (params) => ipcRenderer.invoke('agentra:work-create', params),
   linkWorkTeam: (params) => ipcRenderer.invoke('agentra:work-link-team', params),
@@ -52,31 +73,10 @@ const api: AgentraApi = {
   interruptExecution: (params) => ipcRenderer.invoke('agentra:execution-interrupt', params),
   sendExecutionMessage: (params) => ipcRenderer.invoke('agentra:execution-send-message', params),
 
-  listWorkflowTemplates: (params) =>
-    ipcRenderer.invoke('agentra:workflow-template-list', params ?? {}),
-  getWorkflowTemplate: (params) => ipcRenderer.invoke('agentra:workflow-template-get', params),
-  createWorkflowTemplate: (params) =>
-    ipcRenderer.invoke('agentra:workflow-template-create', params),
-  updateWorkflowTemplate: (params) =>
-    ipcRenderer.invoke('agentra:workflow-template-update', params),
-  archiveWorkflowTemplate: (params) =>
-    ipcRenderer.invoke('agentra:workflow-template-archive', params),
-  listWorkflowVersions: (params) => ipcRenderer.invoke('agentra:workflow-version-list', params),
-  getWorkflowVersion: (params) => ipcRenderer.invoke('agentra:workflow-version-get', params),
-  createWorkflowDraft: (params) =>
-    ipcRenderer.invoke('agentra:workflow-version-create-draft', params),
-  publishWorkflowVersion: (params) =>
-    ipcRenderer.invoke('agentra:workflow-version-publish', params),
-  validateWorkflowDefinition: (params) =>
-    ipcRenderer.invoke('agentra:workflow-version-validate', params),
-
   decideApproval: (params) => ipcRenderer.invoke('agentra:approval-decide', params),
   getApproval: (params) => ipcRenderer.invoke('agentra:approval-get', params),
   listPendingApprovals: (params) => ipcRenderer.invoke('agentra:approval-list-pending', params),
-  startWorkflowRun: (params) => ipcRenderer.invoke('agentra:workflow-run-start', params),
   getWorkflowRun: (params) => ipcRenderer.invoke('agentra:workflow-run-get', params),
-  listWorkflowRunsByWork: (params) =>
-    ipcRenderer.invoke('agentra:workflow-run-list-by-work', params),
   listArtifacts: (params) => ipcRenderer.invoke('agentra:artifact-list', params),
   previewArtifact: (params) => ipcRenderer.invoke('agentra:artifact-preview', params),
 

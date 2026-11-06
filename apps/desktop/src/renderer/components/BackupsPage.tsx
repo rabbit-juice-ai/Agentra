@@ -3,21 +3,13 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../services/api'
 import {
   backupRecordError,
-  backupStatusColor,
   backupStatusLabel,
   backupTypeLabel,
   formatBackupError,
   formatBackupTime,
 } from './backup-format'
-import {
-  buttonStyle,
-  colors,
-  inputStyle,
-  labelStyle,
-  panelStyle,
-  primaryButtonStyle,
-  sectionTitleStyle,
-} from './styles'
+import { Icon } from './Icon'
+import { PageHeader } from './PageHeader'
 
 /**
  * 构建产物检查用标记：备份中心是产品功能，发布构建必须包含。
@@ -25,24 +17,20 @@ import {
  */
 export const BACKUPS_PAGE_MARKER = 'agentra-product-backups'
 
-function BackupStatus({ status }: { status: Backup['status'] }) {
-  const color = backupStatusColor(status)
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        fontSize: 11,
-        fontWeight: 600,
-        padding: '1px 8px',
-        borderRadius: 10,
-        color,
-        border: `1px solid ${color}`,
-        background: '#ffffff',
-      }}
-    >
-      {backupStatusLabel(status)}
-    </span>
-  )
+function statusClass(status: Backup['status']): string {
+  switch (status) {
+    case 'completed':
+    case 'verified':
+      return 'done'
+    case 'failed':
+      return 'danger'
+    case 'creating':
+      return 'warn'
+    case 'restored':
+      return 'running'
+    default:
+      return 'pending'
+  }
 }
 
 export function BackupsPage() {
@@ -52,6 +40,7 @@ export function BackupsPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [exportingId, setExportingId] = useState<string | null>(null)
+  const [exportOpenId, setExportOpenId] = useState<string | null>(null)
   const [exportTargets, setExportTargets] = useState<Record<string, string>>({})
 
   const load = useCallback(async (): Promise<void> => {
@@ -100,6 +89,7 @@ export function BackupsPage() {
       try {
         const target = await api.exportBackup(backupId, targetDir)
         setNotice(`已导出到：${target}`)
+        setExportOpenId(null)
       } catch (err) {
         setError(formatBackupError(err))
       } finally {
@@ -109,139 +99,186 @@ export function BackupsPage() {
     [exportTargets, exportingId],
   )
 
+  const latest = backups[0]
+  const verifiedCount = backups.filter(
+    (backup) => backup.status === 'verified' || backup.status === 'completed',
+  ).length
+
   return (
-    <div data-agentra-page={BACKUPS_PAGE_MARKER} style={{ display: 'grid', gap: 16 }}>
-      <section style={panelStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <h2 style={{ ...sectionTitleStyle, margin: 0 }}>备份中心</h2>
-          <button
-            type="button"
-            style={primaryButtonStyle}
-            disabled={creating || loading}
-            onClick={() => void create()}
-          >
-            {creating ? '正在创建…' : '创建备份'}
-          </button>
-          <button
-            type="button"
-            style={buttonStyle}
-            disabled={loading || creating}
-            onClick={() => void load()}
-          >
-            {loading ? '刷新中…' : '刷新'}
-          </button>
-        </div>
-        <p style={{ fontSize: 12, color: colors.muted, margin: '10px 0 0' }}>
-          备份包含 SQLite 数据库、托管 Artifact 文件与 manifest/SHA-256
-          校验值；导出目标必须位于备份目录之外。
-        </p>
-      </section>
+    <div data-agentra-page={BACKUPS_PAGE_MARKER} className="page">
+      <PageHeader
+        title="备份中心"
+        subtitle={
+          latest
+            ? `最近备份 ${formatBackupTime(latest.createdAt)} · ${verifiedCount} 个完整 · 共 ${backups.length} 个备份`
+            : '备份包含 SQLite 数据库、托管 Artifact 文件与 manifest/SHA-256 校验值'
+        }
+        actions={
+          <>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={loading || creating}
+              onClick={() => void load()}
+            >
+              <Icon name="refresh" size={14} />
+              {loading ? '刷新中…' : '刷新'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={creating || loading}
+              onClick={() => void create()}
+            >
+              <Icon name="archive" size={14} />
+              {creating ? '正在创建…' : '立即备份'}
+            </button>
+          </>
+        }
+      />
 
       {error && (
-        <div
-          role="alert"
-          style={{ ...panelStyle, borderColor: colors.red, color: colors.red, fontSize: 13 }}
-        >
-          {error}
-          <button
-            type="button"
-            style={{ ...buttonStyle, marginLeft: 12 }}
-            disabled={loading}
-            onClick={() => void load()}
-          >
+        <div className="banner error" role="alert">
+          <span style={{ flex: 1 }}>{error}</span>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => void load()}>
             重试
           </button>
         </div>
       )}
-      {notice && (
-        <div
-          style={{ ...panelStyle, borderColor: colors.green, color: colors.green, fontSize: 13 }}
-        >
-          {notice}
+      {notice && <div className="banner success">{notice}</div>}
+
+      <div className="card">
+        <div className="card-head">
+          <div className="card-title">备份记录</div>
+          <div className="right">
+            <span className="faint" style={{ fontSize: 10.5 }}>
+              最近 50 条
+            </span>
+          </div>
+        </div>
+        {loading && backups.length === 0 ? (
+          <div className="empty-state">正在加载备份…</div>
+        ) : backups.length === 0 ? (
+          <div className="empty-state">还没有备份。点击“立即备份”生成第一份。</div>
+        ) : (
+          <table className="backup-table">
+            <thead>
+              <tr>
+                <th>备份</th>
+                <th>类型</th>
+                <th>创建时间</th>
+                <th>Artifact 文件</th>
+                <th>完整性</th>
+                <th className="right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {backups.map((backup) => {
+                const failure = backupRecordError(backup.error)
+                const exporting = exportingId === backup.id
+                return (
+                  <tr key={backup.id}>
+                    <td>
+                      <strong className="mono">{backup.id}</strong>
+                      <div className="faint mono" style={{ fontSize: 10, marginTop: 2 }}>
+                        {backup.dbSha256 ? `sha256 ${backup.dbSha256.slice(0, 12)}…` : 'sha256 —'}
+                      </div>
+                      {backup.status === 'failed' && failure && (
+                        <div style={{ color: 'var(--danger)', fontSize: 11, marginTop: 3 }}>
+                          {failure}
+                        </div>
+                      )}
+                    </td>
+                    <td>{backupTypeLabel(backup.type)}</td>
+                    <td>{formatBackupTime(backup.createdAt)}</td>
+                    <td>{backup.fileCount}</td>
+                    <td>
+                      <span className={`pill ${statusClass(backup.status)}`}>
+                        {backupStatusLabel(backup.status)}
+                      </span>
+                    </td>
+                    <td className="right">
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={exporting}
+                        onClick={() =>
+                          setExportOpenId((current) => (current === backup.id ? null : backup.id))
+                        }
+                      >
+                        导出
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {exportOpenId && (
+        <div className="card" style={{ marginTop: 14 }}>
+          <div className="card-head">
+            <div className="card-title">导出备份 · {exportOpenId}</div>
+            <div className="right">
+              <button
+                type="button"
+                className="btn btn-ghost btn-icon"
+                onClick={() => setExportOpenId(null)}
+              >
+                <Icon name="x" />
+              </button>
+            </div>
+          </div>
+          <div className="card-body" style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label htmlFor="backup-export-target">导出目标目录（必须位于备份目录之外）</label>
+              <input
+                id="backup-export-target"
+                className="input"
+                value={exportTargets[exportOpenId] ?? ''}
+                onChange={(event) =>
+                  setExportTargets((current) => ({
+                    ...current,
+                    [exportOpenId]: event.target.value,
+                  }))
+                }
+                placeholder="/Users/you/Desktop/agentra-backups"
+                disabled={exportingId !== null}
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={
+                exportingId !== null || (exportTargets[exportOpenId] ?? '').trim().length === 0
+              }
+              onClick={() => void exportOne(exportOpenId)}
+            >
+              {exportingId === exportOpenId ? '导出中…' : '确认导出'}
+            </button>
+          </div>
         </div>
       )}
 
-      <section style={panelStyle}>
-        <h2 style={sectionTitleStyle}>备份列表（最近 50 条）</h2>
-        {loading && backups.length === 0 ? (
-          <p style={{ fontSize: 13, color: colors.muted, margin: 0 }}>正在加载备份…</p>
-        ) : backups.length === 0 ? (
-          <p style={{ fontSize: 13, color: colors.muted, margin: 0 }}>
-            还没有备份。点击“创建备份”生成第一份。
+      <div
+        className="danger-zone"
+        style={{ borderColor: 'var(--border-2)', background: 'var(--surface)' }}
+      >
+        <span className="task-icon" style={{ background: 'var(--fill)', color: 'var(--muted)' }}>
+          <Icon name="alert" />
+        </span>
+        <div className="text">
+          <h4 style={{ color: 'var(--text)' }}>恢复数据（当前构建未开放）</h4>
+          <p>
+            恢复预检、维护模式与原子替换属于独立阶段；本构建只提供备份创建与导出。恢复入口在专项验收通过前不会出现在界面上。
           </p>
-        ) : (
-          <div style={{ display: 'grid', gap: 10 }}>
-            {backups.map((backup) => {
-              const failure = backupRecordError(backup.error)
-              const target = exportTargets[backup.id] ?? ''
-              const exporting = exportingId === backup.id
-              const exportDisabled = exportingId !== null || target.trim().length === 0
-              return (
-                <div
-                  key={backup.id}
-                  style={{
-                    border: `1px solid ${colors.border}`,
-                    borderRadius: 8,
-                    padding: 12,
-                    display: 'grid',
-                    gap: 8,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                    <strong style={{ fontSize: 13 }}>{backupTypeLabel(backup.type)}</strong>
-                    <BackupStatus status={backup.status} />
-                    <span style={{ fontSize: 12, color: colors.muted }}>
-                      {formatBackupTime(backup.createdAt)}
-                    </span>
-                    <span style={{ fontSize: 12, color: colors.muted }}>
-                      Artifact 文件 {backup.fileCount}
-                    </span>
-                    <code
-                      title={backup.dbSha256 ?? undefined}
-                      style={{ fontSize: 11, color: colors.muted }}
-                    >
-                      {backup.dbSha256 ? `${backup.dbSha256.slice(0, 12)}…` : 'db sha256 —'}
-                    </code>
-                  </div>
-                  <div style={{ fontSize: 12, color: colors.muted }}>
-                    存储路径 <code>{backup.storagePath}</code>
-                  </div>
-                  {backup.status === 'failed' && failure && (
-                    <div style={{ fontSize: 12, color: colors.red }}>失败原因：{failure}</div>
-                  )}
-                  <div
-                    style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}
-                  >
-                    <label style={{ flex: '1 1 260px' }}>
-                      <span style={labelStyle}>导出目标目录</span>
-                      <input
-                        style={inputStyle}
-                        value={target}
-                        onChange={(event) =>
-                          setExportTargets((current) => ({
-                            ...current,
-                            [backup.id]: event.target.value,
-                          }))
-                        }
-                        placeholder="/Users/you/Desktop/agentra-backups"
-                        disabled={exporting}
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      style={buttonStyle}
-                      disabled={exportDisabled}
-                      onClick={() => void exportOne(backup.id)}
-                    >
-                      {exporting ? '导出中…' : '导出'}
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </section>
+        </div>
+        <button type="button" className="btn btn-secondary" disabled>
+          暂不可用
+        </button>
+      </div>
     </div>
   )
 }

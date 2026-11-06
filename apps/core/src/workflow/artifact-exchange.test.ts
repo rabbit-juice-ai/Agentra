@@ -3,7 +3,7 @@ import type { ExecutionLogRepository } from '../db/repositories/execution-log-re
 import type { NodeRunRepository } from '../db/repositories/node-run-repository'
 import type { ArtifactService } from '../services/artifact-service'
 import { redactOutput } from '../services/redact-output'
-import { ArtifactExchange } from './artifact-exchange'
+import { ArtifactExchange, describeOutputContract } from './artifact-exchange'
 
 function extractor(entries: Array<{ stream: string; content: string }>) {
   return new ArtifactExchange(
@@ -65,6 +65,22 @@ describe('Artifact output extraction (normalized CLI logs)', () => {
         },
       ]).extract('e'),
     ).toThrow(/Invalid/)
+  })
+  it('describes test_result as flat output fields, not a nested contract descriptor', () => {
+    const description = describeOutputContract({ profile: 'test_result', fields: [] })
+    expect(description).toContain('top-level fields')
+    expect(description).toContain('pass (boolean)')
+    expect(description).toContain('relatedTasks (string array)')
+    expect(description).toContain('Do not wrap them in a "fields" array')
+    expect(description).not.toContain('{"profile"')
+  })
+  it('describes generic fields with requiredness', () => {
+    expect(
+      describeOutputContract({
+        profile: 'generic',
+        fields: [{ name: 'summary', type: 'string', required: true }],
+      }),
+    ).toBe('The output object must contain these top-level fields: summary (string, required).')
   })
   it('redacts credential values without destroying structured output', () => {
     const clean = JSON.parse(

@@ -12,7 +12,12 @@ export const WORK_COMPLETE_METHOD = 'work.complete'
 export const WORK_TERMINATE_METHOD = 'work.terminate'
 export const WORK_ARCHIVE_METHOD = 'work.archive'
 
-export const WorkListParams = z.object({ includeArchived: z.boolean().optional() }).strict()
+export const WorkListParams = z
+  .object({
+    includeArchived: z.boolean().optional(),
+    projectId: z.string().min(1).optional(),
+  })
+  .strict()
 export type WorkListParams = z.infer<typeof WorkListParams>
 
 export const WorkListResult = z.object({ works: z.array(Work) })
@@ -32,6 +37,7 @@ export const WorkCreateParams = z
     rootPath: z.string().min(1).max(4096),
     repositoryPath: z.string().min(1).max(4096).nullable().optional(),
     priority: z.string().min(1).max(50).optional(),
+    projectId: z.string().min(1).nullable().optional(),
   })
   .strict()
 export type WorkCreateParams = z.infer<typeof WorkCreateParams>

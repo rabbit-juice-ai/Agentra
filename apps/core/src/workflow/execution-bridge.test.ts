@@ -20,6 +20,8 @@ import { WorkflowAssignmentResolver } from './assignment-resolver'
 import type { DispatchContext } from './dispatch-gates'
 import {
   type ExecutionStarter,
+  type TaskEvent,
+  type TaskEventSink,
   type TestResultReworkPort,
   WorkflowExecutionBridge,
 } from './execution-bridge'
@@ -125,7 +127,11 @@ class FakeStarter implements ExecutionStarter {
   }
 }
 
-function setup(rework?: TestResultReworkPort): {
+function setup(
+  rework?: TestResultReworkPort,
+  taskEvents?: TaskEventSink,
+  assignmentOverride?: (runId: string, nodeKey: string) => string | null,
+): {
   db: Database
   bridge: WorkflowExecutionBridge
   starter: FakeStarter
@@ -220,6 +226,8 @@ function setup(rework?: TestResultReworkPort): {
     executions: starter,
     outputs: (executionId) => outputs.get(executionId) ?? null,
     rework: rework ?? reworkService,
+    ...(taskEvents ? { taskEvents } : {}),
+    ...(assignmentOverride ? { assignmentOverride } : {}),
     now: () => NOW,
   })
 
@@ -406,6 +414,158 @@ describe('WorkflowExecutionBridge · NodeRun 级重试', () => {
       expect(h.nodes.get(second.id)?.status).toBe('failed')
       // 已达 maxAttempts=2：不再创建 attempt 3
       expect(h.nodes.listByRunAndKey(h.context.run.id, 'task_1')).toHaveLength(2)
+    } finally {
+      h.close()
+    }
+  })
+})
+
+function recordingSink(): { events: TaskEvent[]; sink: TaskEventSink } {
+  const events: TaskEvent[] = []
+  return {
+    events,
+    sink: {
+      onTaskStarted: (event) => events.push(event),
+      onTaskSucceeded: (event) => events.push(event),
+      onTaskFailed: (event) => events.push(event),
+      onTaskCancelled: (event) => events.push(event),
+      onVerificationReport: (event) => events.push(event),
+    },
+  }
+}
+
+describe('WorkflowExecutionBridge · 任务事件', () => {
+  it('emits started, succeeded and verification for a passing test_result', async () => {
+    const { events, sink } = recordingSink()
+    const h = setup(undefined, sink)
+    try {
+      h.outputs.set('exe-1', {
+        pass: true,
+        failureReason: '',
+        relatedTasks: [],
+        impactScope: 'none',
+        relatedArtifacts: [],
+      })
+      await h.bridge.onNodeStarted(h.context)
+      h.bridge.onExecutionFinished(execution('exe-1', 'succeeded', 0))
+      expect(events.map((event) => event.kind)).toEqual(['started', 'succeeded', 'verification'])
+      expect(events[0]).toMatchObject({ nodeKey: 'task_1', attempt: 1, agentId: 'agent-1' })
+      expect(events[2]).toMatchObject({ passed: true, relatedTasks: [] })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('emits failed with willRetry when the execution fails under maxAttempts', () => {
+    const { events, sink } = recordingSink()
+    const h = setup(undefined, sink)
+    try {
+      h.starter.bind('exe-1', h.nodeRunId)
+      h.bridge.onExecutionFinished(execution('exe-1', 'failed', 1))
+      expect(events).toEqual([
+        expect.objectContaining({
+          kind: 'failed',
+          category: 'execution_failure',
+          willRetry: true,
+          attempt: 1,
+        }),
+      ])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('emits failed without retry on output contract violation', () => {
+    const { events, sink } = recordingSink()
+    const h = setup(undefined, sink)
+    try {
+      h.starter.bind('exe-1', h.nodeRunId)
+      h.bridge.onExecutionFinished(execution('exe-1', 'succeeded', 0))
+      expect(events).toEqual([
+        expect.objectContaining({
+          kind: 'failed',
+          category: 'output_contract_violation',
+          willRetry: false,
+        }),
+      ])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('emits cancelled when the execution is cancelled', () => {
+    const { events, sink } = recordingSink()
+    const h = setup(undefined, sink)
+    try {
+      h.starter.bind('exe-1', h.nodeRunId)
+      h.bridge.onExecutionFinished(execution('exe-1', 'cancelled'))
+      expect(events).toEqual([expect.objectContaining({ kind: 'cancelled' })])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('keeps the state machine running when the sink throws', async () => {
+    const throwing: TaskEventSink = {
+      onTaskStarted: () => {
+        throw new Error('sink down')
+      },
+      onTaskSucceeded: () => {
+        throw new Error('sink down')
+      },
+      onTaskFailed: () => {
+        throw new Error('sink down')
+      },
+      onTaskCancelled: () => {
+        throw new Error('sink down')
+      },
+      onVerificationReport: () => {
+        throw new Error('sink down')
+      },
+    }
+    const h = setup(undefined, throwing)
+    try {
+      h.outputs.set('exe-1', {
+        pass: true,
+        failureReason: '',
+        relatedTasks: [],
+        impactScope: 'none',
+        relatedArtifacts: [],
+      })
+      await h.bridge.onNodeStarted(h.context)
+      h.bridge.onExecutionFinished(execution('exe-1', 'succeeded', 0))
+      expect(h.nodes.get(h.nodeRunId)?.status).toBe('succeeded')
+    } finally {
+      h.close()
+    }
+  })
+})
+
+describe('WorkflowExecutionBridge · 显式改派', () => {
+  it('dispatches the override agent for the next attempt', async () => {
+    const h = setup(undefined, undefined, () => 'agent-2')
+    try {
+      h.db
+        .prepare(
+          `INSERT INTO agent_profiles (id, name, role, description, system_prompt, skills_json,
+             default_provider_id, max_concurrency, status, created_at, updated_at, archived_at,
+             tool_permissions_json)
+           VALUES ('agent-2', 'B', 'dev', '', '', '[]', NULL, 1, 'active', ?, ?, NULL,
+             '{"version":1,"allow":["Read"],"deny":[]}')`,
+        )
+        .run(NOW, NOW)
+      h.db
+        .prepare(
+          `INSERT INTO assignments (id, work_id, agent_id, team_id, work_role, task_scope, status,
+             concurrency_limit, context_ref, created_at, updated_at)
+           VALUES ('as-2', 'work-1', 'agent-2', NULL, 'dev', '', 'active', NULL, NULL, ?, ?)`,
+        )
+        .run(NOW, NOW)
+
+      await h.bridge.onNodeStarted(h.context)
+
+      expect(h.starter.calls).toHaveLength(1)
+      expect(h.starter.calls[0]?.params.agentId).toBe('agent-2')
     } finally {
       h.close()
     }

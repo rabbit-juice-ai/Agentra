@@ -639,20 +639,45 @@ describe('ReworkPolicy · 轮次上限（C-7）', () => {
     }
   })
 
-  it('maxRounds=2 allows two reworks and exhausts on the third', async () => {
-    const h = setup(linearDefinition(2))
+  it('continues an exhausted rework by creating and starting the next round', async () => {
+    const h = setup(linearDefinition(1))
     try {
       await drive(h, (key) => (key === 'test_1' ? fail(['task_1']) : {}))
-      const requests = h.reworks.listByRun(h.runId).sort((left, right) => left.round - right.round)
-      expect(requests.map((request) => [request.round, request.status])).toEqual([
-        [1, 'completed'],
-        [2, 'completed'],
-        [3, 'exhausted'],
-      ])
-      expect(h.nodes.listByRunAndKey(h.runId, 'task_1')).toHaveLength(3)
-      expect(h.nodes.listByRunAndKey(h.runId, 'test_1')).toHaveLength(3)
+      const exhausted = h.reworks
+        .listByRun(h.runId)
+        .find((request) => request.status === 'exhausted')
+      if (!exhausted) throw new Error('missing exhausted request')
       expect(h.branches.getByKey(h.runId, 'root')?.status).toBe('paused')
-      expect(h.runs.get(h.runId)?.status).toBe('running')
+
+      const continued = h.rework.continueExhausted(exhausted.id, { type: 'user', id: 'boss' })
+
+      expect(continued).toMatchObject({ round: 3, maxRounds: 2, status: 'in_rework' })
+      expect(h.nodes.listByRunAndKey(h.runId, 'task_1')).toHaveLength(3)
+      expect(h.branches.getByKey(h.runId, 'root')?.status).toBe('active')
+      expect(h.audit.listByAction('workflow.rework.continued')).toHaveLength(1)
+      expect(h.events.filter((event) => event.type === 'rework.requested').at(-1)).toMatchObject({
+        round: 3,
+      })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('takes over an exhausted rework and keeps the branch paused', async () => {
+    const h = setup(linearDefinition(1))
+    try {
+      await drive(h, (key) => (key === 'test_1' ? fail(['task_1']) : {}))
+      const exhausted = h.reworks
+        .listByRun(h.runId)
+        .find((request) => request.status === 'exhausted')
+      if (!exhausted) throw new Error('missing exhausted request')
+
+      const taken = h.rework.takeOverExhausted(exhausted.id, { type: 'user', id: 'boss' })
+
+      expect(taken.status).toBe('exhausted')
+      expect(h.branches.getByKey(h.runId, 'root')?.status).toBe('paused')
+      expect(h.audit.listByAction('workflow.rework.taken_over')).toHaveLength(1)
+      expect(h.nodes.listByRunAndKey(h.runId, 'task_1')).toHaveLength(2)
     } finally {
       h.close()
     }

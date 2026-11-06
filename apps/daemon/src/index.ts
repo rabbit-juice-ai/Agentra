@@ -1,6 +1,12 @@
 import fs from 'node:fs'
 import { PROTOCOL_VERSION } from '@agentra/protocol'
-import { ClaudeCodeProvider } from '@agentra/runtime-cli'
+import {
+  ClaudeCodeProvider,
+  CodeBuddyProvider,
+  CodexProvider,
+  GeminiProvider,
+  GrokProvider,
+} from '@agentra/runtime-cli'
 import { agentraHome, agentraPaths, createLogger, ensureDirs, isDirectRun } from '@agentra/shared'
 import { startNdjsonServer } from './rpc/ndjson-server'
 import { RuntimeEventHub } from './runtime/event-hub'
@@ -17,25 +23,34 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const logger = createLogger('daemon')
 
   const hub = new RuntimeEventHub()
-  const claude = new ClaudeCodeProvider({ discovery: { env } })
+  const providers = [
+    new ClaudeCodeProvider({ discovery: { env } }),
+    new CodexProvider({ discovery: { env } }),
+    new GeminiProvider({ discovery: { env } }),
+    new CodeBuddyProvider({ discovery: { env } }),
+    new GrokProvider({ discovery: { env } }),
+  ]
   // 启动即发现：把路径/版本/认证状态带入进程，供 Core 的 runtime.provider.refresh 读取。
-  try {
-    const [info] = await claude.discover()
-    logger.info('runtime provider discovered', {
-      providerId: info?.providerId,
-      executablePath: info?.executablePath,
-      version: info?.version,
-      healthStatus: info?.healthStatus,
-    })
-  } catch (error) {
-    logger.warn('runtime provider discovery failed', {
-      error: error instanceof Error ? error.message : String(error),
-    })
+  for (const provider of providers) {
+    try {
+      const [info] = await provider.discover()
+      logger.info('runtime provider discovered', {
+        providerId: info?.providerId,
+        executablePath: info?.executablePath,
+        version: info?.version,
+        healthStatus: info?.healthStatus,
+      })
+    } catch (error) {
+      logger.warn('runtime provider discovery failed', {
+        providerId: provider.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
 
   const manager = new ExecutionManager({
     scratchRoot: paths.scratch,
-    providers: new Map([[claude.id, claude]]),
+    providers: new Map(providers.map((provider) => [provider.id, provider])),
     hub,
     logger,
   })

@@ -2,25 +2,12 @@ import { z } from 'zod'
 import { IsoTimestamp } from '../dto'
 
 /**
- * 阶段 3：工作流定义层 RPC（只做模板与版本的 CRUD / 校验 / 发布）。
- * 不定义任何 `workflow.run.*` —— 执行入口属阶段 4，本版本不得暴露。
+ * 执行内核只读查询。工作流模板/版本的产品级 CRUD 已移除：
+ * 定义由 PlanCompiler 在 PlanService 内部生成，不对外暴露编辑入口。
  */
-
-export const WORKFLOW_TEMPLATE_LIST_METHOD = 'workflow.template.list'
-export const WORKFLOW_TEMPLATE_GET_METHOD = 'workflow.template.get'
-export const WORKFLOW_TEMPLATE_CREATE_METHOD = 'workflow.template.create'
-export const WORKFLOW_TEMPLATE_UPDATE_METHOD = 'workflow.template.update'
-export const WORKFLOW_TEMPLATE_ARCHIVE_METHOD = 'workflow.template.archive'
-export const WORKFLOW_VERSION_LIST_METHOD = 'workflow.version.list'
-export const WORKFLOW_VERSION_GET_METHOD = 'workflow.version.get'
-export const WORKFLOW_VERSION_CREATE_DRAFT_METHOD = 'workflow.version.createDraft'
-export const WORKFLOW_VERSION_PUBLISH_METHOD = 'workflow.version.publish'
-export const WORKFLOW_VERSION_VALIDATE_METHOD = 'workflow.version.validate'
 
 /** S4-7：只读运行态查询（不是执行入口；恢复后的 reconciliation_required 必须可见）。 */
 export const WORKFLOW_RUN_GET_METHOD = 'workflow.run.get'
-/** S5-3b：按 Work 列出 Run（只读；供失败终态呈现定位 Run，不是执行入口）。 */
-export const WORKFLOW_RUN_LIST_BY_WORK_METHOD = 'workflow.run.listByWork'
 
 /** S5-1：审批决策 API（领域事件 approval.decided 的协议入口）。 */
 /** S5-3：Artifact 只读服务面（预览/元数据；创建走 Core 内部，不做通用透传）。 */
@@ -141,83 +128,6 @@ export const WorkflowViolation = z.object({
 })
 export type WorkflowViolation = z.infer<typeof WorkflowViolation>
 
-export const WorkflowTemplateListParams = z
-  .object({ includeArchived: z.boolean().optional() })
-  .strict()
-export type WorkflowTemplateListParams = z.infer<typeof WorkflowTemplateListParams>
-
-export const WorkflowTemplateListResult = z.object({ templates: z.array(WorkflowTemplate) })
-export type WorkflowTemplateListResult = z.infer<typeof WorkflowTemplateListResult>
-
-export const WorkflowTemplateGetParams = z.object({ id: z.string().min(1) }).strict()
-export type WorkflowTemplateGetParams = z.infer<typeof WorkflowTemplateGetParams>
-
-export const WorkflowTemplateResult = z.object({ template: WorkflowTemplate })
-export type WorkflowTemplateResult = z.infer<typeof WorkflowTemplateResult>
-
-export const WorkflowTemplateCreateParams = z
-  .object({
-    name: z.string().min(1).max(200),
-    description: z.string().max(4000).optional(),
-    category: z.string().max(100).optional(),
-  })
-  .strict()
-export type WorkflowTemplateCreateParams = z.infer<typeof WorkflowTemplateCreateParams>
-
-export const WorkflowTemplateUpdateParams = z
-  .object({
-    id: z.string().min(1),
-    name: z.string().min(1).max(200).optional(),
-    description: z.string().max(4000).optional(),
-    category: z.string().max(100).optional(),
-  })
-  .strict()
-export type WorkflowTemplateUpdateParams = z.infer<typeof WorkflowTemplateUpdateParams>
-
-export const WorkflowTemplateIdParams = z.object({ id: z.string().min(1) }).strict()
-export type WorkflowTemplateIdParams = z.infer<typeof WorkflowTemplateIdParams>
-
-export const WorkflowVersionListParams = z.object({ templateId: z.string().min(1) }).strict()
-export type WorkflowVersionListParams = z.infer<typeof WorkflowVersionListParams>
-
-/** 列表中被跳过的不可读行：可诊断，但不阻塞其余版本。 */
-export const WorkflowVersionSkip = z.object({
-  id: z.string().min(1),
-  version: z.number().int().nullable(),
-  reason: z.string().min(1),
-})
-export type WorkflowVersionSkip = z.infer<typeof WorkflowVersionSkip>
-
-export const WorkflowVersionListResult = z.object({
-  versions: z.array(WorkflowVersion),
-  skipped: z.array(WorkflowVersionSkip).default([]),
-})
-export type WorkflowVersionListResult = z.infer<typeof WorkflowVersionListResult>
-
-export const WorkflowVersionGetParams = z.object({ versionId: z.string().min(1) }).strict()
-export type WorkflowVersionGetParams = z.infer<typeof WorkflowVersionGetParams>
-
-export const WorkflowVersionResult = z.object({ version: WorkflowVersion })
-export type WorkflowVersionResult = z.infer<typeof WorkflowVersionResult>
-
-export const WorkflowVersionCreateDraftParams = z
-  .object({ templateId: z.string().min(1), definition: z.unknown() })
-  .strict()
-export type WorkflowVersionCreateDraftParams = z.infer<typeof WorkflowVersionCreateDraftParams>
-
-export const WorkflowVersionPublishParams = z.object({ versionId: z.string().min(1) }).strict()
-export type WorkflowVersionPublishParams = z.infer<typeof WorkflowVersionPublishParams>
-
-export const WorkflowVersionValidateParams = z.object({ definition: z.unknown() }).strict()
-export type WorkflowVersionValidateParams = z.infer<typeof WorkflowVersionValidateParams>
-
-/** 与 publish 失败时的 detail.violations 结构完全一致（WORKFLOW §2）。 */
-export const WorkflowVersionValidateResult = z.object({
-  valid: z.boolean(),
-  violations: z.array(WorkflowViolation),
-})
-export type WorkflowVersionValidateResult = z.infer<typeof WorkflowVersionValidateResult>
-
 export const WorkflowRun = z.object({
   id: z.string().min(1),
   workId: z.string().min(1),
@@ -229,21 +139,6 @@ export const WorkflowRun = z.object({
   updatedAt: IsoTimestamp,
 })
 export type WorkflowRun = z.infer<typeof WorkflowRun>
-
-export const WORKFLOW_RUN_START_METHOD = 'workflow.run.start'
-export const WorkflowRunStartParams = z
-  .object({
-    workId: z.string().min(1),
-    workflowVersionId: z.string().min(1),
-    requestId: z.string().uuid(),
-  })
-  .strict()
-export type WorkflowRunStartParams = z.infer<typeof WorkflowRunStartParams>
-export const WorkflowRunStartResult = z.object({
-  run: WorkflowRun,
-  schedulingError: z.string().nullable(),
-})
-export type WorkflowRunStartResult = z.infer<typeof WorkflowRunStartResult>
 
 export const WorkflowRunBranch = z.object({
   id: z.string().min(1),
@@ -269,14 +164,6 @@ export const WorkflowRunNode = z.object({
 export type WorkflowRunNode = z.infer<typeof WorkflowRunNode>
 
 export const WorkflowRunGetParams = z.object({ runId: z.string().min(1) }).strict()
-
-export const WorkflowRunListByWorkParams = z.object({ workId: z.string().min(1) }).strict()
-export type WorkflowRunListByWorkParams = z.infer<typeof WorkflowRunListByWorkParams>
-
-export const WorkflowRunListByWorkResult = z.object({
-  runs: z.array(WorkflowRun),
-})
-export type WorkflowRunListByWorkResult = z.infer<typeof WorkflowRunListByWorkResult>
 export type WorkflowRunGetParams = z.infer<typeof WorkflowRunGetParams>
 
 export const WorkflowRunGetResult = z.object({

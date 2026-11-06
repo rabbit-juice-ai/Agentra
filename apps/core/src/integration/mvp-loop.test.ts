@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url'
 import {
   type Approval,
   ApprovalListPendingResult,
+  PlanStartRunResult,
   PROTOCOL_VERSION,
   RpcResponse,
   WorkflowRunGetResult,
-  WorkflowRunStartResult,
 } from '@agentra/protocol'
 import { agentraPaths } from '@agentra/shared'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -113,6 +113,76 @@ async function harness() {
 afterEach(async () => {
   for (const action of cleanup.splice(0)) await action()
 })
+async function seedPlan(
+  h: Awaited<ReturnType<typeof harness>>,
+  workId: string,
+  agentId: string,
+  promptA = 'TASK_A',
+) {
+  const plan = {
+    agentraPlanVersion: 1,
+    goal: 'Core business loop',
+    constraints: [],
+    tasks: [
+      {
+        key: 'a',
+        title: 'A',
+        description: promptA,
+        responsibilityRole: 'dev',
+        requiredCapabilities: ['dev'],
+        suggestedAgentId: agentId,
+        inputs: [],
+        outputs: ['spec'],
+        acceptanceCriteria: [],
+        dependsOn: [],
+        parallelGroup: null,
+        approvalRequired: false,
+        verification: null,
+      },
+      {
+        key: 'b',
+        title: 'B',
+        description: 'TASK_B',
+        responsibilityRole: 'dev',
+        requiredCapabilities: ['dev'],
+        suggestedAgentId: agentId,
+        inputs: ['spec'],
+        outputs: ['implementation'],
+        acceptanceCriteria: [],
+        dependsOn: ['a'],
+        parallelGroup: null,
+        approvalRequired: true,
+        verification: null,
+      },
+      {
+        key: 'c',
+        title: 'C',
+        description: 'TASK_C',
+        responsibilityRole: 'dev',
+        requiredCapabilities: ['dev'],
+        suggestedAgentId: agentId,
+        inputs: ['implementation'],
+        outputs: ['final'],
+        acceptanceCriteria: [],
+        dependsOn: ['b'],
+        parallelGroup: null,
+        approvalRequired: false,
+        verification: null,
+      },
+    ],
+    risks: [],
+    capabilityGaps: [],
+    approvalsRequired: [],
+  }
+  const { planId } = (await h.ok('plan.createDraft', {
+    workId,
+    goal: plan.goal,
+    plan,
+  })) as { planId: string }
+  await h.ok('plan.approve', { planId, decidedBy: 'integration-user' })
+  return { workId, planId, requestId: randomUUID() }
+}
+
 async function seed(h: Awaited<ReturnType<typeof harness>>, promptA = 'TASK_A') {
   const { work } = (await h.ok('work.create', {
     name: 'Integration Work',
@@ -122,58 +192,30 @@ async function seed(h: Awaited<ReturnType<typeof harness>>, promptA = 'TASK_A') 
   const { agent } = (await h.ok('agent.create', {
     name: 'Fixture Agent',
     role: 'dev',
+    capabilities: {
+      taskTypes: ['dev'],
+      inputTypes: [],
+      outputTypes: [],
+      canVerify: [],
+      canApprove: [],
+      excludedTaskTypes: [],
+    },
     toolPermissions: { version: 1, allow: ['Read'], deny: [] },
   })) as { agent: { id: string } }
   await h.ok('assignment.create', { workId: work.id, agentId: agent.id, workRole: 'dev' })
-  const { template } = (await h.ok('workflow.template.create', { name: 'Core business loop' })) as {
-    template: { id: string }
-  }
-  const task = (
-    key: string,
-    prompt: string,
-    artifact: string,
-    input?: { nodeKey: string; artifactName: string },
-  ) => ({
-    key,
-    type: 'agent_task',
-    config: {
-      assignmentSelector: { workRole: 'dev' },
-      taskPrompt: prompt,
-      artifacts: [{ name: artifact, type: 'text', required: true }],
-      inputArtifactRefs: input ? [input] : [],
-    },
-    position: { x: 0, y: 0 },
-  })
-  const definition = {
-    schemaVersion: 1,
-    nodes: [
-      { key: 'start', type: 'start', config: {}, position: { x: 0, y: 0 } },
-      task('a', promptA, 'spec'),
-      task('b', 'TASK_B', 'implementation', { nodeKey: 'a', artifactName: 'spec' }),
-      {
-        key: 'approval',
-        type: 'human_approval',
-        config: { target: { nodeKey: 'b', phase: 'after_execute' } },
-        position: { x: 0, y: 0 },
-      },
-      task('c', 'TASK_C', 'final', { nodeKey: 'b', artifactName: 'implementation' }),
-      { key: 'end', type: 'end', config: {}, position: { x: 0, y: 0 } },
-    ],
-    edges: [
-      ['start', 'a'],
-      ['a', 'b'],
-      ['b', 'approval'],
-      ['approval', 'c'],
-      ['c', 'end'],
-    ].map(([source, target], i) => ({ key: `e${i}`, source, target })),
-  }
-  const { version } = (await h.ok('workflow.version.createDraft', {
-    templateId: template.id,
-    definition,
-  })) as { version: { id: string } }
-  await h.ok('workflow.version.publish', { versionId: version.id })
-  return { workId: work.id, workflowVersionId: version.id, requestId: randomUUID() }
+  const plan = await seedPlan(h, work.id, agent.id, promptA)
+  return { ...plan, agentId: agent.id }
 }
+
+async function startPlan(
+  h: Awaited<ReturnType<typeof harness>>,
+  request: { planId: string; requestId: string },
+) {
+  return PlanStartRunResult.parse(
+    await h.ok('plan.startRun', { planId: request.planId, requestId: request.requestId }),
+  )
+}
+
 async function waitRun(
   h: Awaited<ReturnType<typeof harness>>,
   runId: string,
@@ -199,10 +241,8 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
   it('starts once, transfers A→B, survives approval restart, and approves C→End', async () => {
     const h = await harness()
     const request = await seed(h)
-    const started = WorkflowRunStartResult.parse(await h.ok('workflow.run.start', request))
-    expect(WorkflowRunStartResult.parse(await h.ok('workflow.run.start', request)).run.id).toBe(
-      started.run.id,
-    )
+    const started = await startPlan(h, request)
+    expect((await startPlan(h, request)).run.id).toBe(started.run.id)
     const approval = await pending(h, started.run.id)
     let db = h.read()
     expect(db.prepare('SELECT COUNT(*) AS c FROM executions').get()).toMatchObject({ c: 2 })
@@ -230,8 +270,8 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
 
   it('reject leaves its branch paused while a second Work can complete', async () => {
     const h = await harness()
-    const one = WorkflowRunStartResult.parse(await h.ok('workflow.run.start', await seed(h)))
-    const two = WorkflowRunStartResult.parse(await h.ok('workflow.run.start', await seed(h)))
+    const one = await startPlan(h, await seed(h))
+    const two = await startPlan(h, await seed(h))
     const first = await pending(h, one.run.id)
     const second = await pending(h, two.run.id)
     expect(
@@ -263,7 +303,7 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
 
   it('request_changes returns the same Approval, creates one rework, then returns for round two', async () => {
     const h = await harness()
-    const started = WorkflowRunStartResult.parse(await h.ok('workflow.run.start', await seed(h)))
+    const started = await startPlan(h, await seed(h))
     const approval = await pending(h, started.run.id)
     const decision = {
       nodeRunId: approval.nodeRunId,
@@ -294,7 +334,7 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
   it('Work pause blocks new starts, preserves approval branch state, and resumes without duplicates', async () => {
     const h = await harness()
     const request = await seed(h)
-    const run = WorkflowRunStartResult.parse(await h.ok('workflow.run.start', request)).run
+    const run = (await startPlan(h, request)).run
     const approval = await pending(h, run.id)
     const branchBefore = (await waitRun(h, run.id, () => true)).branches
     await h.ok('work.pause', { id: request.workId })
@@ -310,9 +350,15 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
     const db = h.read()
     expect(db.prepare('SELECT COUNT(*) AS c FROM executions').get()).toMatchObject({ c: 2 })
     db.close()
-    expect((await h.call('workflow.run.start', { ...request, requestId: randomUUID() })).ok).toBe(
-      false,
-    )
+    const blockedPlan = await seedPlan(h, request.workId, request.agentId)
+    expect(
+      (
+        await h.call('plan.startRun', {
+          planId: blockedPlan.planId,
+          requestId: blockedPlan.requestId,
+        })
+      ).ok,
+    ).toBe(false)
     await h.restart()
     expect((await waitRun(h, run.id, () => true)).run.status).toBe('paused')
     await h.ok('work.resume', { id: request.workId })
@@ -324,7 +370,7 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
   it('Work pause interrupts a running CLI; only explicit resume starts a new attempt', async () => {
     const h = await harness()
     const request = await seed(h, 'TASK_A_PAUSE_ONCE')
-    const run = WorkflowRunStartResult.parse(await h.ok('workflow.run.start', request)).run
+    const run = (await startPlan(h, request)).run
     await waitRun(h, run.id, (v) =>
       v.nodes.some((n) => n.workflowNodeKey === 'a' && n.status === 'running'),
     )
@@ -362,7 +408,7 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
   it('Work termination cancels the actual CLI, is idempotent, and remains cancelled after restart', async () => {
     const h = await harness()
     const request = await seed(h, 'HANG')
-    const run = WorkflowRunStartResult.parse(await h.ok('workflow.run.start', request)).run
+    const run = (await startPlan(h, request)).run
     await waitRun(h, run.id, (v) =>
       v.nodes.some((n) => n.status === 'running' && n.workflowNodeKey === 'a'),
     )
@@ -395,9 +441,15 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
     ).toMatchObject({ c: 1 })
     db.close()
     expect((await h.call('work.resume', { id: request.workId })).ok).toBe(false)
-    expect((await h.call('workflow.run.start', { ...request, requestId: randomUUID() })).ok).toBe(
-      false,
-    )
+    const terminatedPlan = await seedPlan(h, request.workId, request.agentId)
+    expect(
+      (
+        await h.call('plan.startRun', {
+          planId: terminatedPlan.planId,
+          requestId: terminatedPlan.requestId,
+        })
+      ).ok,
+    ).toBe(false)
     await h.restart()
     expect((await waitRun(h, run.id, () => true)).run.status).toBe('cancelled')
     db = h.read()
@@ -408,9 +460,9 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
   it('termination and approval decision race cannot resurrect a Run or affect another Work', async () => {
     const h = await harness()
     const oneRequest = await seed(h)
-    const one = WorkflowRunStartResult.parse(await h.ok('workflow.run.start', oneRequest)).run
+    const one = (await startPlan(h, oneRequest)).run
     const twoRequest = await seed(h)
-    const two = WorkflowRunStartResult.parse(await h.ok('workflow.run.start', twoRequest)).run
+    const two = (await startPlan(h, twoRequest)).run
     const a = await pending(h, one.id)
     const b = await pending(h, two.id)
     const results = await Promise.all([
@@ -463,7 +515,7 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
   it('Work resume never unpauses a rejected approval branch', async () => {
     const h = await harness()
     const request = await seed(h)
-    const run = WorkflowRunStartResult.parse(await h.ok('workflow.run.start', request)).run
+    const run = (await startPlan(h, request)).run
     const approval = await pending(h, run.id)
     await h.ok('approval.decide', {
       nodeRunId: approval.nodeRunId,
@@ -475,7 +527,7 @@ describe('MVP: real Core/Daemon/SQLite/files with deterministic CLI (not model E
     await h.ok('work.resume', { id: request.workId })
     const after = await waitRun(h, run.id, () => true)
     expect(after.branches).toEqual(before)
-    expect(after.nodes.find((n) => n.workflowNodeKey === 'approval')?.status).toBe('rejected')
+    expect(after.nodes.find((n) => n.workflowNodeKey === 'b-approval')?.status).toBe('rejected')
     expect(after.nodes.find((n) => n.workflowNodeKey === 'c')?.status).toBe('blocked')
     const db = h.read()
     expect(db.prepare('SELECT COUNT(*) AS c FROM executions').get()).toMatchObject({ c: 2 })

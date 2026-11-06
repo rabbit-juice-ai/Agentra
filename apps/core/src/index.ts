@@ -15,7 +15,15 @@ import { BackupRepository } from './db/repositories/backup-repository'
 import { BranchRunRepository } from './db/repositories/branch-run-repository'
 import { ExecutionLogRepository } from './db/repositories/execution-log-repository'
 import { ExecutionRepository } from './db/repositories/execution-repository'
+import { NodeAssignmentOverrideRepository } from './db/repositories/node-assignment-override-repository'
 import { NodeRunRepository } from './db/repositories/node-run-repository'
+import {
+  PlanCommentRepository,
+  PlanRepository,
+  PlanThreadRepository,
+  PlanVersionRepository,
+} from './db/repositories/plan-repository'
+import { ProjectRepository } from './db/repositories/project-repository'
 import { ProviderRepository } from './db/repositories/provider-repository'
 import { ReworkRequestRepository } from './db/repositories/rework-request-repository'
 import { SessionRepository } from './db/repositories/session-repository'
@@ -43,6 +51,9 @@ import { BackupService } from './services/backup-service'
 import { CoreEventHub } from './services/event-hub'
 import { ExecutionService } from './services/execution-service'
 import { proxyDaemonHealth } from './services/health'
+import { PlanService } from './services/plan-service'
+import { PlannerService } from './services/planner-service'
+import { ProjectService } from './services/project-service'
 import { ProviderRegistry } from './services/provider-registry'
 import { RestoreArchiveService } from './services/restore-archive-service'
 import { RestoreBootService } from './services/restore-boot-service'
@@ -403,6 +414,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const agentRepository = new AgentRepository(db)
   const teamRepository = new TeamRepository(db)
   const workRepository = new WorkRepository(db)
+  const projectRepository = new ProjectRepository(db)
   const assignmentRepository = new AssignmentRepository(db)
   const auditRepository = new AuditRepository(db)
   const providerRepository = new ProviderRepository(db)
@@ -414,6 +426,11 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const branchRunRepository = new BranchRunRepository(db)
   const nodeRunRepository = new NodeRunRepository(db)
   const reworkRequestRepository = new ReworkRequestRepository(db)
+  const planRepository = new PlanRepository(db)
+  const planVersionRepository = new PlanVersionRepository(db)
+  const planThreadRepository = new PlanThreadRepository(db)
+  const planCommentRepository = new PlanCommentRepository(db)
+  const nodeAssignmentOverrideRepository = new NodeAssignmentOverrideRepository(db)
   const approvalRepository = new ApprovalRepository(db)
   const workflowEventRepository = new WorkflowEventRepository(db)
 
@@ -461,7 +478,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
           }
         }
     },
+    projectRepository,
   )
+  const projectService = new ProjectService(projectRepository, auditRepository)
   const assignmentService = new AssignmentService(
     db,
     assignmentRepository,
@@ -520,6 +539,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     undefined,
     logger,
   )
+  const planThreadSink: { target: PlanService | null } = { target: null }
   const reworkService = new ReworkService({
     db,
     runs: workflowRunRepository,
@@ -529,7 +549,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     approvals: approvalRepository,
     definitions: publishedDefinitions,
     audit: auditRepository,
-    events: { publish: (event) => workflowEventRecorder.publishRework(event) },
+    events: {
+      publish: (event) => {
+        workflowEventRecorder.publishRework(event)
+        planThreadSink.target?.recordReworkEvent(event)
+      },
+    },
   })
   const approvalService = new ApprovalService(
     db,
@@ -598,6 +623,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     if (!run) throw new Error('Workflow Run missing')
     return run.workId
   }
+  const plannerService = new PlannerService({
+    agents: agentService,
+    executions: executionService,
+    works: workService,
+    extractOutput: (executionId) => artifactExchange.extract(executionId),
+    logger,
+  })
   workflowBridge = new WorkflowExecutionBridge({
     db,
     runs: workflowRunRepository,
@@ -606,6 +638,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     worktrees,
     definitions: publishedDefinitions,
     resolver: workflowAssignmentResolver,
+    assignmentOverride: (runId, nodeKey) =>
+      nodeAssignmentOverrideRepository.get(runId, nodeKey)?.agentId ?? null,
     executions: executionService,
     workInterrupted: (id) => executionService.isWorkPauseInterrupted(id),
     outputs: (id) => artifactExchange.extract(id),
@@ -613,6 +647,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     commitOutput: (execution, node, output, save) =>
       artifactExchange.commit(execution, node, output, save),
     rework: reworkService,
+    taskEvents: {
+      onTaskStarted: (event) => planThreadSink.target?.recordTaskEvent(event),
+      onTaskSucceeded: (event) => planThreadSink.target?.recordTaskEvent(event),
+      onTaskFailed: (event) => planThreadSink.target?.recordTaskEvent(event),
+      onTaskCancelled: (event) => planThreadSink.target?.recordTaskEvent(event),
+      onVerificationReport: (event) => planThreadSink.target?.recordTaskEvent(event),
+    },
     logger,
   })
   const approvalGateChecker = createApprovalGateChecker({
@@ -705,6 +746,31 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     maintenance,
     drain,
   })
+  const planService = new PlanService({
+    db,
+    plans: planRepository,
+    versions: planVersionRepository,
+    threads: planThreadRepository,
+    comments: planCommentRepository,
+    overrides: nodeAssignmentOverrideRepository,
+    rework: reworkService,
+    reworks: reworkRequestRepository,
+    nodes: nodeRunRepository,
+    workService,
+    projectService,
+    hub,
+    chatExecutions: executionService,
+    extractOutput: (executionId) => artifactExchange.extract(executionId),
+    planner: plannerService,
+    agents: agentService,
+    assignments: assignmentService,
+    works: workRepository,
+    runs: workflowRunRepository,
+    workflows: workflowService,
+    engine: workflowEngine,
+    audit: auditRepository,
+  })
+  planThreadSink.target = planService
   const workflowRecovery = new WorkflowRecoveryService(
     workflowRunRepository,
     branchRunRepository,
@@ -926,6 +992,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
         paths.daemonSocket,
         {
           agents: agentService,
+          planner: plannerService,
+          plans: planService,
+          projects: projectService,
           registry,
           executions: executionService,
           hub,
@@ -942,7 +1011,6 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
           },
           assignments: assignmentService,
           worktrees,
-          workflows: workflowService,
           workflowRuns: workflowRunQuery,
           workflowEngine,
           approvals: approvalRpc,
