@@ -126,6 +126,7 @@ import {
   WORK_TERMINATE_METHOD,
   WORKFLOW_RUN_GET_METHOD,
   WORKFLOW_RUN_LIST_BY_WORK_METHOD,
+  WORKFLOW_RUN_START_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,
   WORKFLOW_TEMPLATE_GET_METHOD,
@@ -145,6 +146,8 @@ import {
   WorkflowRunGetResult,
   WorkflowRunListByWorkParams,
   WorkflowRunListByWorkResult,
+  WorkflowRunStartParams,
+  WorkflowRunStartResult,
   WorkflowTemplateCreateParams,
   WorkflowTemplateGetParams,
   WorkflowTemplateIdParams,
@@ -195,7 +198,11 @@ import {
   type WorkflowDefinitionService,
 } from '../services/workflow-definition-service'
 import type { WorktreeService } from '../services/worktree-service'
+import { WorkflowAssignmentError } from '../workflow/assignment-resolver'
+import type { WorkflowEngine } from '../workflow/engine'
+import { WorkflowDefinitionLoadError } from '../workflow/published-definition-provider'
 import { WorkflowRunQueryError, type WorkflowRunQueryService } from '../workflow/run-query-service'
+import { WorkflowRunCreationError } from '../workflow/run-service'
 import type { MethodTable, RpcMethodDef } from './dispatcher'
 
 export type CoreMethodServices = {
@@ -205,10 +212,12 @@ export type CoreMethodServices = {
   hub: CoreEventHub
   teams: TeamService
   works: WorkService
+  workEffects?: (id: string, action: string) => Promise<void>
   assignments: AssignmentService
   worktrees: WorktreeService
   workflows: WorkflowDefinitionService
   workflowRuns: WorkflowRunQueryService
+  workflowEngine?: Pick<WorkflowEngine, 'startRun' | 'kick'>
   approvals: ApprovalRpcService
   artifacts: ArtifactRpcService
   backups: BackupRpcService
@@ -231,13 +240,34 @@ function toWorkDto(services: CoreMethodServices, work: Parameters<WorkService['g
 }
 
 /** 执行 Work 状态动作后按 id 取回 DTO（迁移结果以库内状态为准）。 */
+const workActions = new WeakMap<WorkService, Map<string, Promise<unknown>>>()
+
+/** 同一 Work 的状态与进程处置串行；不同 Work 不互相阻塞。失败后允许重试取消。 */
 function toWorkDtoAfter(
   services: CoreMethodServices,
   id: string,
   action: 'activate' | 'pause' | 'resume' | 'complete' | 'terminate' | 'archive',
-): WorkDto {
-  services.works[action](id)
-  return toWorkDto(services, id)
+): Promise<WorkDto> {
+  let actions = workActions.get(services.works)
+  if (!actions) {
+    actions = new Map()
+    workActions.set(services.works, actions)
+  }
+  const previous = actions.get(id) ?? Promise.resolve()
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      services.works[action](id)
+      await services.workEffects?.(id, action)
+      return toWorkDto(services, id)
+    })
+  actions.set(id, next)
+  void next
+    .finally(() => {
+      if (actions.get(id) === next) actions.delete(id)
+    })
+    .catch(() => undefined)
+  return next
 }
 
 /**
@@ -294,6 +324,28 @@ export function coreMethods(
     [CORE_MAINTENANCE_STATUS_METHOD]: maintenanceStatusMethod(
       lifecycle.maintenance,
       lifecycle.drain,
+    ),
+
+    [WORKFLOW_RUN_START_METHOD]: defineMethod(
+      WorkflowRunStartParams,
+      WorkflowRunStartResult,
+      async (params) => {
+        if (!services.workflowEngine)
+          throw new RpcMethodError('NOT_READY', 'workflow engine is not configured')
+        try {
+          return await services.workflowEngine.startRun(params)
+        } catch (error) {
+          if (
+            error instanceof WorkflowRunCreationError ||
+            error instanceof WorkflowDefinitionLoadError ||
+            error instanceof WorkflowAssignmentError
+          ) {
+            throw new RpcMethodError('INVALID_PARAMS', error.message)
+          }
+          throw error
+        }
+      },
+      'write',
     ),
 
     [AGENT_LIST_METHOD]: defineMethod(
@@ -455,23 +507,23 @@ export function coreMethods(
       services.works.linkTeam(params.workId, params.teamId)
       return { work: toWorkDto(services, params.workId) }
     }),
-    [WORK_ACTIVATE_METHOD]: defineMethod(WorkIdParams, WorkResult, (params) => ({
-      work: toWorkDtoAfter(services, params.id, 'activate'),
+    [WORK_ACTIVATE_METHOD]: defineMethod(WorkIdParams, WorkResult, async (params) => ({
+      work: await toWorkDtoAfter(services, params.id, 'activate'),
     })),
-    [WORK_PAUSE_METHOD]: defineMethod(WorkIdParams, WorkResult, (params) => ({
-      work: toWorkDtoAfter(services, params.id, 'pause'),
+    [WORK_PAUSE_METHOD]: defineMethod(WorkIdParams, WorkResult, async (params) => ({
+      work: await toWorkDtoAfter(services, params.id, 'pause'),
     })),
-    [WORK_RESUME_METHOD]: defineMethod(WorkIdParams, WorkResult, (params) => ({
-      work: toWorkDtoAfter(services, params.id, 'resume'),
+    [WORK_RESUME_METHOD]: defineMethod(WorkIdParams, WorkResult, async (params) => ({
+      work: await toWorkDtoAfter(services, params.id, 'resume'),
     })),
-    [WORK_COMPLETE_METHOD]: defineMethod(WorkIdParams, WorkResult, (params) => ({
-      work: toWorkDtoAfter(services, params.id, 'complete'),
+    [WORK_COMPLETE_METHOD]: defineMethod(WorkIdParams, WorkResult, async (params) => ({
+      work: await toWorkDtoAfter(services, params.id, 'complete'),
     })),
-    [WORK_TERMINATE_METHOD]: defineMethod(WorkIdParams, WorkResult, (params) => ({
-      work: toWorkDtoAfter(services, params.id, 'terminate'),
+    [WORK_TERMINATE_METHOD]: defineMethod(WorkIdParams, WorkResult, async (params) => ({
+      work: await toWorkDtoAfter(services, params.id, 'terminate'),
     })),
-    [WORK_ARCHIVE_METHOD]: defineMethod(WorkIdParams, WorkResult, (params) => ({
-      work: toWorkDtoAfter(services, params.id, 'archive'),
+    [WORK_ARCHIVE_METHOD]: defineMethod(WorkIdParams, WorkResult, async (params) => ({
+      work: await toWorkDtoAfter(services, params.id, 'archive'),
     })),
 
     // ---- 阶段 2：Assignment ----
@@ -715,9 +767,12 @@ export function coreMethods(
       'read',
     ),
 
-    [APPROVAL_DECIDE_METHOD]: defineMethod(ApprovalDecideParams, ApprovalResult, (params) => ({
-      approval: services.approvals.decide(params),
-    })),
+    [APPROVAL_DECIDE_METHOD]: defineMethod(ApprovalDecideParams, ApprovalResult, async (params) => {
+      const approval = services.approvals.decide(params)
+      // decide 返回时事务已提交。幂等重试可以重新唤醒调度，但 CAS 不会重复启动节点。
+      if (params.decision !== 'reject') await services.workflowEngine?.kick(approval.workflowRunId)
+      return { approval }
+    }),
     [APPROVAL_GET_METHOD]: defineMethod(
       ApprovalGetParams,
       ApprovalGetResult,

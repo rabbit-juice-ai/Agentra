@@ -604,6 +604,163 @@ describe('ExecutionService event handling', () => {
   })
 })
 
+describe('Work lifecycle execution races (injected RuntimeClient, real SQLite)', () => {
+  function work(h: Harness) {
+    const w = h.works.create({ name: 'Work race', rootPath: path.join(h.dir, 'work-race') })
+    h.works.activate(w.id)
+    h.assignments.create({ workId: w.id, agentId: h.agentId, workRole: 'engineer' })
+    return w.id
+  }
+
+  it('termination while Daemon start awaits cancels the returned handle and preserves cancelled state', async () => {
+    const h = await harness()
+    const workId = work(h)
+    let entered!: () => void
+    const starting = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let release!: () => void
+    const delayed = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const originalStart = h.runtime.start.bind(h.runtime)
+    h.runtime.start = async (params) => {
+      entered()
+      await delayed
+      return originalStart(params)
+    }
+    h.runtime.statusResult = {
+      executionId: 'fixture',
+      status: 'cancelled',
+      processId: null,
+      exitCode: null,
+      startedAt: NOW,
+      endedAt: NOW,
+    }
+    const spawn = h.executions.start({ agentId: h.agentId, workId, prompt: 'hello' })
+    await starting
+    h.works.terminate(workId)
+    const terminate = h.executions.terminateWork(workId)
+    release()
+    await Promise.all([spawn, terminate])
+    expect(h.runtime.starts).toHaveLength(1)
+    expect(h.runtime.cancels).toEqual([h.runtime.starts[0]?.executionId])
+    expect(h.repository.listByWork(workId)[0]?.status).toBe('cancelled')
+    expect(h.runtime.active).toEqual([])
+    await h.executions.terminateWork(workId)
+    expect(h.runtime.cancels).toHaveLength(1)
+  })
+
+  it('failed cancellation remains durable and a repeat termination retries without duplicate terminal accounting', async () => {
+    const h = await harness()
+    const workId = work(h)
+    const execution = await h.executions.start({ agentId: h.agentId, workId, prompt: 'hello' })
+    const originalCancel = h.runtime.cancel.bind(h.runtime)
+    h.runtime.cancel = async () => {
+      throw new Error('injected daemon unavailable')
+    }
+    h.works.terminate(workId)
+    await expect(h.executions.terminateWork(workId)).rejects.toThrow(/unconfirmed/)
+    expect(h.repository.get(execution.id)?.status).toBe('cancelled')
+    expect(JSON.parse(h.repository.getRecoveryStateRaw(execution.id).raw ?? '{}')).toMatchObject({
+      cancellationPending: true,
+    })
+    h.runtime.cancel = originalCancel
+    h.runtime.statusResult = {
+      executionId: execution.id,
+      status: 'cancelled',
+      processId: null,
+      exitCode: null,
+      startedAt: NOW,
+      endedAt: NOW,
+    }
+    await h.executions.terminateWork(workId)
+    expect(h.runtime.cancels).toEqual([execution.id])
+    expect(JSON.parse(h.repository.getRecoveryStateRaw(execution.id).raw ?? '{}')).toMatchObject({
+      cancellationPending: false,
+    })
+    expect(
+      h.logs.list(execution.id).filter((log) => log.content.includes('execution.cancel_requested')),
+    ).toHaveLength(1)
+  })
+
+  it('restart cancellation uses durable queued intent without asking Daemon to cancel an unstarted process', async () => {
+    const h = await harness()
+    await h.executions.start({ agentId: h.agentId, prompt: 'occupy concurrency slot' })
+    const workId = work(h)
+    const queued = await h.executions.start({ agentId: h.agentId, workId, prompt: 'queued' })
+    expect(queued.status).toBe('pending')
+    h.works.terminate(workId)
+    const restarted = new ExecutionService({
+      db: h.db,
+      runtime: h.runtime,
+      registry: new ProviderRegistry(h.providers, h.runtime),
+      works: new WorkRepository(h.db),
+      worktrees: h.worktrees,
+      locks: h.locks,
+      assignments: new AssignmentRepository(h.db),
+      agents: new AgentRepository(h.db),
+      sessions: h.sessions,
+      executions: h.repository,
+      logs: h.logs,
+      hub: h.hub,
+      scratchRoot: path.join(h.dir, 'scratch'),
+      now: () => NOW,
+    })
+    await restarted.terminateWork(workId)
+    expect(h.runtime.cancels).toEqual([])
+    expect(h.runtime.starts).toHaveLength(1)
+    expect(h.repository.get(queued.id)?.status).toBe('cancelled')
+    expect(JSON.parse(h.repository.getRecoveryStateRaw(queued.id).raw ?? '{}')).toMatchObject({
+      cancellationPending: false,
+    })
+  })
+
+  it('a natural exit racing cancellation cannot resurrect the cancelled Execution', async () => {
+    const h = await harness()
+    const workId = work(h)
+    const execution = await h.executions.start({ agentId: h.agentId, workId, prompt: 'hello' })
+    const originalCancel = h.runtime.cancel.bind(h.runtime)
+    h.runtime.cancel = async (id) => {
+      h.executions.handleRuntimeEvent(
+        exitedEvent(id, { exitCode: 0, signal: null, reason: 'exited' }),
+      )
+      await originalCancel(id)
+    }
+    h.runtime.statusResult = {
+      executionId: execution.id,
+      status: 'succeeded',
+      processId: null,
+      exitCode: 0,
+      startedAt: NOW,
+      endedAt: NOW,
+    }
+    h.works.terminate(workId)
+    await h.executions.terminateWork(workId)
+    expect(h.repository.get(execution.id)?.status).toBe('cancelled')
+    expect(h.runtime.cancels).toHaveLength(1)
+    expect(h.locks.countByExecution(execution.id)).toBe(0)
+  })
+
+  it('no interrupt capability lets the current step finish while new paused-Work starts are denied', async () => {
+    const h = await harness({ capabilities: { ...CAPABILITIES, interrupt: 'unsupported' } })
+    const workId = work(h)
+    const execution = await h.executions.start({ agentId: h.agentId, workId, prompt: 'hello' })
+    h.works.pause(workId)
+    await h.executions.pauseWork(workId)
+    await h.executions.pauseWork(workId)
+    expect(h.runtime.interrupts).toEqual([])
+    await expect(
+      h.executions.start({ agentId: h.agentId, workId, prompt: 'not allowed' }),
+    ).rejects.toThrow(/not active/)
+    h.executions.handleRuntimeEvent(
+      exitedEvent(execution.id, { exitCode: 0, signal: null, reason: 'exited' }),
+    )
+    expect(h.repository.get(execution.id)?.status).toBe('succeeded')
+    expect(h.runtime.starts).toHaveLength(1)
+  })
+})
+
 describe('ExecutionService lifecycle RPCs', () => {
   it('cancels a running execution and records the request', async () => {
     const h = await harness()

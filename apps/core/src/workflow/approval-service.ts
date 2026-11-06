@@ -67,7 +67,20 @@ export class ApprovalService {
     private readonly rework?: ApprovalReworkPort,
     private readonly audit?: AuditRepository,
     private readonly events?: ApprovalEventSink,
+    private readonly canDecide?: (runId: string) => boolean,
   ) {}
+
+  /** Work 终止的系统取消路径；由 Work 的同一事务调用，非第四种用户决策。 */
+  cancelPendingForRun(runId: string, now: string): void {
+    for (const approval of this.approvals.listPendingByRun(runId)) {
+      this.approvals.decide(
+        approval.id,
+        'cancelled',
+        { decidedBy: 'system', comment: 'Work terminated' },
+        now,
+      )
+    }
+  }
 
   requestForNode(
     nodeRunId: string,
@@ -122,6 +135,12 @@ export class ApprovalService {
 
     const now = this.now()
     return transaction(this.db, () => {
+      if (this.canDecide && !this.canDecide(pending.workflowRunId)) {
+        throw new ApprovalError(
+          'ALREADY_DECIDED',
+          'Work or Run is terminated; approval decision refused',
+        )
+      }
       const decided = this.approvals.decide(
         pending.id,
         DECISION_STATUS[decision],

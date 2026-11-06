@@ -402,11 +402,17 @@ describe('阶段 3 工作流定义 RPC', () => {
 })
 
 describe('阶段 3 隔离断言', () => {
-  it('exposes only the read-only workflow.run.get query, no execution entry', () => {
+  it('exposes the authorized validated run.start entry and rejects unregistered aliases', () => {
     const { methods } = harness()
     const names = Object.keys(methods)
     expect(names).toContain(WORKFLOW_RUN_GET_METHOD)
-    for (const forbidden of ['workflow.run.start', 'workflow.run.create', 'workflow.run.cancel']) {
+    expect(names).toContain('workflow.run.start')
+    expect(methods['workflow.run.start']?.access).toBe('write')
+    expect(
+      methods['workflow.run.start']?.paramsSchema.safeParse({ workId: 'w', workflowVersionId: 'v' })
+        .success,
+    ).toBe(false)
+    for (const forbidden of ['workflow.run.create', 'workflow.run.cancel']) {
       expect(names).not.toContain(forbidden)
     }
     expect(names).toEqual(

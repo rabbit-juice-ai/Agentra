@@ -49,19 +49,57 @@ export class ArtifactService {
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
-  createVersion(input: {
-    workId: string
-    nodeRunId?: string | null
-    assignmentId?: string | null
-    artifactType: ArtifactType
-    name: string
-    description?: string
-    content: string | Buffer
-    mimeType?: string | null
-    metadata?: Record<string, unknown>
-    createdByType: 'user' | 'agent' | 'system'
-    createdById?: string | null
-  }): { artifact: ArtifactRecord; version: ArtifactVersionRecord } {
+  createVersion(input: Parameters<ArtifactService['createVersionRecord']>[0]): {
+    artifact: ArtifactRecord
+    version: ArtifactVersionRecord
+  } {
+    return this.createBatch(
+      [input],
+      (records) => records[0] as { artifact: ArtifactRecord; version: ArtifactVersionRecord },
+    )
+  }
+
+  /** 文件先独占写入，版本记录与 NodeRun 完成同一事务；失败只移除本次新建文件。 */
+  createBatch<T>(
+    inputs: Array<Parameters<ArtifactService['createVersionRecord']>[0]>,
+    commit: (records: Array<{ artifact: ArtifactRecord; version: ArtifactVersionRecord }>) => T,
+  ): T {
+    const ownedFiles: string[] = []
+    try {
+      return transaction(this.db, () =>
+        commit(inputs.map((input) => this.createVersionRecord(input, ownedFiles))),
+      )
+    } catch (error) {
+      for (const file of ownedFiles) {
+        try {
+          fs.unlinkSync(file)
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            'Artifact transaction and file cleanup failed',
+          )
+        }
+      }
+      throw error
+    }
+  }
+
+  private createVersionRecord(
+    input: {
+      workId: string
+      nodeRunId?: string | null
+      assignmentId?: string | null
+      artifactType: ArtifactType
+      name: string
+      description?: string
+      content: string | Buffer
+      mimeType?: string | null
+      metadata?: Record<string, unknown>
+      createdByType: 'user' | 'agent' | 'system'
+      createdById?: string | null
+    },
+    ownedFiles: string[],
+  ): { artifact: ArtifactRecord; version: ArtifactVersionRecord } {
     if (!(input.artifactType in { markdown: 1, text: 1, code: 1, image: 1, other: 1 })) {
       throw new ArtifactError('INVALID_TYPE', `unsupported artifact type: ${input.artifactType}`)
     }
@@ -89,8 +127,12 @@ export class ArtifactService {
     const checksum = createHash('sha256').update(content).digest('hex')
     const now = this.now()
 
-    return transaction(this.db, () => {
-      let artifact = this.artifacts.findByWorkAndName(input.workId, input.name)
+    {
+      let artifact = this.artifacts.findByWorkAndName(
+        input.workId,
+        input.name,
+        input.nodeRunId ?? undefined,
+      )
       if (!artifact) {
         const artifactId = `art-${crypto.randomUUID()}`
         // 新 artifact：第一版内容即当前内容，storage_path 先占位再由版本路径覆盖。
@@ -114,9 +156,24 @@ export class ArtifactService {
 
       const version = this.artifacts.nextVersion(artifact.id)
       const dir = this.versionDir(input.workId, artifact.id, version)
-      const filePath = path.join(dir, input.name)
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-      fs.writeFileSync(filePath, content, { mode: 0o600 })
+      const filePath = path.join(dir, crypto.randomUUID(), input.name)
+      this.assertSafePath(filePath)
+      fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
+      this.assertSafePath(filePath)
+      const fd = fs.openSync(filePath, 'wx', 0o600)
+      ownedFiles.push(filePath)
+      try {
+        fs.writeFileSync(fd, content)
+        fs.fsyncSync(fd)
+      } finally {
+        fs.closeSync(fd)
+      }
+      const parent = fs.openSync(path.dirname(filePath), fs.constants.O_RDONLY)
+      try {
+        fs.fsyncSync(parent)
+      } finally {
+        fs.closeSync(parent)
+      }
 
       const created = this.artifacts.createVersion(
         {
@@ -136,7 +193,7 @@ export class ArtifactService {
         )
       }
       return { artifact, version: created }
-    })
+    }
   }
 
   preview(
@@ -204,7 +261,37 @@ export class ArtifactService {
     if (!fs.existsSync(filePath)) {
       throw new ArtifactError('VERSION_NOT_FOUND', `artifact file missing: ${record.storagePath}`)
     }
-    return fs.readFileSync(filePath)
+    this.assertSafePath(filePath)
+    const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    let content: Buffer
+    try {
+      if (!fs.fstatSync(fd).isFile())
+        throw new ArtifactError('VERSION_NOT_FOUND', 'Artifact is not a regular file')
+      content = fs.readFileSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
+    if (createHash('sha256').update(content).digest('hex') !== record.checksum) {
+      throw new ArtifactError(
+        'CHECKSUM_MISMATCH',
+        `artifact version ${record.id} checksum mismatch`,
+      )
+    }
+    return content
+  }
+
+  private assertSafePath(file: string): void {
+    const root = path.resolve(this.artifactsRoot)
+    const relative = path.relative(root, file)
+    if (relative.startsWith('..') || path.isAbsolute(relative))
+      throw new ArtifactError('INVALID_NAME', 'Artifact path escapes root')
+    let current = root
+    for (const part of ['.', ...relative.split(path.sep)]) {
+      current = path.resolve(current, part)
+      const stat = fs.lstatSync(current, { throwIfNoEntry: false })
+      if (stat?.isSymbolicLink())
+        throw new ArtifactError('INVALID_NAME', 'Artifact path contains a symlink')
+    }
   }
 
   private versionDir(workId: string, artifactId: string, version: number): string {

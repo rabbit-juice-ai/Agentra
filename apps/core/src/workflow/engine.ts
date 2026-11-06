@@ -3,6 +3,7 @@ import type { Database } from '../db/database'
 import type { AuditRepository } from '../db/repositories/audit-repository'
 import type { BranchRunRepository } from '../db/repositories/branch-run-repository'
 import type { NodeRunRepository } from '../db/repositories/node-run-repository'
+import type { WorkStatus } from '../db/repositories/work-repository'
 import type { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
 import type { DrainCoordinator } from '../lifecycle/drain-coordinator'
 import type { ApprovalService } from './approval-service'
@@ -23,6 +24,7 @@ import type { WorkflowFairDispatcher } from './fair-dispatcher'
 import type { PublishedDefinitionProvider } from './published-definition-provider'
 import type { CreateWorkflowRunInput, WorkflowRunService } from './run-service'
 import type { WorkflowScheduler } from './scheduler'
+import { isTerminalBranchStatus, isTerminalNodeStatus, isTerminalRunStatus } from './state-machine'
 
 export type WorkflowEngineLogger = {
   info?(message: string, meta?: Record<string, unknown>): void
@@ -93,6 +95,53 @@ export class WorkflowEngine {
     return run
   }
 
+  /** 生产启动：先原子持久化 Run，再调度；失败保留同一个 Run，重试不重复创建。 */
+  async startRun(input: CreateWorkflowRunInput) {
+    if (!this.isDispatchAllowed())
+      throw new Error('workflow dispatch is unavailable during maintenance')
+    const run = this.deps.runService.createRun(input)
+    let schedulingError: string | null = null
+    try {
+      await this.kick(run.id, true)
+    } catch {
+      schedulingError = '调度未完成；Run 已保存，请按相同请求重试或查看运行状态。'
+    }
+    return { run: this.deps.runs.get(run.id) ?? run, schedulingError }
+  }
+
+  /** WorkService 的事务内级联；不改分支自己的暂停原因，不调用异步进程操作。 */
+  syncWorkState(workId: string, to: WorkStatus, now: string): void {
+    const runs = this.deps.runs.listByWork(workId).filter((r) => !isTerminalRunStatus(r.status))
+    if (to === 'completed' && runs.length)
+      throw new Error('Work still has unfinished workflow runs; terminate or finish them first')
+    for (const run of runs) {
+      if (to === 'paused' && (run.status === 'running' || run.status === 'waiting_human')) {
+        this.deps.runs.transition(run.id, [run.status], 'paused', now, {
+          runtimeState: { ...run.runtimeState, pausedByWork: true },
+        })
+      } else if (
+        to === 'active' &&
+        run.status === 'paused' &&
+        run.runtimeState.pausedByWork === true
+      ) {
+        this.deps.runs.transition(run.id, ['paused'], 'running', now, {
+          runtimeState: { ...run.runtimeState, pausedByWork: false },
+        })
+      } else if (to === 'cancelled') {
+        this.deps.runs.transition(run.id, [run.status], 'cancelled', now)
+        for (const branch of this.deps.branches.listByRun(run.id)) {
+          if (!isTerminalBranchStatus(branch.status))
+            this.deps.branches.transition(branch.id, [branch.status], 'cancelled', now)
+        }
+        for (const node of this.deps.nodes.listByRun(run.id)) {
+          if (!isTerminalNodeStatus(node.status))
+            this.deps.nodes.transition(node.id, [node.status], 'cancelled', now)
+        }
+        this.deps.approvals.cancelPendingForRun(run.id, now)
+      }
+    }
+  }
+
   async onNodeStarted(context: DispatchContext): Promise<void> {
     const nodeRunId = context.nodeRun.id
     this.deps.logger?.info?.('workflow node started', {
@@ -119,7 +168,7 @@ export class WorkflowEngine {
         completeEndNode(this.controlDeps, nodeRunId)
         return
       case 'human_approval':
-        enterHumanApproval(this.controlDeps, nodeRunId)
+        await enterHumanApproval(this.controlDeps, nodeRunId)
         return
       case 'agent_task':
         await this.deps.bridge.onNodeStarted(context)
@@ -144,8 +193,8 @@ export class WorkflowEngine {
     void this.kick(nodeRun.workflowRunId)
   }
 
-  async kick(runId: string): Promise<void> {
-    if (!this.isDispatchAllowed()) return
+  async kick(runId: string, propagateError = false): Promise<void> {
+    if (!this.isDispatchAllowed() || this.deps.runs.get(runId)?.status !== 'running') return
     const lease = this.deps.drain?.acquire('workflow-kick', `kick:${runId}`)
     try {
       if (this.deps.dispatcher) {
@@ -158,6 +207,7 @@ export class WorkflowEngine {
         runId,
         error: error instanceof Error ? error.message : String(error),
       })
+      if (propagateError) throw error
     } finally {
       lease?.release()
     }

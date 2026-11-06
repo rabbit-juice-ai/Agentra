@@ -103,6 +103,14 @@ export type ExecutionBridgeDeps = {
   resolver: WorkflowAssignmentResolver
   executions: ExecutionStarter
   outputs?: OutputExtractor
+  workInterrupted?: (executionId: string) => boolean
+  inputPrompt?: (context: DispatchContext) => string
+  commitOutput?: (
+    execution: Execution,
+    node: Extract<WorkflowNode, { type: 'agent_task' }>,
+    output: Record<string, unknown>,
+    saveNode: (snapshot: Record<string, unknown>) => void,
+  ) => void
   rework?: TestResultReworkPort
   logger?: ExecutionBridgeLogger
   now?: () => string
@@ -181,7 +189,7 @@ export class WorkflowExecutionBridge {
       await this.deps.executions.startForNode(nodeRun.id, {
         agentId: assignment.agentId,
         workId: run.workId,
-        prompt: node.config.taskPrompt,
+        prompt: this.deps.inputPrompt?.(context) ?? node.config.taskPrompt,
         ...(worktreeId ? { worktreeId } : {}),
       })
     } catch (error) {
@@ -203,6 +211,11 @@ export class WorkflowExecutionBridge {
     if (node === undefined || node.type !== 'agent_task') return
 
     const now = this.now()
+    if (this.deps.workInterrupted?.(execution.id)) {
+      // 中断回合不是完整交付；用户恢复 Work 后才允许用新 attempt 续接。
+      this.deps.nodes.transition(nodeRun.id, ['running'], 'reconciliation_required', now)
+      return
+    }
     if (execution.status === 'cancelled') {
       const cancelled = this.deps.nodes.transition(nodeRun.id, ['running'], 'cancelled', now)
       if (!cancelled) this.warnUnchanged(nodeRun, node.key, 'cancelled', execution.id)
@@ -220,7 +233,23 @@ export class WorkflowExecutionBridge {
       return
     }
 
-    const output = this.deps.outputs?.(execution.id) ?? null
+    let output: Record<string, unknown> | null
+    try {
+      output = this.deps.outputs?.(execution.id) ?? null
+    } catch {
+      this.deps.nodes.fail(
+        nodeRun.id,
+        ['running'],
+        {
+          category: 'output_contract_violation',
+          nodeKey: node.key,
+          message: 'Output extraction failed (empty, invalid or oversized output)',
+          details: { executionId: execution.id },
+        },
+        now,
+      )
+      return
+    }
     const violation = validateOutputContract(node.config.outputContract, output)
     if (violation) {
       const marked = this.deps.nodes.fail(
@@ -238,15 +267,30 @@ export class WorkflowExecutionBridge {
       return
     }
 
-    const succeeded = this.deps.nodes.transition(
-      nodeRun.id,
-      ['running'],
-      'succeeded',
-      now,
-      output ? { outputSnapshot: output } : undefined,
-    )
-    if (!succeeded) {
-      this.warnUnchanged(nodeRun, node.key, 'succeeded', execution.id)
+    const saveNode = (snapshot: Record<string, unknown>) => {
+      if (
+        !this.deps.nodes.transition(nodeRun.id, ['running'], 'succeeded', now, {
+          outputSnapshot: snapshot,
+        })
+      ) {
+        throw new Error('Node state changed during output commit')
+      }
+    }
+    try {
+      if (this.deps.commitOutput) this.deps.commitOutput(execution, node, output ?? {}, saveNode)
+      else saveNode(output ?? {})
+    } catch {
+      this.deps.nodes.fail(
+        nodeRun.id,
+        ['running'],
+        {
+          category: 'output_contract_violation',
+          nodeKey: node.key,
+          message: 'Artifact/output commit failed; downstream execution blocked',
+          details: { executionId: execution.id },
+        },
+        now,
+      )
       return
     }
     // 契约通过后才允许触发返工；契约失败在上面的分支已经 failed 并 return。

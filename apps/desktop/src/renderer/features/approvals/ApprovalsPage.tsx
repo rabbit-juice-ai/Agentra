@@ -1,4 +1,4 @@
-import type { Approval } from '@agentra/protocol'
+import { type Approval, WorkflowArtifactRef } from '@agentra/protocol'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { StatusBadge } from '../../components/StatusBadge'
 import {
@@ -47,17 +47,13 @@ export function ApprovalsPage() {
 
   const refresh = useCallback(async () => {
     try {
-      // 审批中心按 Run 查询 pending；这里聚合各 running Run 的 pending 审批。
-      // 当前阶段没有 run 列表 RPC，pending 审批经 run id 由 Work/Workflow 视图带入；
-      // 审批中心自身维护最近活跃 run 集合（可从 URL/选中态进入）。
+      // Core 查询真实 pending 集合；不依赖无人生成的 URL hash。
       setLoading(true)
       setError(null)
-      const runIds = pendingRunIdsFromLocation()
-      const collected: PendingRow[] = []
-      for (const runId of runIds) {
-        const approvals = await api.listPendingApprovals(runId)
-        for (const approval of approvals) collected.push({ approval, runId })
-      }
+      const collected: PendingRow[] = (await api.listPendingApprovals()).map((approval) => ({
+        approval,
+        runId: approval.workflowRunId,
+      }))
       // 按等待时长排序：等待最久的在前（验收要求）
       collected.sort(
         (left, right) =>
@@ -73,6 +69,8 @@ export function ApprovalsPage() {
 
   useEffect(() => {
     void refresh()
+    const timer = setInterval(() => void refresh(), 3000)
+    return () => clearInterval(timer)
   }, [refresh])
 
   // 等待时长每 30 秒刷新一次展示
@@ -166,6 +164,7 @@ export function ApprovalsPage() {
                 {approval.targetNodeRunId ? ` · 目标 ${approval.targetNodeRunId}` : ''}
               </div>
 
+              <ApprovalContext approval={approval} />
               <div>
                 <label style={labelStyle} htmlFor={`comment-${approval.id}`}>
                   意见（request_changes 必填）
@@ -227,19 +226,55 @@ export function ApprovalsPage() {
   )
 }
 
-/**
- * MVP 阶段审批中心的 Run 集合来源：URL hash（#approvals/<runId>[,<runId>]）。
- * Work/Workflow 视图跳转审批中心时携带 run 列表；直接打开页面时为空集合。
- * 不做隐藏的全局扫描（没有 run 列表 RPC，与执行入口隔离一致）。
- */
-function pendingRunIdsFromLocation(): string[] {
-  if (typeof window === 'undefined') return []
-  const hash = window.location.hash
-  const match = /#approvals\/(.+)$/.exec(hash)
-  const captured = match?.[1]
-  if (!captured) return []
-  return captured
-    .split(',')
-    .map((id) => id.trim())
-    .filter((id) => id.length > 0)
+function ApprovalContext({ approval }: { approval: Approval }) {
+  const [context, setContext] = useState('')
+  const [refs, setRefs] = useState<WorkflowArtifactRef[]>([])
+  const [preview, setPreview] = useState('')
+  useEffect(() => {
+    let alive = true
+    void api
+      .getWorkflowRun(approval.workflowRunId)
+      .then((view) => {
+        if (!alive) return
+        const target = view.nodes.find((n) => n.id === approval.targetNodeRunId)
+        setContext(
+          `Work ${view.run.workId} · ${target?.workflowNodeKey ?? '执行前审批'} · ${target?.status ?? ''}`,
+        )
+        const output = target?.output
+        const values =
+          output && typeof output === 'object' && 'artifacts' in output ? output.artifacts : []
+        setRefs(WorkflowArtifactRef.array().parse(values))
+      })
+      .catch((err) => {
+        if (alive) setContext(String(err))
+      })
+    return () => {
+      alive = false
+    }
+  }, [approval.workflowRunId, approval.targetNodeRunId])
+  return (
+    <div>
+      <p>{context}</p>
+      {refs.map((ref) => (
+        <button
+          type="button"
+          key={ref.versionId}
+          onClick={() => {
+            void api
+              .previewArtifact(ref.artifactId, ref.version)
+              .then((file) => {
+                if (file.version.id !== ref.versionId || file.version.checksum !== ref.checksum)
+                  throw new Error('Artifact version mismatch')
+                const bytes = Uint8Array.from(atob(file.contentBase64), (c) => c.charCodeAt(0))
+                setPreview(new TextDecoder().decode(bytes))
+              })
+              .catch((err) => setPreview(String(err)))
+          }}
+        >
+          {ref.name} v{ref.version}
+        </button>
+      ))}
+      {preview && <pre style={{ whiteSpace: 'pre-wrap' }}>{preview}</pre>}
+    </div>
+  )
 }

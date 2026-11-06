@@ -76,6 +76,7 @@ import {
   WORK_RESUME_METHOD,
   WORKFLOW_RUN_GET_METHOD,
   WORKFLOW_RUN_LIST_BY_WORK_METHOD,
+  WORKFLOW_RUN_START_METHOD,
   WORKFLOW_TEMPLATE_ARCHIVE_METHOD,
   WORKFLOW_TEMPLATE_CREATE_METHOD,
   WORKFLOW_TEMPLATE_GET_METHOD,
@@ -91,6 +92,7 @@ import {
   WORKTREE_REMOVE_METHOD,
   WorkflowRunGetResult,
   WorkflowRunListByWorkResult,
+  WorkflowRunStartResult,
   WorkflowTemplateListResult,
   WorkflowTemplateResult,
   WorkflowVersionListResult,
@@ -315,6 +317,9 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:approval-list-pending', (_event, params: unknown) =>
     callCore(APPROVAL_LIST_PENDING_METHOD, params, ApprovalListPendingResult),
+  )
+  ipcMain.handle('agentra:workflow-run-start', (_event, params: unknown) =>
+    callCore(WORKFLOW_RUN_START_METHOD, params, WorkflowRunStartResult, 60_000),
   )
   ipcMain.handle('agentra:workflow-run-get', (_event, params: unknown) =>
     callCore(WORKFLOW_RUN_GET_METHOD, params, WorkflowRunGetResult),

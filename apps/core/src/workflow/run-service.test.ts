@@ -173,6 +173,45 @@ function counts(db: Database): { runs: number; branches: number; nodes: number }
 }
 
 describe('WorkflowRunService', () => {
+  it('persists request idempotency across service recreation and rejects key reuse', () => {
+    const h = setup()
+    try {
+      const versionId = h.createVersion(definition())
+      const request = {
+        workId: 'work-1',
+        workflowVersionId: versionId,
+        requestId: '8d292af5-364d-4bee-96c3-aaebfdbeafde',
+      }
+      const first = h.service.createRun(request)
+      expect(h.service.createRun(request).id).toBe(first.id)
+      expect(counts(h.db)).toEqual({ runs: 1, branches: 1, nodes: 3 })
+      expect(() => h.service.createRun({ ...request, workflowVersionId: 'missing' })).toThrow(
+        /requestId/,
+      )
+    } finally {
+      h.close()
+    }
+  })
+
+  it('rejects a missing Work, unavailable Work and missing version without writes', () => {
+    const h = setup()
+    try {
+      const versionId = h.createVersion(definition())
+      expect(() =>
+        h.service.createRun({ workId: 'missing', workflowVersionId: versionId }),
+      ).toThrow(/work not found/)
+      expect(() => h.service.createRun({ workId: 'work-1', workflowVersionId: 'missing' })).toThrow(
+        /not found/,
+      )
+      h.db.prepare("UPDATE works SET status='cancelled' WHERE id='work-1'").run()
+      expect(() => h.service.createRun({ workId: 'work-1', workflowVersionId: versionId })).toThrow(
+        /cannot create/,
+      )
+      expect(counts(h.db)).toEqual({ runs: 0, branches: 0, nodes: 0 })
+    } finally {
+      h.close()
+    }
+  })
   it('creates the run, root branch and a blocked NodeRun per node', () => {
     const h = setup()
     try {

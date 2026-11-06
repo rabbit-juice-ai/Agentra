@@ -10,6 +10,7 @@ import type {
 import { useEffect, useState } from 'react'
 import { ArtifactsPanel } from '../features/approvals/ArtifactsPanel'
 import { RunFailuresPanel } from '../features/approvals/RunFailuresPanel'
+import { WorkflowRunsPanel } from '../features/workflow/WorkflowRunsPanel'
 import { StatusBadge } from './StatusBadge'
 import {
   buttonStyle,
@@ -489,6 +490,11 @@ export function WorksPage({
             RunFailuresPanel 自带 Work 为空时不渲染；这里传入当前选中 Work。 */}
         {selected && (
           <section>
+            <WorkflowRunsPanel
+              key={selected.id}
+              workId={selected.id}
+              active={selected.status === 'active'}
+            />
             <ArtifactsPanel workId={selected.id} />
             <RunFailuresPanel workId={selected.id} />
           </section>

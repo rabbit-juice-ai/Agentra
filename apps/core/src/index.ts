@@ -55,6 +55,7 @@ import { WorkflowDefinitionService } from './services/workflow-definition-servic
 import { WorktreeService } from './services/worktree-service'
 import { createApprovalGateChecker } from './workflow/approval-gate'
 import { ApprovalService } from './workflow/approval-service'
+import { ArtifactExchange } from './workflow/artifact-exchange'
 import { WorkflowAssignmentResolver } from './workflow/assignment-resolver'
 import { approvalGate, defaultDispatchGates } from './workflow/dispatch-gates'
 import { WorkflowEngine } from './workflow/engine'
@@ -444,7 +445,23 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     paths.worktrees,
   )
   const teamService = new TeamService(db, teamRepository, agentRepository)
-  const workService = new WorkService(db, workRepository, teamRepository, auditRepository)
+  const workService = new WorkService(
+    db,
+    workRepository,
+    teamRepository,
+    auditRepository,
+    undefined,
+    (id, to, now) => {
+      workflowEngine?.syncWorkState(id, to, now)
+      if (to === 'cancelled')
+        for (const run of workflowRunRepository.listByWork(id)) {
+          for (const rework of reworkRequestRepository.listByRun(run.id)) {
+            if (rework.status === 'requested' || rework.status === 'in_rework')
+              reworkRequestRepository.transition(rework.id, [rework.status], 'cancelled', now)
+          }
+        }
+    },
+  )
   const assignmentService = new AssignmentService(
     db,
     assignmentRepository,
@@ -536,6 +553,14 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
         })
       },
     },
+    (runId) => {
+      const run = workflowRunRepository.get(runId)
+      return (
+        !!run &&
+        !['cancelled', 'completed', 'failed'].includes(run.status) &&
+        ['active', 'paused'].includes(workRepository.get(run.workId)?.status ?? '')
+      )
+    },
   )
   const approvalRpc = new ApprovalRpcService(approvalService, approvalRepository)
   const artifactService = new ArtifactService(db, new ArtifactRepository(db), paths.artifacts, {
@@ -558,6 +583,21 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     paths.artifacts,
     Math.max(...MIGRATIONS.map((migration) => migration.version)),
   )
+  const artifactExchange = new ArtifactExchange(
+    executionLogRepository,
+    artifactService,
+    nodeRunRepository,
+  )
+  artifactExchange.nodesForExecution = (id) => {
+    const nodeId = executionRepository.getNodeRunId(id)
+    if (!nodeId) throw new Error('Execution has no node binding')
+    return nodeId
+  }
+  artifactExchange.workIdForRun = (id) => {
+    const run = workflowRunRepository.get(id)
+    if (!run) throw new Error('Workflow Run missing')
+    return run.workId
+  }
   workflowBridge = new WorkflowExecutionBridge({
     db,
     runs: workflowRunRepository,
@@ -567,6 +607,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     definitions: publishedDefinitions,
     resolver: workflowAssignmentResolver,
     executions: executionService,
+    workInterrupted: (id) => executionService.isWorkPauseInterrupted(id),
+    outputs: (id) => artifactExchange.extract(id),
+    inputPrompt: (context) => artifactExchange.prompt(context),
+    commitOutput: (execution, node, output, save) =>
+      artifactExchange.commit(execution, node, output, save),
+    rework: reworkService,
     logger,
   })
   const approvalGateChecker = createApprovalGateChecker({
@@ -595,7 +641,26 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
           works: workRepository,
           locks,
         }),
-        inputArtifacts: { isAvailable: () => true },
+        inputArtifacts: {
+          isAvailable: (context) => {
+            try {
+              artifactExchange.resolveInputs(context)
+              return true
+            } catch {
+              nodeRunRepository.fail(
+                context.nodeRun.id,
+                ['ready'],
+                {
+                  category: 'internal',
+                  nodeKey: context.node.key,
+                  message: 'Input artifact missing, corrupt or from another run',
+                },
+                new Date().toISOString(),
+              )
+              return false
+            }
+          },
+        },
       }),
     ],
     onNodeStarted: (context) => workflowEngine?.onNodeStarted(context),
@@ -734,6 +799,15 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
 
   const daemonConnected = (await runtime.waitForConnection(DAEMON_CONNECT_TIMEOUT_MS)) === true
   logger.info('daemon connection ready check', { connected: daemonConnected })
+  if (daemonConnected && !restoredJournal) {
+    try {
+      await executionService.recoverWorkEffects()
+    } catch (error) {
+      logger.error('Work process cancellation remains unconfirmed', { error: String(error) })
+      maintenance.enterRecoveryLocked('work_process_effects_failed')
+      return
+    }
+  }
 
   // 终态补偿 sweep：纯 DB，与 Daemon 可用性无关；失败必须 fail closed。
   try {
@@ -857,10 +931,20 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
           hub,
           teams: teamService,
           works: workService,
+          workEffects: async (id, action) => {
+            if (action === 'terminate') await executionService.terminateWork(id)
+            if (action === 'pause') await executionService.pauseWork(id)
+            if (action === 'resume') {
+              await executionService.resumeWork(id)
+              for (const run of workflowRunRepository.listByWork(id))
+                await workflowEngine?.kick(run.id)
+            }
+          },
           assignments: assignmentService,
           worktrees,
           workflows: workflowService,
           workflowRuns: workflowRunQuery,
+          workflowEngine,
           approvals: approvalRpc,
           artifacts: artifactRpc,
           backups: backupRpc,

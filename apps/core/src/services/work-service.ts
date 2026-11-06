@@ -47,6 +47,7 @@ export class WorkService {
     private readonly teams: TeamRepository,
     private readonly audit: AuditRepository,
     private readonly now: () => string = () => new Date().toISOString(),
+    private readonly onTransition?: (workId: string, to: WorkStatus, now: string) => void,
   ) {
     this.works = works
   }
@@ -110,11 +111,13 @@ export class WorkService {
 
   /** Work 级暂停：置 paused；后续不再调度该 Work 下的执行（调度器在阶段 4 接入）。 */
   pause(id: string): WorkRecord {
+    if (this.get(id).status === 'paused') return this.get(id)
     return this.transition(id, 'paused', { from: ['active'] })
   }
 
   /** 恢复只对已暂停的 Work 有意义；draft 用 activate。 */
   resume(id: string): WorkRecord {
+    if (this.get(id).status === 'active') return this.get(id)
     return this.transition(id, 'active', { from: ['paused'] })
   }
 
@@ -128,6 +131,7 @@ export class WorkService {
 
   /** Work 级终止：终态不可逆，写审计（WORKFLOW §4）。 */
   terminate(id: string): WorkRecord {
+    if (this.get(id).status === 'cancelled') return this.get(id)
     return this.transition(id, 'cancelled', {
       from: ['draft', 'active', 'paused'],
       audit: { action: 'work.terminated' },
@@ -165,6 +169,7 @@ export class WorkService {
           `work ${id} changed concurrently (expected ${work.status} → ${to})`,
         )
       }
+      this.onTransition?.(id, to, now)
       if (audit) {
         this.audit.append({
           actorType: 'user',

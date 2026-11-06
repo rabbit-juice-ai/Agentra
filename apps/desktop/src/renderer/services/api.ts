@@ -127,7 +127,7 @@ export const api = {
   },
 
   // 阶段 5 S5-3：审批中心 + 运行态查询。
-  listPendingApprovals: async (runId: string) =>
+  listPendingApprovals: async (runId?: string) =>
     (await unwrap(window.agentra.listPendingApprovals({ runId }))).approvals,
   decideApproval: async (params: ApprovalDecideParams) =>
     (await unwrap(window.agentra.decideApproval(params))).approval,

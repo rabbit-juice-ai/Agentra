@@ -49,6 +49,8 @@ import type {
   WorkflowRunGetResult,
   WorkflowRunListByWorkParams,
   WorkflowRunListByWorkResult,
+  WorkflowRunStartParams,
+  WorkflowRunStartResult,
   WorkflowTemplateCreateParams,
   WorkflowTemplateGetParams,
   WorkflowTemplateIdParams,
@@ -192,6 +194,7 @@ export type AgentraApi = {
   listPendingApprovals(
     params: ApprovalListPendingParams,
   ): Promise<RpcResult<ApprovalListPendingResult>>
+  startWorkflowRun(params: WorkflowRunStartParams): Promise<RpcResult<WorkflowRunStartResult>>
   getWorkflowRun(params: WorkflowRunGetParams): Promise<RpcResult<WorkflowRunGetResult>>
   listWorkflowRunsByWork(
     params: WorkflowRunListByWorkParams,

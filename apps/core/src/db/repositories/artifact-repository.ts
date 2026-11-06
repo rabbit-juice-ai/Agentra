@@ -171,7 +171,17 @@ export class ArtifactRepository {
     return row ? toArtifact(row) : null
   }
 
-  findByWorkAndName(workId: string, name: string): ArtifactRecord | null {
+  findByWorkAndName(workId: string, name: string, nodeRunId?: string): ArtifactRecord | null {
+    if (nodeRunId) {
+      const row = this.db
+        .prepare(`SELECT a.* FROM artifacts a
+        JOIN node_runs old ON old.id = a.node_run_id
+        JOIN node_runs current ON current.id = ?
+        WHERE a.work_id = ? AND a.name = ? AND old.workflow_run_id = current.workflow_run_id
+          AND old.workflow_node_key = current.workflow_node_key`)
+        .get(nodeRunId, workId, name) as ArtifactRow | undefined
+      return row ? toArtifact(row) : null
+    }
     const row = this.db
       .prepare('SELECT * FROM artifacts WHERE work_id = ? AND name = ?')
       .get(workId, name) as ArtifactRow | undefined

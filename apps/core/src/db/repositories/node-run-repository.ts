@@ -139,6 +139,13 @@ export class NodeRunRepository {
     return row ? toRecord(row) : null
   }
 
+  setInputSnapshot(id: string, snapshot: Record<string, unknown>): void {
+    const result = this.db
+      .prepare("UPDATE node_runs SET input_snapshot_json = ? WHERE id = ? AND status = 'running'")
+      .run(JSON.stringify(snapshot), id)
+    if (!result.changes) throw new Error(`cannot record input for node ${id}`)
+  }
+
   listByRun(workflowRunId: string): NodeRunRecord[] {
     const rows = this.db
       .prepare('SELECT * FROM node_runs WHERE workflow_run_id = ? ORDER BY created_at ASC, id ASC')

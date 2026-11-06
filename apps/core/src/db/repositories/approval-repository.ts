@@ -166,6 +166,14 @@ export class ApprovalRepository {
    * 及其保护目标 node key（经审批节点 config target 推导由调用方完成，
    * 这里返回审批节点自身的 node key 集合）。
    */
+  listPending(): ApprovalRecord[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM approvals WHERE status='pending' ORDER BY requested_at, id")
+        .all() as ApprovalRow[]
+    ).map(toRecord)
+  }
+
   listPendingByRun(workflowRunId: string): ApprovalRecord[] {
     const rows = this.db
       .prepare(

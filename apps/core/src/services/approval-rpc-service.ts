@@ -67,7 +67,9 @@ export class ApprovalRpcService {
     }
   }
 
-  listPending(runId: string): Approval[] {
-    return this.approvals.listPendingByRun(runId).map(toDto)
+  listPending(runId?: string): Approval[] {
+    return (runId ? this.approvals.listPendingByRun(runId) : this.approvals.listPending()).map(
+      toDto,
+    )
   }
 }

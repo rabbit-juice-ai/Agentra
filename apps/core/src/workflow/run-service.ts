@@ -1,5 +1,6 @@
 import { newId } from '@agentra/shared'
-import type { WorkflowDefinition } from '@agentra/workflow-schema'
+import { validateWorkflowDefinition, type WorkflowDefinition } from '@agentra/workflow-schema'
+import { z } from 'zod'
 import type { Database } from '../db/database'
 import { transaction } from '../db/database'
 import type { BranchRunRepository } from '../db/repositories/branch-run-repository'
@@ -24,6 +25,8 @@ export class WorkflowRunCreationError extends Error {
 export type CreateWorkflowRunInput = {
   workId: string
   workflowVersionId: string
+  /** 客户端为一次启动生成 UUID；以 Run 主键持久去重，跨重启重试返回同一 Run。 */
+  requestId?: string
 }
 
 /**
@@ -43,20 +46,35 @@ export class WorkflowRunService {
   ) {}
 
   createRun(input: CreateWorkflowRunInput): WorkflowRunRecord {
+    const id = input.requestId ? `run-${z.string().uuid().parse(input.requestId)}` : newId('run')
+    const existing = this.runs.get(id)
+    if (existing) {
+      if (
+        existing.workId !== input.workId ||
+        existing.workflowVersionId !== input.workflowVersionId
+      ) {
+        throw new WorkflowRunCreationError('requestId already belongs to another Work/version')
+      }
+      return existing
+    }
     const work = this.works.get(input.workId)
     if (!work) throw new WorkflowRunCreationError(`work not found: ${input.workId}`)
-    if (work.status !== 'active' && work.status !== 'paused') {
+    if (work.status !== 'active') {
       throw new WorkflowRunCreationError(`work ${work.id} is ${work.status}, cannot create a run`)
     }
 
-    const { definition } = this.definitions.get(input.workflowVersionId)
+    const { definition, status } = this.definitions.get(input.workflowVersionId)
+    if (status !== 'published')
+      throw new WorkflowRunCreationError('new runs require a published version')
+    const validation = validateWorkflowDefinition(definition)
+    if (!validation.ok) throw new WorkflowRunCreationError('workflow graph is invalid')
     this.assertWorkingDirectoriesAvailable(work.repositoryPath, definition)
     this.resolver.precheck(input.workId, definition)
 
     const now = this.now()
     return transaction(this.db, () => {
       const run = this.runs.create(
-        { id: newId('run'), workId: input.workId, workflowVersionId: input.workflowVersionId },
+        { id, workId: input.workId, workflowVersionId: input.workflowVersionId },
         now,
       )
       const branchRuns = ensureBranchRuns(this.branches, run.id, definition, now)

@@ -55,6 +55,61 @@ function setup(workStatus = 'active'): {
 }
 
 describe('ArtifactService · 创建与版本化', () => {
+  it('rolls back files and rows when the node/output commit fails', () => {
+    const h = setup()
+    let file = ''
+    try {
+      expect(() =>
+        h.service.createBatch(
+          [
+            {
+              workId: 'work-1',
+              artifactType: 'text',
+              name: 'result',
+              content: 'content',
+              createdByType: 'agent',
+            },
+          ],
+          (records) => {
+            file = records[0]?.version.storagePath ?? ''
+            expect(fs.existsSync(file)).toBe(true)
+            throw new Error('injected database commit failure')
+          },
+        ),
+      ).toThrow(/injected/)
+      expect(fs.existsSync(file)).toBe(false)
+      expect(h.artifacts.listAllVersions()).toEqual([])
+      expect(h.artifacts.listByWork('work-1')).toEqual([])
+    } finally {
+      h.close()
+    }
+  })
+
+  it('file write failure leaves no database version and preserves preexisting files', () => {
+    const h = setup()
+    try {
+      const original = fs.readdirSync(h.artifactsRoot)
+      const fileRoot = path.join(h.artifactsRoot, 'blocked')
+      fs.writeFileSync(fileRoot, 'do not overwrite')
+      const service = new ArtifactService(h.db, h.artifacts, fileRoot, {
+        get: () => ({ id: 'work-1', status: 'active' }),
+      })
+      expect(() =>
+        service.createVersion({
+          workId: 'work-1',
+          artifactType: 'text',
+          name: 'result',
+          content: 'content',
+          createdByType: 'agent',
+        }),
+      ).toThrow()
+      expect(h.artifacts.listAllVersions()).toEqual([])
+      expect(fs.readFileSync(fileRoot, 'utf8')).toBe('do not overwrite')
+      expect(original).toEqual([])
+    } finally {
+      h.close()
+    }
+  })
   it('creates the first version with file on disk and sha256 checksum', () => {
     const h = setup()
     try {

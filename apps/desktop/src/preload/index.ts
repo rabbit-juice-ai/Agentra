@@ -73,6 +73,7 @@ const api: AgentraApi = {
   decideApproval: (params) => ipcRenderer.invoke('agentra:approval-decide', params),
   getApproval: (params) => ipcRenderer.invoke('agentra:approval-get', params),
   listPendingApprovals: (params) => ipcRenderer.invoke('agentra:approval-list-pending', params),
+  startWorkflowRun: (params) => ipcRenderer.invoke('agentra:workflow-run-start', params),
   getWorkflowRun: (params) => ipcRenderer.invoke('agentra:workflow-run-get', params),
   listWorkflowRunsByWork: (params) =>
     ipcRenderer.invoke('agentra:workflow-run-list-by-work', params),

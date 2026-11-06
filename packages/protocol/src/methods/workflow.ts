@@ -93,7 +93,9 @@ export const ApprovalGetResultSchema = z.object({
 })
 export type ApprovalGetResult = z.infer<typeof ApprovalGetResult>
 
-export const ApprovalListPendingParamsSchema = z.object({ runId: z.string().min(1) }).strict()
+export const ApprovalListPendingParamsSchema = z
+  .object({ runId: z.string().min(1).optional() })
+  .strict()
 export type ApprovalListPendingParams = z.infer<typeof ApprovalListPendingParams>
 
 export const ApprovalListPendingResultSchema = z.object({ approvals: z.array(Approval) })
@@ -228,6 +230,21 @@ export const WorkflowRun = z.object({
 })
 export type WorkflowRun = z.infer<typeof WorkflowRun>
 
+export const WORKFLOW_RUN_START_METHOD = 'workflow.run.start'
+export const WorkflowRunStartParams = z
+  .object({
+    workId: z.string().min(1),
+    workflowVersionId: z.string().min(1),
+    requestId: z.string().uuid(),
+  })
+  .strict()
+export type WorkflowRunStartParams = z.infer<typeof WorkflowRunStartParams>
+export const WorkflowRunStartResult = z.object({
+  run: WorkflowRun,
+  schedulingError: z.string().nullable(),
+})
+export type WorkflowRunStartResult = z.infer<typeof WorkflowRunStartResult>
+
 export const WorkflowRunBranch = z.object({
   id: z.string().min(1),
   branchKey: z.string().min(1),
@@ -275,6 +292,18 @@ export const ApprovalGetResult = ApprovalGetResultSchema
 export const ApprovalListPendingParams = ApprovalListPendingParamsSchema
 export const ApprovalListPendingResult = ApprovalListPendingResultSchema
 export const ApprovalResult = ApprovalResultSchema
+
+export const WorkflowArtifactRef = z
+  .object({
+    name: z.string(),
+    artifactId: z.string(),
+    versionId: z.string(),
+    version: z.number().int().positive(),
+    nodeRunId: z.string(),
+    checksum: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict()
+export type WorkflowArtifactRef = z.infer<typeof WorkflowArtifactRef>
 
 export const ArtifactVersion = z.object({
   id: z.string().min(1),

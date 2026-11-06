@@ -20,6 +20,7 @@ import {
   type RuntimeProviderRecord,
 } from '@agentra/protocol'
 import { executionScratchDir, newId } from '@agentra/shared'
+import { z } from 'zod'
 import type { RuntimeClient } from '../daemon/daemon-client'
 import type { Database } from '../db/database'
 import { transaction } from '../db/database'
@@ -38,6 +39,7 @@ import type { DrainCoordinator } from '../lifecycle/drain-coordinator'
 import type { NodeRunStatus } from '../workflow/state-machine'
 import type { CoreEventHub } from './event-hub'
 import type { ProviderRegistry } from './provider-registry'
+import { redactOutput } from './redact-output'
 import type { WorkdirLockService } from './workdir-lock-service'
 import type { WorktreeService } from './worktree-service'
 
@@ -109,8 +111,22 @@ export type ExecutionServiceDeps = {
 /** 无人值守执行的默认权限模式：不弹权限请求（阶段 1 无审批 UI），最小权限。 */
 const DEFAULT_PERMISSION_MODE = 'dontAsk'
 const MAX_SEEN_EVENT_IDS = 10_000
+const WorkEffectState = z
+  .object({
+    cancellationPending: z.boolean().optional(),
+    workPause: z
+      .object({
+        workId: z.string(),
+        interrupted: z.boolean(),
+        requestedAt: z.string(),
+        resumed: z.boolean().optional(),
+      })
+      .optional(),
+  })
+  .passthrough()
+
 /** 只有进行中的 Work 可以启动执行。 */
-const WORK_ACCEPTS_EXECUTIONS = new Set(['active', 'paused'])
+const WORK_ACCEPTS_EXECUTIONS = new Set(['active'])
 
 /** S55-2B-1B：终态观察来源（审计 details.source 区分事件/对账/Core 主动）。 */
 export type TerminalObservationSource =
@@ -151,6 +167,139 @@ const TERMINAL_COMPENSATION_NODE_STATUSES: ReadonlySet<NodeRunStatus> = new Set(
  * 顺序遵循 ARCHITECTURE §8：先落库启动意图 → 请求 Daemon 启动 → 持久化结果 → 消费事件。
  */
 export class ExecutionService {
+  private readonly spawnInFlight = new Map<string, Promise<Execution>>()
+  private readonly cancelInFlight = new Map<string, Promise<Execution>>()
+
+  private readWorkEffects(id: string) {
+    const state = this.executions.getRecoveryStateRaw(id)
+    if (!state.valid) throw new Error(`Invalid recovery state for execution ${id}`)
+    return WorkEffectState.parse(state.raw === null ? {} : JSON.parse(state.raw))
+  }
+
+  isWorkPauseInterrupted(id: string): boolean {
+    const state = this.readWorkEffects(id)
+    return state.workPause?.interrupted === true && state.cancellationPending === undefined
+  }
+
+  /** Work 状态已提交后调用。仅处理本 Work；中断标志先持久化，不把中断当正常成功。 */
+  async pauseWork(workId: string): Promise<void> {
+    if (this.works.get(workId)?.status !== 'paused') return
+    for (const execution of this.executions.listByWork(workId)) {
+      if (isTerminalExecutionState(execution.status)) continue
+      const state = this.readWorkEffects(execution.id)
+      if (state.workPause && !state.workPause.resumed) continue
+      if (state.queued === true || execution.capabilities.interrupt === 'unsupported') {
+        this.executions.mergeRecoveryState(
+          execution.id,
+          { workPause: { workId, interrupted: false, requestedAt: this.now(), resumed: false } },
+          this.now(),
+        )
+        this.appendSystemLog(
+          execution.id,
+          'execution.work_pause.awaiting_completion',
+          { workId },
+          this.now(),
+        )
+        continue
+      }
+      this.executions.mergeRecoveryState(
+        execution.id,
+        { workPause: { workId, interrupted: true, requestedAt: this.now(), resumed: false } },
+        this.now(),
+      )
+      await this.spawnInFlight.get(execution.id)?.catch(() => undefined)
+      try {
+        await this.interrupt({ executionId: execution.id })
+      } catch (error) {
+        this.executions.mergeRecoveryState(
+          execution.id,
+          { workPause: { interrupted: false } },
+          this.now(),
+        )
+        this.logger?.warn('Work pause interrupt failed; waiting for current step', {
+          workId,
+          executionId: execution.id,
+          error: String(error),
+        })
+      }
+    }
+  }
+
+  /** 用户明确恢复后，仅为被 Work 中断的非完成节点创建新 attempt；旧 Execution/Artifact 保留。 */
+  async resumeWork(workId: string): Promise<void> {
+    if (this.works.get(workId)?.status !== 'active') return
+    for (const execution of this.executions.listByWork(workId)) {
+      const pause = this.readWorkEffects(execution.id).workPause
+      if (!pause || pause.resumed) continue
+      if (!pause.interrupted) {
+        this.executions.mergeRecoveryState(
+          execution.id,
+          { workPause: { resumed: true } },
+          this.now(),
+        )
+        continue
+      }
+      if (!isTerminalExecutionState(execution.status))
+        throw new RpcMethodError(
+          'NOT_READY',
+          'Work interruption is still settling; retry resume shortly',
+        )
+      const nodeId = this.executions.getNodeRunId(execution.id)
+      const node = nodeId ? this.nodeRuns?.get(nodeId) : null
+      if (node?.status !== 'reconciliation_required') continue
+      if (
+        this.workflowRuns &&
+        z.object({ status: z.string() }).parse(this.workflowRuns.get(node.workflowRunId)).status !==
+          'running'
+      )
+        continue
+      const attempts =
+        this.nodeRuns?.listByRunAndKey(node.workflowRunId, node.workflowNodeKey) ?? []
+      transaction(this.db, () => {
+        if (!attempts.some((n) => n.attempt > node.attempt))
+          this.nodeRuns?.create(
+            {
+              id: newId('nrn'),
+              workflowRunId: node.workflowRunId,
+              workflowNodeKey: node.workflowNodeKey,
+              branchRunId: node.branchRunId,
+              attempt: node.attempt + 1,
+              inputSnapshot: node.inputSnapshot,
+            },
+            this.now(),
+          )
+        this.executions.mergeRecoveryState(
+          execution.id,
+          { workPause: { resumed: true } },
+          this.now(),
+        )
+      })
+    }
+    for (const execution of this.executions.listByWork(workId)) {
+      if (execution.agentId) await this.drainQueue(execution.agentId)
+    }
+  }
+
+  async terminateWork(workId: string): Promise<void> {
+    if (this.works.get(workId)?.status !== 'cancelled') return
+    for (const execution of this.executions.listByWork(workId)) {
+      if (
+        !isTerminalExecutionState(execution.status) ||
+        this.readWorkEffects(execution.id).cancellationPending
+      ) {
+        await this.cancel({ executionId: execution.id }, true)
+      }
+    }
+  }
+
+  /** 普通启动对账前收敛未完成的 Work 进程处置；不启动新任务。 */
+  async recoverWorkEffects(): Promise<void> {
+    for (const work of this.works.list(false)) {
+      if (work.status === 'cancelled') await this.terminateWork(work.id)
+      if (work.status === 'paused') await this.pauseWork(work.id)
+    }
+  }
+
   private readonly seenEventIds = new Set<string>()
   /** executionId → 待启动任务；与 executions 表里的 queued 标记一一对应。 */
   private readonly queued = new Map<string, SpawnJob>()
@@ -248,6 +397,9 @@ export class ExecutionService {
     nodeRunId: string | null,
   ): Promise<Execution> {
     this.assertStartAllowed()
+    if (params.workId && this.works.get(params.workId)?.status !== 'active') {
+      throw new RpcMethodError('INVALID_PARAMS', 'Work is not active; refusing execution start')
+    }
     const prompt = params.prompt.trim()
     if (prompt.length === 0) {
       throw new RpcMethodError('INVALID_PARAMS', 'prompt must not be blank')
@@ -404,12 +556,22 @@ export class ExecutionService {
   /**
    * 真正启动进程。排队任务被调度时复用同一条路径。
    */
-  private async spawn(job: SpawnJob): Promise<Execution> {
+  private spawn(job: SpawnJob): Promise<Execution> {
+    const promise = this.spawnInternal(job)
+    this.spawnInFlight.set(job.executionId, promise)
+    void promise.finally(() => this.spawnInFlight.delete(job.executionId)).catch(() => undefined)
+    return promise
+  }
+
+  private async spawnInternal(job: SpawnJob): Promise<Execution> {
     const { executionId } = job
     const lease = this.drain?.acquire('execution-start', `execution.spawn:${executionId}`)
     try {
       try {
         this.assertStartAllowed()
+        const owner = this.executions.findOwningWork(executionId)
+        if (owner && this.works.get(owner.workId)?.status !== 'active')
+          throw new RpcMethodError('INVALID_PARAMS', 'Work is not active; refusing process start')
         const handle = await this.runtime.start({
           executionId,
           providerId: job.providerId,
@@ -424,6 +586,18 @@ export class ExecutionService {
           disallowedTools: job.disallowedTools,
           allowedRoots: job.allowedRoots,
         })
+        // Daemon start 的 await 期间 Work 可能被终止；句柄返回后立即取消实际进程。
+        const afterOwner = this.executions.findOwningWork(executionId)
+        if (afterOwner && this.works.get(afterOwner.workId)?.status === 'cancelled') {
+          await this.runtime.cancel(executionId)
+          await this.confirmRuntimeTerminal(executionId)
+          this.executions.mergeRecoveryState(
+            executionId,
+            { cancellationPending: false },
+            this.now(),
+          )
+          return this.get(executionId)
+        }
         this.executions.markRunning(executionId, {
           processId: handle.processId,
           startedAt: handle.startedAt,
@@ -507,11 +681,51 @@ export class ExecutionService {
     return result
   }
 
-  async cancel(params: ExecutionCancelParams): Promise<Execution> {
+  async cancel(
+    params: ExecutionCancelParams,
+    requireRuntimeConfirmation = false,
+  ): Promise<Execution> {
+    let promise = this.cancelInFlight.get(params.executionId)
+    if (!promise) {
+      promise = this.cancelInternal(params, requireRuntimeConfirmation)
+      this.cancelInFlight.set(params.executionId, promise)
+      void promise
+        .finally(() => this.cancelInFlight.delete(params.executionId))
+        .catch(() => undefined)
+    }
+    const result = await promise
+    if (requireRuntimeConfirmation && this.readWorkEffects(result.id).cancellationPending) {
+      throw new RpcMethodError(
+        'NOT_READY',
+        'Work is stopped, but process cancellation is unconfirmed; retry termination',
+      )
+    }
+    return result
+  }
+
+  private async cancelInternal(
+    params: ExecutionCancelParams,
+    requireRuntimeConfirmation: boolean,
+  ): Promise<Execution> {
     const execution = this.get(params.executionId)
-    // D-2：取消排队中的执行时，把内存队列里的条目一并清掉，避免 Map 单调增长。
+    const wasQueued =
+      this.queued.has(execution.id) || this.readWorkEffects(execution.id).queued === true
     this.queued.delete(params.executionId)
-    if (isTerminalExecutionState(execution.status)) return execution
+    if (
+      isTerminalExecutionState(execution.status) &&
+      !this.readWorkEffects(execution.id).cancellationPending
+    )
+      return execution
+    const runtimeNeeded = !wasQueued
+    this.executions.mergeRecoveryState(
+      execution.id,
+      { cancellationPending: runtimeNeeded },
+      this.now(),
+    )
+    if (isTerminalExecutionState(execution.status)) {
+      await this.requestRuntimeCancel(execution.id, requireRuntimeConfirmation)
+      return this.get(execution.id)
+    }
 
     const now = this.now()
     const previous = execution.status
@@ -530,20 +744,34 @@ export class ExecutionService {
     // S4-5 O-2：取消也是终态迁移，必须通知工作流桥接，否则 NodeRun 会停在 running。
     this.notifyExecutionFinished(execution.id)
 
+    if (runtimeNeeded) await this.requestRuntimeCancel(execution.id, requireRuntimeConfirmation)
+    return this.get(execution.id)
+  }
+
+  private async requestRuntimeCancel(executionId: string, confirmTerminal: boolean): Promise<void> {
+    await this.spawnInFlight.get(executionId)?.catch(() => undefined)
+    if (!this.readWorkEffects(executionId).cancellationPending) return
     try {
-      await this.runtime.cancel(execution.id)
+      await this.runtime.cancel(executionId)
+      if (confirmTerminal) await this.confirmRuntimeTerminal(executionId)
+      this.executions.mergeRecoveryState(executionId, { cancellationPending: false }, this.now())
     } catch (error) {
-      // Daemon 侧取消失败：状态已按用户意图终结，记录可追踪的失败原因。
-      // S55-2B-1B：用 json_patch 键级合并，保留 terminalProcessing 等既有键。
       const message = error instanceof Error ? error.message : String(error)
-      this.logger?.warn('daemon cancel failed', { executionId: execution.id, error: message })
+      this.logger?.warn('daemon cancel failed', { executionId, error: message })
       this.executions.mergeRecoveryState(
-        execution.id,
-        { reason: 'cancel_failed', message },
+        executionId,
+        { cancellationPending: true, reason: 'cancel_failed', message },
         this.now(),
       )
     }
-    return this.get(execution.id)
+  }
+
+  private async confirmRuntimeTerminal(executionId: string): Promise<void> {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (isTerminalExecutionState((await this.runtime.status(executionId)).status)) return
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    throw new Error('Daemon process did not reach a terminal state after cancellation')
   }
 
   /** executionId → node_run_id（工作流桥接用）。 */
@@ -969,6 +1197,7 @@ export class ExecutionService {
 
   private handleOutput(event: RuntimeEvent): void {
     const payload = ExecutionOutputPayload.parse(event.payload)
+    payload.content = redactOutput(payload.content)
     const execution = this.executions.get(payload.executionId)
     if (!execution) {
       this.logger?.warn('output event for unknown execution', { executionId: payload.executionId })
@@ -1182,7 +1411,10 @@ export class ExecutionService {
         const active = this.executions.countActiveByAgent(agentId)
         if (active >= agent.maxConcurrency) return
 
-        const [next] = this.executions.listQueuedByAgent(agentId, 1)
+        const next = this.executions.listQueuedByAgent(agentId, 1000).find((candidate) => {
+          const owner = this.executions.findOwningWork(candidate.id)
+          return !owner || this.works.get(owner.workId)?.status === 'active'
+        })
         if (!next) return
         const job = this.queued.get(next.id)
         this.queued.delete(next.id)

@@ -178,6 +178,17 @@ export class ExecutionRepository {
     return rows.map(toExecution)
   }
 
+  /** 包含终态：取消 RPC 失败时需用持久 cancellationPending 在重启后继续收敛。 */
+  listByWork(workId: string): Execution[] {
+    return (
+      this.db
+        .prepare(`${SELECT_EXECUTION}
+      JOIN assignments owner ON owner.id = s.assignment_id
+      WHERE owner.work_id = ? ORDER BY e.created_at, e.id`)
+        .all(workId) as ExecutionRow[]
+    ).map(toExecution)
+  }
+
   listActive(): Execution[] {
     const rows = this.db
       .prepare(
