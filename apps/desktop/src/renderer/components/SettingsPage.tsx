@@ -117,12 +117,10 @@ export function SettingsPage({
                   key={provider.id}
                   style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}
                 >
-                  <span className="mono" style={{ minWidth: 90 }}>
-                    {provider.id}
-                  </span>
                   <span style={{ flex: 1 }}>{provider.providerName}</span>
-                  <span className="faint">{provider.version ?? '—'}</span>
-                  <StatusBadge status={provider.healthStatus} />
+                  <span title={provider.healthDetail ?? undefined}>
+                    <StatusBadge status={provider.healthStatus} />
+                  </span>
                 </div>
               ))}
             </div>

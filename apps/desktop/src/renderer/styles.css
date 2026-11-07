@@ -2506,3 +2506,66 @@ a {
   background: #e4ecf5;
   color: #35597a;
 }
+
+/* 底部 Provider 健康入口 + 轻量弹层 */
+.status-providers {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.status-providers:hover,
+.status-providers.active {
+  color: var(--text);
+}
+
+.provider-popover {
+  position: fixed;
+  right: 16px;
+  bottom: 44px;
+  z-index: 960;
+  width: 320px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 14%);
+}
+
+.provider-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-popover-head strong {
+  font-size: 12.5px;
+}
+
+.provider-popover-list {
+  display: grid;
+  gap: 6px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.provider-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.provider-popover-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

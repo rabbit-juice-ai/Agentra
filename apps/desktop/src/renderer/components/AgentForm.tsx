@@ -28,6 +28,13 @@ function parseToolList(value: string): string[] {
 }
 
 /** 纯表单：只收集输入并回调，校验与持久化在 Core（Zod）完成。 */
+const PROVIDER_HEALTH_LABEL: Record<string, string> = {
+  healthy: '健康',
+  unauthenticated: '未认证',
+  unavailable: '不可用',
+  unknown: '未知',
+}
+
 export function AgentForm({ providers, initial, busy, onSubmit, onCancel }: Props) {
   const [name, setName] = useState('')
   const [role, setRole] = useState('')
@@ -162,7 +169,8 @@ export function AgentForm({ providers, initial, busy, onSubmit, onCancel }: Prop
             <option value="">（自动选择健康 Provider）</option>
             {providers.map((provider) => (
               <option key={provider.id} value={provider.id}>
-                {provider.providerName} · {provider.healthStatus}
+                {provider.providerName} ·{' '}
+                {PROVIDER_HEALTH_LABEL[provider.healthStatus] ?? provider.healthStatus}
               </option>
             ))}
           </select>

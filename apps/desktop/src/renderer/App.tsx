@@ -8,6 +8,7 @@ import { PlanPage } from './components/PlanPage'
 import { ProjectsPage } from './components/ProjectsPage'
 import { providerMark, providerMarkClass } from './components/ProviderBadge'
 import { SettingsPage } from './components/SettingsPage'
+import { StatusBadge } from './components/StatusBadge'
 import { TeamsPage } from './components/TeamsPage'
 import { WorksPage } from './components/WorksPage'
 import { ApprovalsPage } from './features/approvals/ApprovalsPage'
@@ -91,7 +92,19 @@ export function App() {
   const [tab, setTab] = useState<Tab>(__AGENTRA_DEV_CONSOLE__ ? 'console' : 'overview')
   const [createWorkSignal, setCreateWorkSignal] = useState(0)
   const [projectFilter, setProjectFilter] = useState<string | null>(null)
+  const [providersOpen, setProvidersOpen] = useState(false)
   const pendingApprovals = usePendingApprovalCount()
+
+  useEffect(() => {
+    if (!providersOpen) return
+    const onDown = (event: MouseEvent): void => {
+      const target = event.target as Element | null
+      if (target?.closest('.provider-popover') || target?.closest('.status-providers')) return
+      setProvidersOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [providersOpen])
 
   const healthyProviders = store.providers.filter(
     (provider) => provider.healthStatus === 'healthy',
@@ -145,49 +158,6 @@ export function App() {
         ))}
 
         <div className="sidebar-foot">
-          <div className="provider-card">
-            <div className="provider-card-head">
-              Providers
-              <span
-                className="pill done plain"
-                style={{ marginLeft: 'auto', height: 18, fontSize: 9.5 }}
-              >
-                {healthyProviders}/{store.providers.length} 正常
-              </span>
-              <button
-                type="button"
-                className="btn btn-ghost btn-icon btn-sm"
-                title="重新发现 Provider"
-                onClick={() => void store.actions.refreshProviderDiscovery()}
-              >
-                <Icon name="refresh" size={12} />
-              </button>
-            </div>
-            {store.providers.length === 0 ? (
-              <div className="faint" style={{ fontSize: 11 }}>
-                尚未发现 Provider
-              </div>
-            ) : (
-              store.providers.slice(0, 3).map((provider) => (
-                <div className="provider-line" key={provider.id}>
-                  <span className={`provider-mark ${providerMarkClass(provider.providerName)}`}>
-                    {providerMark(provider.providerName)}
-                  </span>
-                  <span>{provider.providerName}</span>
-                  <span className="ver">{provider.version ?? '—'}</span>
-                  <span
-                    className={`dot ${provider.healthStatus === 'healthy' ? '' : 'red'}`}
-                    title={provider.healthStatus}
-                  />
-                </div>
-              ))
-            )}
-            {store.providers.length > 3 && (
-              <div className="faint" style={{ fontSize: 10 }}>
-                另有 {store.providers.length - 3} 个 Provider
-              </div>
-            )}
-          </div>
           <button
             type="button"
             className={`side-settings ${tab === 'settings' ? 'active' : ''}`}
@@ -321,16 +291,65 @@ export function App() {
             <span className={`dot ${store.daemonHealth ? '' : 'red'}`} />
             Daemon {store.daemonHealth ? '正常' : '断连'}
           </span>
-          <span className="status-item">
+          <button
+            type="button"
+            className={`status-item status-providers ${providersOpen ? 'active' : ''}`}
+            title="查看已发现的 Provider"
+            onClick={() => setProvidersOpen((value) => !value)}
+          >
             <span className={`dot ${healthyProviders > 0 ? 'blue' : 'red'}`} />
             {healthyProviders}/{store.providers.length} Provider 健康
-          </span>
+          </button>
           <span className="right">
             <span>协议 {store.coreHealth?.protocolVersion ?? '—'}</span>
             <span>本地数据</span>
           </span>
         </div>
       </div>
+
+      {providersOpen && (
+        <div className="provider-popover" role="dialog" aria-label="Providers">
+          <div className="provider-popover-head">
+            <strong>Providers</strong>
+            <span className="faint" style={{ fontSize: 10.5 }}>
+              {healthyProviders}/{store.providers.length} 健康
+            </span>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={store.busy}
+              onClick={() => void store.actions.refreshProviderDiscovery()}
+            >
+              {store.busy ? '刷新中…' : '刷新'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-icon btn-sm"
+              onClick={() => setProvidersOpen(false)}
+              aria-label="关闭"
+            >
+              ×
+            </button>
+          </div>
+          {store.providers.length === 0 ? (
+            <div className="empty-state" style={{ padding: '12px 0' }}>
+              尚未发现 Provider
+            </div>
+          ) : (
+            <div className="provider-popover-list">
+              {store.providers.map((provider) => (
+                <div className="provider-popover-row" key={provider.id}>
+                  <span className={`provider-mark ${providerMarkClass(provider.providerName)}`}>
+                    {providerMark(provider.providerName)}
+                  </span>
+                  <span className="provider-popover-name">{provider.providerName}</span>
+                  <StatusBadge status={provider.healthStatus} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {store.banner && (
         <div className="toast-stack" aria-live="polite">
