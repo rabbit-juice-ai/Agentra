@@ -291,65 +291,69 @@ export function App() {
             <span className={`dot ${store.daemonHealth ? '' : 'red'}`} />
             Daemon {store.daemonHealth ? '正常' : '断连'}
           </span>
-          <button
-            type="button"
-            className={`status-item status-providers ${providersOpen ? 'active' : ''}`}
-            title="查看已发现的 Provider"
-            onClick={() => setProvidersOpen((value) => !value)}
-          >
-            <span className={`dot ${healthyProviders > 0 ? 'blue' : 'red'}`} />
-            {healthyProviders}/{store.providers.length} Provider 健康
-          </button>
+          <span className="provider-anchor">
+            <button
+              type="button"
+              className={`status-item status-providers ${providersOpen ? 'active' : ''}`}
+              title="查看已发现的 Provider"
+              onClick={() => setProvidersOpen((value) => !value)}
+            >
+              <span className={`dot ${healthyProviders > 0 ? 'blue' : 'red'}`} />
+              {healthyProviders}/{store.providers.length} Provider 健康
+            </button>
+            {providersOpen && (
+              <div className="provider-popover" role="dialog" aria-label="Providers">
+                <div className="provider-popover-head">
+                  <strong>Providers</strong>
+                  <span className="faint" style={{ fontSize: 10.5 }}>
+                    {healthyProviders}/{store.providers.length} 健康
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-icon btn-sm"
+                    title={store.busy ? '刷新中…' : '刷新'}
+                    disabled={store.busy}
+                    onClick={() => void store.actions.refreshProviderDiscovery()}
+                  >
+                    <Icon name="refresh" size={13} />
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="provider-popover-close"
+                  onClick={() => setProvidersOpen(false)}
+                  aria-label="关闭"
+                >
+                  ×
+                </button>
+                {store.providers.length === 0 ? (
+                  <div className="empty-state" style={{ padding: '12px 0' }}>
+                    尚未发现 Provider
+                  </div>
+                ) : (
+                  <div className="provider-popover-list">
+                    {store.providers.map((provider) => (
+                      <div className="provider-popover-row" key={provider.id}>
+                        <span
+                          className={`provider-mark ${providerMarkClass(provider.providerName)}`}
+                        >
+                          {providerMark(provider.providerName)}
+                        </span>
+                        <span className="provider-popover-name">{provider.providerName}</span>
+                        <StatusBadge status={provider.healthStatus} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </span>
           <span className="right">
             <span>协议 {store.coreHealth?.protocolVersion ?? '—'}</span>
             <span>本地数据</span>
           </span>
         </div>
       </div>
-
-      {providersOpen && (
-        <div className="provider-popover" role="dialog" aria-label="Providers">
-          <div className="provider-popover-head">
-            <strong>Providers</strong>
-            <span className="faint" style={{ fontSize: 10.5 }}>
-              {healthyProviders}/{store.providers.length} 健康
-            </span>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              disabled={store.busy}
-              onClick={() => void store.actions.refreshProviderDiscovery()}
-            >
-              {store.busy ? '刷新中…' : '刷新'}
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-icon btn-sm"
-              onClick={() => setProvidersOpen(false)}
-              aria-label="关闭"
-            >
-              ×
-            </button>
-          </div>
-          {store.providers.length === 0 ? (
-            <div className="empty-state" style={{ padding: '12px 0' }}>
-              尚未发现 Provider
-            </div>
-          ) : (
-            <div className="provider-popover-list">
-              {store.providers.map((provider) => (
-                <div className="provider-popover-row" key={provider.id}>
-                  <span className={`provider-mark ${providerMarkClass(provider.providerName)}`}>
-                    {providerMark(provider.providerName)}
-                  </span>
-                  <span className="provider-popover-name">{provider.providerName}</span>
-                  <StatusBadge status={provider.healthStatus} />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {store.banner && (
         <div className="toast-stack" aria-live="polite">

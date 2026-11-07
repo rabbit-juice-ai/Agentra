@@ -2523,10 +2523,15 @@ a {
   color: var(--text);
 }
 
+.provider-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
 .provider-popover {
-  position: fixed;
-  right: 16px;
-  bottom: 44px;
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
   z-index: 960;
   width: 320px;
   padding: 12px;
@@ -2542,10 +2547,32 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding-right: 24px;
 }
 
 .provider-popover-head strong {
   font-size: 12.5px;
+}
+
+.provider-popover-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.provider-popover-close:hover {
+  color: var(--text);
 }
 
 .provider-popover-list {
