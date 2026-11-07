@@ -28,22 +28,16 @@ const capabilities = {
 const agent = {
   id: 'agt-1',
   name: 'Frontend',
-  role: 'engineer',
+  avatar: '🧑‍💻',
   description: '',
   systemPrompt: '',
-  skills: ['react'],
-  capabilities: {
-    taskTypes: ['frontend'],
-    inputTypes: ['spec'],
-    outputTypes: ['code'],
-    canVerify: [],
-    canApprove: [],
-    excludedTaskTypes: [],
-  },
+  skillIds: ['skl-react'],
+  accessMode: 'edit',
+  systemKind: null,
   model: null,
   toolPermissions: { version: 1, allow: ['Read'], deny: [] },
-  defaultProviderId: null,
-  maxConcurrency: 1,
+  defaultProviderId: 'claude-code',
+  maxConcurrency: 5,
   status: 'active',
   createdAt: '2026-10-30T00:00:00.000Z',
   updatedAt: '2026-10-30T00:00:00.000Z',
@@ -163,68 +157,47 @@ describe('method params', () => {
     ).toBe(false)
   })
 
-  it('validates tool permissions (U3)', () => {
-    const base = { name: 'A', role: 'engineer' }
-    const ok = { version: 1, allow: ['Read', 'Edit'], deny: ['Bash'] }
-    expect(AgentCreateParams.safeParse({ ...base, toolPermissions: ok }).success).toBe(true)
-
-    // allow 与 deny 冲突：写入时拒绝
-    const conflict = { version: 1, allow: ['Bash'], deny: ['Bash'] }
-    expect(AgentCreateParams.safeParse({ ...base, toolPermissions: conflict }).success).toBe(false)
-
-    // 单项超过 200 字符
-    const longName = { version: 1, allow: ['x'.repeat(201)], deny: [] }
-    expect(AgentCreateParams.safeParse({ ...base, toolPermissions: longName }).success).toBe(false)
-
-    // 单清单超过 100 项
-    const tooMany = {
-      version: 1,
-      allow: Array.from({ length: 101 }, (_, i) => `tool-${i}`),
-      deny: [],
-    }
-    expect(AgentCreateParams.safeParse({ ...base, toolPermissions: tooMany }).success).toBe(false)
-
-    // 未知版本
+  it('validates agent creation input and removed fields', () => {
+    const base = { name: 'A', defaultProviderId: 'claude-code' }
+    expect(AgentCreateParams.safeParse(base).success).toBe(true)
     expect(
-      AgentCreateParams.safeParse({ ...base, toolPermissions: { version: 2, allow: [], deny: [] } })
-        .success,
+      AgentCreateParams.safeParse({ name: '', defaultProviderId: 'claude-code' }).success,
     ).toBe(false)
+    expect(AgentCreateParams.safeParse({ name: 'A' }).success).toBe(false)
+    expect(AgentCreateParams.safeParse({ name: 'A', defaultProviderId: '' }).success).toBe(false)
+    expect(AgentCreateParams.safeParse({ ...base, accessMode: 'analyze' }).success).toBe(true)
+    expect(AgentCreateParams.safeParse({ ...base, accessMode: 'write' }).success).toBe(false)
+    expect(AgentCreateParams.safeParse({ ...base, maxConcurrency: 0 }).success).toBe(false)
+    expect(AgentCreateParams.safeParse({ ...base, skillIds: ['skl-1'] }).success).toBe(true)
 
-    // 重复项：比较前先 trim（[" Read", "Read"] 视为重复）
+    // 头像：短 emoji 或图片 data URL；拒绝 SVG 与大体积字符串。
     expect(
       AgentCreateParams.safeParse({
         ...base,
-        toolPermissions: { version: 1, allow: ['Read', 'Read'], deny: [] },
-      }).success,
-    ).toBe(false)
-    expect(
-      AgentCreateParams.safeParse({
-        ...base,
-        toolPermissions: { version: 1, allow: [' Read', 'Read'], deny: [] },
-      }).success,
-    ).toBe(false)
-    expect(
-      AgentCreateParams.safeParse({
-        ...base,
-        toolPermissions: { version: 1, allow: ['Read'], deny: [' Read '] },
-      }).success,
-    ).toBe(false)
-
-    // 只含空白的项不参与重复判定（Core 归一化时过滤），不构成新的拒绝
-    expect(
-      AgentCreateParams.safeParse({
-        ...base,
-        toolPermissions: { version: 1, allow: [' ', '  '], deny: [] },
+        avatar: 'data:image/png;base64,iVBORw0KGgo=',
       }).success,
     ).toBe(true)
-  })
+    expect(
+      AgentCreateParams.safeParse({
+        ...base,
+        avatar: 'data:image/svg+xml;base64,PHN2Zz4=',
+      }).success,
+    ).toBe(false)
+    expect(AgentCreateParams.safeParse({ ...base, avatar: 'x'.repeat(40) }).success).toBe(false)
 
-  it('validates agent creation input', () => {
-    expect(AgentCreateParams.safeParse({ name: 'A', role: 'engineer' }).success).toBe(true)
-    expect(AgentCreateParams.safeParse({ name: '', role: 'engineer' }).success).toBe(false)
-    expect(AgentCreateParams.safeParse({ name: 'A', role: 'r', maxConcurrency: 0 }).success).toBe(
-      false,
-    )
+    // 已删除的字段必须被 strict 拒绝，防止旧客户端悄悄写回。
+    expect(
+      AgentCreateParams.safeParse({
+        ...base,
+        role: 'engineer',
+        capabilities: { taskTypes: ['frontend'] },
+        toolPermissions: { version: 1, allow: ['Read'], deny: [] },
+      }).success,
+    ).toBe(false)
+    expect(
+      AgentCreateParams.safeParse({ ...base, toolPermissions: { version: 1, allow: [], deny: [] } })
+        .success,
+    ).toBe(false)
   })
 
   it('requires all nine capabilities on daemon start', () => {

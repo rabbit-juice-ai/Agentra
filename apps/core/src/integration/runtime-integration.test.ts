@@ -15,6 +15,7 @@ import { ExecutionLogRepository } from '../db/repositories/execution-log-reposit
 import { ExecutionRepository } from '../db/repositories/execution-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
+import { SkillRepository } from '../db/repositories/skill-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { AgentService } from '../services/agent-service'
 import { CoreEventHub } from '../services/event-hub'
@@ -65,11 +66,15 @@ describe('core ↔ daemon runtime integration', () => {
     const registry = new ProviderRegistry(providerRepository, runtime)
     await registry.refresh()
 
-    const agentService = new AgentService(db, agentRepository, providerRepository)
+    const agentService = new AgentService(
+      db,
+      agentRepository,
+      providerRepository,
+      new SkillRepository(db),
+    )
     agentId = agentService.create({
       name: 'Integration Worker',
-      role: 'engineer',
-      toolPermissions: { version: 1, allow: ['Read'], deny: [] },
+      defaultProviderId: 'claude-code',
     }).id
 
     service = new ExecutionService({

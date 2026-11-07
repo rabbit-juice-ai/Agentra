@@ -191,16 +191,8 @@ async function seed(h: Awaited<ReturnType<typeof harness>>, promptA = 'TASK_A') 
   await h.ok('work.activate', { id: work.id })
   const { agent } = (await h.ok('agent.create', {
     name: 'Fixture Agent',
-    role: 'dev',
-    capabilities: {
-      taskTypes: ['dev'],
-      inputTypes: [],
-      outputTypes: [],
-      canVerify: [],
-      canApprove: [],
-      excludedTaskTypes: [],
-    },
-    toolPermissions: { version: 1, allow: ['Read'], deny: [] },
+    defaultProviderId: 'claude-code',
+    accessMode: 'edit',
   })) as { agent: { id: string } }
   await h.ok('assignment.create', { workId: work.id, agentId: agent.id, workRole: 'dev' })
   const plan = await seedPlan(h, work.id, agent.id, promptA)

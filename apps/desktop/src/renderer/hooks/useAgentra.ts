@@ -9,10 +9,14 @@ import type {
   ProjectCreateParams,
   ProjectUpdateParams,
   RuntimeProviderRecord,
+  Skill,
+  SkillCreateParams,
+  SkillUpdateParams,
   Team,
   TeamCreateParams,
   TeamMember,
   TeamMemberAddParams,
+  TeamUpdateParams,
   Work,
   WorkCreateParams,
   Worktree,
@@ -42,6 +46,7 @@ export type BannerMessage = {
  */
 export function useAgentra() {
   const [agents, setAgents] = useState<AgentProfile[]>([])
+  const [skills, setSkills] = useState<Skill[]>([])
   const [teams, setTeams] = useState<Team[]>([])
   const [works, setWorks] = useState<Work[]>([])
   const [projects, setProjects] = useState<Project[]>([])
@@ -124,6 +129,14 @@ export function useAgentra() {
   const refreshAgents = useCallback(async () => {
     try {
       setAgents(await api.listAgents())
+    } catch (error) {
+      reportError(error)
+    }
+  }, [reportError])
+
+  const refreshSkills = useCallback(async () => {
+    try {
+      setSkills(await api.listSkills())
     } catch (error) {
       reportError(error)
     }
@@ -234,6 +247,7 @@ export function useAgentra() {
 
   useEffect(() => {
     void refreshAgents()
+    void refreshSkills()
     void refreshProviders()
     void refreshExecutions()
     void refreshHealth()
@@ -247,6 +261,7 @@ export function useAgentra() {
     return () => clearInterval(timer)
   }, [
     refreshAgents,
+    refreshSkills,
     refreshProviders,
     refreshExecutions,
     refreshHealth,
@@ -260,6 +275,7 @@ export function useAgentra() {
   useEffect(() => {
     return api.onCoreReady(() => {
       void refreshAgents()
+      void refreshSkills()
       void refreshProviders()
       void refreshExecutions()
       void refreshHealth()
@@ -270,6 +286,7 @@ export function useAgentra() {
     })
   }, [
     refreshAgents,
+    refreshSkills,
     refreshProviders,
     refreshExecutions,
     refreshHealth,
@@ -354,6 +371,62 @@ export function useAgentra() {
       }
     },
     [refreshAgents, reportError, showBanner],
+  )
+
+  const createSkill = useCallback(
+    async (params: SkillCreateParams): Promise<boolean> => {
+      setBusy(true)
+      try {
+        await api.createSkill(params)
+        await refreshSkills()
+        showBanner('技能已创建', { tone: 'success' })
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshSkills, reportError, showBanner],
+  )
+
+  const updateSkill = useCallback(
+    async (params: SkillUpdateParams): Promise<boolean> => {
+      setBusy(true)
+      try {
+        await api.updateSkill(params)
+        await refreshSkills()
+        // Agent 列表展示技能名称；重命名后需要同步。
+        await refreshAgents()
+        showBanner('技能已更新', { tone: 'success' })
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshSkills, refreshAgents, reportError, showBanner],
+  )
+
+  const deleteSkill = useCallback(
+    async (id: string): Promise<void> => {
+      setBusy(true)
+      try {
+        await api.deleteSkill(id)
+        await refreshSkills()
+        // 删除会从所有 Agent 的引用中移除该技能。
+        await refreshAgents()
+        showBanner('技能已删除', { tone: 'success' })
+      } catch (error) {
+        reportError(error)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshSkills, refreshAgents, reportError, showBanner],
   )
 
   const refreshProviderDiscovery = useCallback(async (): Promise<void> => {
@@ -441,11 +514,45 @@ export function useAgentra() {
       try {
         await api.createTeam(params)
         await refreshTeams()
-        showBanner('Team 已创建', { tone: 'success' })
+        showBanner('团队已创建', { tone: 'success' })
         return true
       } catch (error) {
         reportError(error)
         return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshTeams, reportError, showBanner],
+  )
+
+  const updateTeam = useCallback(
+    async (params: TeamUpdateParams): Promise<boolean> => {
+      setBusy(true)
+      try {
+        await api.updateTeam(params)
+        await refreshTeams()
+        showBanner('团队已更新', { tone: 'success' })
+        return true
+      } catch (error) {
+        reportError(error)
+        return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshTeams, reportError, showBanner],
+  )
+
+  const archiveTeam = useCallback(
+    async (id: string): Promise<void> => {
+      setBusy(true)
+      try {
+        await api.archiveTeam(id)
+        await refreshTeams()
+        showBanner('团队已归档', { tone: 'success' })
+      } catch (error) {
+        reportError(error)
       } finally {
         setBusy(false)
       }
@@ -459,11 +566,27 @@ export function useAgentra() {
       try {
         await api.addTeamMember(params)
         await refreshTeamMembers(params.teamId)
-        showBanner('成员已加入 Team', { tone: 'success' })
+        showBanner('成员已加入团队', { tone: 'success' })
         return true
       } catch (error) {
         reportError(error)
         return false
+      } finally {
+        setBusy(false)
+      }
+    },
+    [refreshTeamMembers, reportError, showBanner],
+  )
+
+  const removeTeamMember = useCallback(
+    async (teamId: string, agentId: string): Promise<void> => {
+      setBusy(true)
+      try {
+        await api.removeTeamMember(teamId, agentId)
+        await refreshTeamMembers(teamId)
+        showBanner('成员已移出团队', { tone: 'success' })
+      } catch (error) {
+        reportError(error)
       } finally {
         setBusy(false)
       }
@@ -631,6 +754,7 @@ export function useAgentra() {
 
   return {
     agents,
+    skills,
     teams,
     works,
     projects,
@@ -649,6 +773,10 @@ export function useAgentra() {
       updateAgent,
       archiveAgent,
       setAgentStatus,
+      refreshSkills,
+      createSkill,
+      updateSkill,
+      deleteSkill,
       refreshProviderDiscovery,
       startExecution,
       selectExecution,
@@ -657,7 +785,10 @@ export function useAgentra() {
       sendMessage,
       refreshExecutions,
       createTeam,
+      updateTeam,
+      archiveTeam,
       addTeamMember,
+      removeTeamMember,
       refreshTeamMembers,
       createProject,
       updateProject,

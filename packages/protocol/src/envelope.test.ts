@@ -19,9 +19,10 @@ describe('protocol version', () => {
   })
 })
 
-describe('RpcError 与 25 个错误码', () => {
-  it('exposes exactly 25 codes including maintenance, recovery and restore codes', () => {
-    expect(RpcErrorCode.options).toHaveLength(25)
+describe('RpcError 与 26 个错误码', () => {
+  it('exposes exactly 26 codes including maintenance, recovery, restore and skill codes', () => {
+    expect(RpcErrorCode.options).toHaveLength(26)
+    expect(RpcErrorCode.options).toContain('SKILL_NOT_FOUND')
     expect(RpcErrorCode.options).toContain('UNKNOWN_NODE_TYPE')
     expect(RpcErrorCode.options).toContain('MAINTENANCE_ACTIVE')
     expect(RpcErrorCode.options).toContain('RECOVERY_LOCKED')

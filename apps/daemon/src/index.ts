@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import { PROTOCOL_VERSION } from '@agentra/protocol'
 import {
+  AntigravityProvider,
   ClaudeCodeProvider,
   CodeBuddyProvider,
   CodexProvider,
@@ -29,6 +30,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     new GeminiProvider({ discovery: { env } }),
     new CodeBuddyProvider({ discovery: { env } }),
     new GrokProvider({ discovery: { env } }),
+    new AntigravityProvider({ discovery: { env } }),
   ]
   // 启动即发现：把路径/版本/认证状态带入进程，供 Core 的 runtime.provider.refresh 读取。
   for (const provider of providers) {

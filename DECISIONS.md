@@ -301,6 +301,43 @@
 - 任务详情：概览只保留任务信息；Assignment/关联团队归入「团队」tab，Git Worktree/任务设置归入「设置」tab，交付物归入「交付物」tab，互不重复。
 - Provider：新增 CodeBuddy（Claude Code 兼容 stream-json 会话）与 Grok CLI（headless `streaming-messages-json`）自动发现和适配器；Grok 通过 `grok models` 检测未登录并显示「未认证」，CodeBuddy 认证状态在首次执行时校验。当前共发现 5 个 Provider：Claude Code、CodeBuddy、Codex、Gemini CLI、Grok CLI。
 
+### D-032：Agent 权限模型、全局技能库、模型选择与 Antigravity CLI（2026-11-07，用户批准）
+
+- 背景：Agent 表单同时暴露角色、技能、任务类型、可验收/可审批类型、允许/禁止工具，语义重叠且用户难以理解。用户要求按「测试不能改代码、研发不能分析 PRD」的方式做权限分离，并把技能改成全局库供 Agent 选择。
+- Agent 模型：
+  - 删除 `role`、`capabilities`（taskTypes/inputTypes/outputTypes/canVerify/canApprove/excludedTaskTypes）、`skills` 自由文本与手工 `toolPermissions` 入参。
+  - 新增唯一的 `accessMode`：`analyze`（只读分析）与 `edit`（编辑）。工具策略由 Core 按权限派生：analyze 允许 Read/Grep/Glob/WebFetch/WebSearch/Bash、拒绝 Write/Edit/MultiEdit/NotebookEdit；edit 允许读写与命令。
+  - 新增 `avatar`（默认 🤖）、`skillIds`（全局技能引用）、`systemKind`（仅 Planner 使用）。新建 Agent 必须显式选择 Provider，默认最大并发改为 5。
+  - Planner 通过 `systemKind='planner'` 识别系统 Agent，不再依赖可被用户修改的角色名；系统 Planner 的工作权限固定为 analyze。
+- 计划与选人：PlanTask 新增 `requiredAccessMode`，替代 `requiredCapabilities`。选人严格按权限匹配：analyze 任务只能交给只读分析 Agent，edit 任务只能交给编辑 Agent；Planner 提示词与确定性快速草稿同步更新。
+- 技能库：新表 `skills`（迁移 v23）；Agent 只保存 skillIds。执行时 Core 把所选技能指令追加到 Agent 的工作指令之后；删除技能会从事务内同步移除所有 Agent 引用。
+- Agent 表单：改为居中弹框，增加头像选择、Provider 必选、模型下拉（Core 内置目录 + 自定义模型 ID）、工作指令（原系统提示词）、工作权限、技能多选，并为每个字段提供淡色说明。
+- 头像：默认只显示一个头像，点击后展开 emoji 选择；支持上传本地 PNG/JPG/WebP/GIF，由桌面端居中裁剪为 128×128 的 data URL 存库（限制 300KB 字符长度，CSP 仅放开 `img-src data:`）。
+- AI 创建 Agent：Agents 页提供「新建 Agent」（手动）与「AI 创建」两个入口。AI 创建接收一句话需求，Core 通过系统 Agent「Agent 设计师」生成结构化 `AgentDraft`（名称、头像、擅长的工作与调用时机、工作指令、工作权限、技能引用、并发），生成后进入同一个创建表单，用户可继续调整；Provider 与模型仍由用户显式选择。生成失败返回确定性兜底草案并标注 `source=fallback`，不伪装成功。迁移 v24 重建 `agent_profiles`，允许 `system_kind='agent_designer'`。
+- 模型获取：`runtime.provider.models` 经 Daemon 读取「当前配置的真实模型」，不再只显示别名：
+  - Claude Code：读取 `ANTHROPIC_BASE_URL` 的 `/v1/models`（兼容 cc-switch 与 Anthropic 两种返回，依次尝试 Bearer 与 x-api-key），失败时回退 `settings.json`/env 中的 `ANTHROPIC_DEFAULT_*_MODEL_NAME` 映射。
+  - Codex：读取 cc-switch 模型目录（`~/.codex/cc-switch-model-catalog.json`）或 `config.toml`/env 中的 model。
+  - Antigravity：`agy models`；Grok：`grok models`。
+  - 其他 Provider 或读取失败时回退内置目录；结果标注 `source=provider|catalog`，表单自动拉取、分组展示、支持手动刷新与自定义模型 ID。
+  - 安全：模型探测可能读取 `~/.claude/settings.json` 中的 base URL/token，仅用于向用户配置的端点发起请求；不记录、不返回、不持久化凭据。
+- Provider：新增 Antigravity CLI（`agy -p ... --output-format stream-json`，二进制 `agy`，`agy models` 做认证探测）。Antigravity 没有逐工具 allow/deny 参数：edit Agent 使用 `--dangerously-skip-permissions` 放开工具，analyze Agent 保持默认审批模式（写入会被 CLI 软拒绝）。
+- 兼容：迁移 v23 按旧工具权限回填 accessMode（含写工具 → edit，否则 analyze），标记旧 Planner，随后删除 role/skills_json/capabilities_json 列。历史 Agent 若未绑定 Provider 仍可停用/归档，但新建与表单编辑必须选择 Provider。
+- 文档同步：README 产品面与 Provider 列表。
+
+### D-033：删除无执行语义的团队角色（2026-11-07，用户批准）
+
+- 背景：`team_members.team_role` 不参与任务执行。执行只认 `Assignment(workId, agentId, workRole)`、Agent `accessMode` 与工具权限；团队角色既不影响 Planner 选人，也不影响审批/验收，仅作为显示标签。
+- 决策：迁移 v25 删除 `team_members.team_role`；同步删除 `TeamMember` DTO、`TeamMemberAddParams.teamRole`、`TeamService.addMember` 参数、TeamRepository 映射/写入，以及 Teams 页的「团队角色」输入和展示。团队只保留 Agent 成员关系。
+- 边界：Assignment 的可选 `teamId` 与 Work↔Team 关联保留（仍只做组织展示与存在性校验，不影响执行）；`team_members.permissions_json` 暂时保留但当前无执行语义，若未来需要团队级权限需单独设计。
+
+### D-034：团队页按 Multica 小队重构 + 团队指引（2026-11-07，用户批准）
+
+- 背景：团队页信息结构弱；Multica 小队页把「成员 / 指引 / 近期工作」分区，并用 Squad Instructions 为队长提供路由规则、协作方式和全队背景。Agentra 没有队长派活模型，保留现有 Planner/Assignment/工作流选人语义。
+- 页面：左侧团队列表，右侧团队详情（名称、描述、成员数、关联任务数、创建时间）；详情 tabs 为「成员 / 指引 / 近期任务」；支持编辑团队名称与描述、归档团队、添加/移除成员。
+- 指引：新增 `teams.instructions`（迁移 v26，≤20,000 字符）。当 Agent 执行「关联到该团队的任务」且该 Agent 是团队成员时，Core 把 `# 团队指引 · <团队名>` 追加到系统提示词（位于 Agent 工作指令与技能之后）。它只提供共享上下文，不授予权限，也不改变 Assignment 或工作流选人。
+- 对齐 Multica：Multica 的 Squad Instructions 只提供给队长，用于路由/协作/背景；Agentra 没有队长，因此等价映射为「关联该团队任务的成员共享上下文」。本次不引入队长、自动派活或并发合并，避免与现有模型冲突。
+- 安全：指引属于任务上下文，不是系统指令来源；Agent 的工具权限仍由 accessMode 派生。
+
 ## 暂定事项（实施前需验证，不可当作已确认事实）
 
 1. ~~Antumi 当前仓库的准确技术栈、模块边界、可复用代码和许可证适用范围。~~ **已核实（2026-10-30）**：Apache-2.0，pnpm monorepo（core/daemon/desktop/protocol 等），core 用 node:sqlite+zod，daemon 用 node-pty，desktop 用 electron-vite；无工作流引擎。

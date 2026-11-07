@@ -1,7 +1,8 @@
-import type { StartExecutionConfig } from '@agentra/runtime-sdk'
+import type { ProviderModelInfo, StartExecutionConfig } from '@agentra/runtime-sdk'
 import { OneShotCliProvider, type OneShotParseState } from '../one-shot/provider'
 import { CODEX_CAPABILITIES, CODEX_PROVIDER_ID, CODEX_PROVIDER_NAME } from './capabilities'
 import { type DiscoveryOptions, discoverCodex, findCodexExecutable } from './discovery'
+import { discoverCodexModels } from './models'
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash'])
 
@@ -22,6 +23,14 @@ export class CodexProvider extends OneShotCliProvider {
 
   async discover() {
     return [await discoverCodex(this.discovery)]
+  }
+
+  /** 读取 cc-switch 模型目录或 Codex 当前配置的 model。 */
+  async listModels(): Promise<ProviderModelInfo[]> {
+    return discoverCodexModels({
+      env: this.discovery.env,
+      homeDir: this.discovery.homeDir,
+    })
   }
 
   protected argsFor(config: StartExecutionConfig): string[] {

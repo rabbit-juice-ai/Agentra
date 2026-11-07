@@ -1,5 +1,6 @@
 import type {
   AgentCreateParams,
+  AgentGenerateDraftResult,
   AgentProfile,
   AgentUpdateParams,
   ApprovalDecideParams,
@@ -38,9 +39,14 @@ import type {
   ProjectCreateParams,
   ProjectUpdateParams,
   RuntimeEvent,
+  RuntimeProviderModelsResult,
   RuntimeProviderRecord,
+  Skill,
+  SkillCreateParams,
+  SkillUpdateParams,
   TeamCreateParams,
   TeamMemberAddParams,
+  TeamUpdateParams,
   WorkCreateParams,
   WorkStatus,
 } from '@agentra/protocol'
@@ -78,11 +84,23 @@ export const api = {
     (await unwrap(window.agentra.updateAgent(params))).agent,
   archiveAgent: async (id: string): Promise<AgentProfile> =>
     (await unwrap(window.agentra.archiveAgent({ id }))).agent,
+  generateAgentDraft: async (brief: string): Promise<AgentGenerateDraftResult> =>
+    unwrap(window.agentra.generateAgentDraft({ brief })),
 
   listProviders: async (): Promise<RuntimeProviderRecord[]> =>
     (await unwrap(window.agentra.listProviders())).providers,
   refreshProviders: async (): Promise<RuntimeProviderRecord[]> =>
     (await unwrap(window.agentra.refreshProviders())).providers,
+  listProviderModels: async (providerId: string): Promise<RuntimeProviderModelsResult> =>
+    unwrap(window.agentra.listProviderModels({ providerId })),
+
+  listSkills: async (): Promise<Skill[]> => (await unwrap(window.agentra.listSkills())).skills,
+  createSkill: async (params: SkillCreateParams): Promise<Skill> =>
+    (await unwrap(window.agentra.createSkill(params))).skill,
+  updateSkill: async (params: SkillUpdateParams): Promise<Skill> =>
+    (await unwrap(window.agentra.updateSkill(params))).skill,
+  deleteSkill: async (id: string): Promise<boolean> =>
+    (await unwrap(window.agentra.deleteSkill({ id }))).deleted,
 
   generatePlan: async (params: PlanGenerateParams): Promise<PlanGenerateResult> =>
     unwrap(window.agentra.generatePlan(params)),
@@ -136,10 +154,15 @@ export const api = {
     (await unwrap(window.agentra.listTeams({ includeArchived }))).teams,
   createTeam: async (params: TeamCreateParams) =>
     (await unwrap(window.agentra.createTeam(params))).team,
+  updateTeam: async (params: TeamUpdateParams) =>
+    (await unwrap(window.agentra.updateTeam(params))).team,
+  archiveTeam: async (id: string) => (await unwrap(window.agentra.archiveTeam({ id }))).team,
   listTeamMembers: async (teamId: string) =>
     (await unwrap(window.agentra.listTeamMembers({ teamId }))).members,
   addTeamMember: async (params: TeamMemberAddParams) =>
     (await unwrap(window.agentra.addTeamMember(params))).member,
+  removeTeamMember: async (teamId: string, agentId: string) =>
+    (await unwrap(window.agentra.removeTeamMember({ teamId, agentId }))).removed,
 
   listProjects: async () => (await unwrap(window.agentra.listProjects())).projects,
   getProject: async (id: string) => (await unwrap(window.agentra.getProject({ id }))).project,

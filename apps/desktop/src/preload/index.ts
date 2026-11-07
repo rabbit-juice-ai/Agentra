@@ -16,9 +16,16 @@ const api: AgentraApi = {
   createAgent: (params) => ipcRenderer.invoke('agentra:agent-create', params),
   updateAgent: (params) => ipcRenderer.invoke('agentra:agent-update', params),
   archiveAgent: (params) => ipcRenderer.invoke('agentra:agent-archive', params),
+  generateAgentDraft: (params) => ipcRenderer.invoke('agentra:agent-generate-draft', params),
 
   listProviders: () => ipcRenderer.invoke('agentra:provider-list'),
   refreshProviders: () => ipcRenderer.invoke('agentra:provider-refresh'),
+  listProviderModels: (params) => ipcRenderer.invoke('agentra:provider-models', params),
+
+  listSkills: () => ipcRenderer.invoke('agentra:skill-list'),
+  createSkill: (params) => ipcRenderer.invoke('agentra:skill-create', params),
+  updateSkill: (params) => ipcRenderer.invoke('agentra:skill-update', params),
+  deleteSkill: (params) => ipcRenderer.invoke('agentra:skill-delete', params),
 
   generatePlan: (params) => ipcRenderer.invoke('agentra:plan-generate', params),
   getPlan: (params) => ipcRenderer.invoke('agentra:plan-get', params),
@@ -38,6 +45,7 @@ const api: AgentraApi = {
   listTeams: (params) => ipcRenderer.invoke('agentra:team-list', params ?? {}),
   getTeam: (params) => ipcRenderer.invoke('agentra:team-get', params),
   createTeam: (params) => ipcRenderer.invoke('agentra:team-create', params),
+  updateTeam: (params) => ipcRenderer.invoke('agentra:team-update', params),
   archiveTeam: (params) => ipcRenderer.invoke('agentra:team-archive', params),
   listTeamMembers: (params) => ipcRenderer.invoke('agentra:team-member-list', params),
   addTeamMember: (params) => ipcRenderer.invoke('agentra:team-member-add', params),

@@ -2,6 +2,7 @@ import type {
   ExecutionHandle,
   ExecutionStatus,
   InterruptResult,
+  ProviderModelInfo,
   RuntimeConfig,
   RuntimeEventListener,
   RuntimeHealth,
@@ -44,4 +45,6 @@ export interface RuntimeProvider {
   cancel(executionId: string): Promise<void>
   getStatus(executionId: string): Promise<ExecutionStatus>
   subscribe(executionId: string, listener: RuntimeEventListener): Unsubscribe
+  /** 可选：从 CLI 动态读取可用模型；不支持或失败时返回 []，Core 回退内置目录。 */
+  listModels?(): Promise<ProviderModelInfo[]>
 }

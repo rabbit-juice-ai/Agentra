@@ -7,6 +7,8 @@ export function providerMark(name: string): string {
   if (normalized.includes('claude')) return 'CC'
   if (normalized.includes('codex')) return 'CX'
   if (normalized.includes('gemini')) return 'GM'
+  if (normalized.includes('antigravity')) return 'AG'
+  if (normalized.includes('grok')) return 'GK'
   if (normalized.includes('cursor')) return 'CU'
   const words = name.trim().split(/\s+/).filter(Boolean)
   if (words.length >= 2) {
@@ -22,6 +24,8 @@ function variant(name: string): string {
   if (normalized.includes('codebuddy')) return 'cb'
   if (normalized.includes('codex')) return 'cx'
   if (normalized.includes('gemini')) return 'gm'
+  if (normalized.includes('antigravity')) return 'ag'
+  if (normalized.includes('grok')) return 'gk'
   return ''
 }
 
@@ -31,14 +35,14 @@ export function providerMarkClass(name: string): string {
 
 export function ProviderBadge({
   provider,
-  fallback = '自动选择',
+  fallback = '未绑定',
 }: {
   provider?: RuntimeProviderRecord | null
   fallback?: string
 }) {
   if (!provider) {
     return (
-      <span className="provider-badge" title="未指定默认 Provider，由 Core 选择健康 Provider">
+      <span className="provider-badge" title="未绑定 Provider；编辑 Agent 时必须显式选择">
         <span className="provider-mark">AU</span>
         {fallback}
       </span>

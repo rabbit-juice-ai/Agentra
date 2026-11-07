@@ -9,6 +9,7 @@ import { AssignmentRepository } from '../db/repositories/assignment-repository'
 import { AuditRepository } from '../db/repositories/audit-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
+import { SkillRepository } from '../db/repositories/skill-repository'
 import { TeamRepository } from '../db/repositories/team-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { AgentService } from './agent-service'
@@ -27,14 +28,35 @@ function harness() {
 
   db.prepare(
     `INSERT INTO runtime_providers (id, provider_type, provider_name, capabilities_json, health_status, created_at, updated_at)
-     VALUES ('claude-code', 'cli', 'Claude Code', '{}', 'healthy', ?, ?)`,
-  ).run(NOW, NOW)
+     VALUES ('claude-code', 'cli', 'Claude Code', ?, 'healthy', ?, ?)`,
+  ).run(
+    JSON.stringify({
+      streaming: 'native',
+      structuredEvents: 'native',
+      interrupt: 'native',
+      resume: 'native',
+      checkpoint: 'unsupported',
+      permissionRequests: 'native',
+      sessionPersistence: 'native',
+      workingDirectory: 'native',
+      toolControl: 'native',
+    }),
+    NOW,
+    NOW,
+  )
 
   const agentRepository = new AgentRepository(db)
   const providerRepository = new ProviderRepository(db)
-  const agents = new AgentService(db, agentRepository, providerRepository, () => NOW)
-  const agent = agents.create({ name: 'Worker', role: 'engineer' })
-  const otherAgent = agents.create({ name: 'Reviewer', role: 'reviewer' })
+  const skillRepository = new SkillRepository(db)
+  const agents = new AgentService(
+    db,
+    agentRepository,
+    providerRepository,
+    skillRepository,
+    () => NOW,
+  )
+  const agent = agents.create({ name: 'Worker', defaultProviderId: 'claude-code' })
+  const otherAgent = agents.create({ name: 'Reviewer', defaultProviderId: 'claude-code' })
 
   const teamRepository = new TeamRepository(db)
   const workRepository = new WorkRepository(db)
@@ -47,6 +69,7 @@ function harness() {
     agent,
     otherAgent,
     agentRepository,
+    skillRepository,
     agents,
     teams: new TeamService(db, teamRepository, agentRepository, () => NOW),
     works: new WorkService(db, workRepository, teamRepository, auditRepository, () => NOW),
@@ -69,60 +92,73 @@ afterEach(() => {
 })
 
 describe('AgentService', () => {
-  it('defaults capabilities to empty and persists structured capability updates', () => {
+  it('defaults to analyze access and re-derives tools when access mode changes', () => {
     const h = harness()
-    expect(h.agent.capabilities).toEqual({
-      taskTypes: [],
-      inputTypes: [],
-      outputTypes: [],
-      canVerify: [],
-      canApprove: [],
-      excludedTaskTypes: [],
-    })
+    expect(h.agent.accessMode).toBe('analyze')
+    expect(h.agent.skillIds).toEqual([])
 
     const created = h.agents.create({
       name: 'Frontend Agent',
-      role: 'dev',
-      capabilities: { taskTypes: ['frontend', 'react'], canVerify: ['frontend'] },
+      defaultProviderId: 'claude-code',
+      accessMode: 'edit',
       model: 'sonnet',
     })
-    expect(created.capabilities).toMatchObject({
-      taskTypes: ['frontend', 'react'],
-      canVerify: ['frontend'],
-      canApprove: [],
-    })
+    expect(created.accessMode).toBe('edit')
+    expect(created.toolPermissions.allow).toContain('Write')
     expect(created.model).toBe('sonnet')
 
     const updated = h.agents.update({
       id: created.id,
-      capabilities: { taskTypes: ['backend'], excludedTaskTypes: ['frontend'] },
+      accessMode: 'analyze',
       model: 'haiku',
     })
-    expect(updated.capabilities.taskTypes).toEqual(['backend'])
-    expect(updated.capabilities.excludedTaskTypes).toEqual(['frontend'])
+    expect(updated.accessMode).toBe('analyze')
+    expect(updated.toolPermissions.deny).toContain('Write')
     expect(updated.model).toBe('haiku')
-    expect(h.agents.get(created.id).capabilities.taskTypes).toEqual(['backend'])
+    expect(h.agents.get(created.id).accessMode).toBe('analyze')
     expect(h.agents.get(created.id).model).toBe('haiku')
   })
 
-  it('does not let capabilities change tool permissions', () => {
+  it('binds only existing skills from the global library', () => {
     const h = harness()
-    const created = h.agents.create({
-      name: 'Scoped Agent',
-      role: 'dev',
-      capabilities: { taskTypes: ['frontend'] },
-      toolPermissions: { version: 1, allow: ['Read'], deny: [] },
+    h.skillRepository.insert({
+      id: 'skl-1',
+      name: 'React',
+      description: '',
+      instructions: 'Use hooks.',
+      createdAt: NOW,
+      updatedAt: NOW,
     })
-    expect(created.capabilities.taskTypes).toEqual(['frontend'])
-    expect(created.toolPermissions).toEqual({ version: 1, allow: ['Read'], deny: [] })
+    const created = h.agents.create({
+      name: 'Skilled Agent',
+      defaultProviderId: 'claude-code',
+      skillIds: ['skl-1', 'skl-1'],
+    })
+    expect(created.skillIds).toEqual(['skl-1'])
+    expect(() =>
+      h.agents.create({
+        name: 'Ghost Agent',
+        defaultProviderId: 'claude-code',
+        skillIds: ['skl-missing'],
+      }),
+    ).toThrow(expect.objectContaining({ code: 'SKILL_NOT_FOUND' }))
   })
 })
 
 describe('TeamService', () => {
   it('creates, lists and archives teams', () => {
     const h = harness()
-    const team = h.teams.create({ name: '  Alpha  ', description: 'core team' })
-    expect(team).toMatchObject({ name: 'Alpha', status: 'active', archivedAt: null })
+    const team = h.teams.create({
+      name: '  Alpha  ',
+      description: 'core team',
+      instructions: '  先写测试  ',
+    })
+    expect(team).toMatchObject({
+      name: 'Alpha',
+      status: 'active',
+      archivedAt: null,
+      instructions: '先写测试',
+    })
     expect(h.teams.list().map((item) => item.id)).toContain(team.id)
 
     const archived = h.teams.archive(team.id)
@@ -130,6 +166,30 @@ describe('TeamService', () => {
     expect(archived.archivedAt).toBe(NOW)
     expect(h.teams.list().map((item) => item.id)).not.toContain(team.id)
     expect(h.teams.list(true).map((item) => item.id)).toContain(team.id)
+  })
+
+  it('updates name, description and instructions; archived teams are read-only', () => {
+    const h = harness()
+    const team = h.teams.create({ name: 'Alpha' })
+    const updated = h.teams.update(team.id, {
+      name: 'Beta',
+      description: 'new desc',
+      instructions: '前端先跑测试',
+    })
+    expect(updated).toMatchObject({
+      name: 'Beta',
+      description: 'new desc',
+      instructions: '前端先跑测试',
+    })
+    expect(h.teams.get(team.id).instructions).toBe('前端先跑测试')
+    expect(() => h.teams.update(team.id, { name: '   ' })).toThrow(
+      expect.objectContaining({ code: 'INVALID_PARAMS' }),
+    )
+
+    h.teams.archive(team.id)
+    expect(() => h.teams.update(team.id, { instructions: 'x' })).toThrow(
+      expect.objectContaining({ code: 'INVALID_PARAMS' }),
+    )
   })
 
   it('rejects blank names and unknown teams', () => {
@@ -146,18 +206,18 @@ describe('TeamService', () => {
     const h = harness()
     const team = h.teams.create({ name: 'Alpha' })
 
-    const member = h.teams.addMember(team.id, h.agent.id, 'owner')
-    expect(member).toMatchObject({ teamId: team.id, agentId: h.agent.id, teamRole: 'owner' })
+    const member = h.teams.addMember(team.id, h.agent.id)
+    expect(member).toMatchObject({ teamId: team.id, agentId: h.agent.id })
 
-    expect(() => h.teams.addMember(team.id, h.agent.id, 'owner')).toThrow(
+    expect(() => h.teams.addMember(team.id, h.agent.id)).toThrow(
       expect.objectContaining({ code: 'INVALID_PARAMS' }),
     )
-    expect(() => h.teams.addMember(team.id, 'agt-missing', 'member')).toThrow(
+    expect(() => h.teams.addMember(team.id, 'agt-missing')).toThrow(
       expect.objectContaining({ code: 'AGENT_NOT_FOUND' }),
     )
 
     h.teams.archive(team.id)
-    expect(() => h.teams.addMember(team.id, h.otherAgent.id, 'member')).toThrow(
+    expect(() => h.teams.addMember(team.id, h.otherAgent.id)).toThrow(
       expect.objectContaining({ code: 'INVALID_PARAMS' }),
     )
 

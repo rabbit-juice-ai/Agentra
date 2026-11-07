@@ -34,6 +34,7 @@ import { ExecutionRepository } from '../db/repositories/execution-repository'
 import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
+import { SkillRepository } from '../db/repositories/skill-repository'
 import { TeamRepository } from '../db/repositories/team-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { WorkflowRepository } from '../db/repositories/workflow-repository'
@@ -204,6 +205,8 @@ type Harness = {
   db: Database
   dir: string
   agents: AgentService
+  skills: SkillRepository
+  teams: TeamRepository
   providers: ProviderRepository
   executions: ExecutionService
   runtime: FakeRuntimeClient
@@ -289,11 +292,19 @@ async function harness(
     sessionRepository,
     () => NOW,
   )
-  const agents = new AgentService(db, agentRepository, providerRepository, () => NOW)
+  const skillRepository = new SkillRepository(db)
+  const agents = new AgentService(
+    db,
+    agentRepository,
+    providerRepository,
+    skillRepository,
+    () => NOW,
+  )
   const agent = agents.create({
     name: 'Worker',
-    role: 'engineer',
-    toolPermissions: { version: 1, allow: ['Read'], deny: ['Bash'] },
+    defaultProviderId: 'claude-code',
+    // 并发/排队用例依赖单槽位；新 Agent 的产品默认值是 5（见 AgentService 用例）。
+    maxConcurrency: 1,
   })
   let workflowBridge: WorkflowExecutionBridge | null = null
   const warnings: string[] = []
@@ -306,6 +317,8 @@ async function harness(
     worktrees,
     locks,
     agents: agentRepository,
+    skills: skillRepository,
+    teams: teamRepository,
     sessions: sessionRepository,
     executions: executionRepository,
     logs: logRepository,
@@ -400,6 +413,8 @@ async function harness(
     db,
     dir,
     agents,
+    skills: skillRepository,
+    teams: teamRepository,
     works,
     assignments,
     sessions: sessionRepository,
@@ -964,20 +979,24 @@ describe('ExecutionService.reconcile', () => {
 describe('AgentService', () => {
   it('creates, updates and archives agents with provider validation', async () => {
     const h = await harness()
-    expect(() => h.agents.create({ name: 'X', role: 'r', defaultProviderId: 'nope' })).toThrow(
+    expect(() => h.agents.create({ name: 'X', defaultProviderId: 'nope' })).toThrow(
       expect.objectContaining({ code: 'PROVIDER_NOT_FOUND' }),
     )
 
     const created = h.agents.create({
       name: '  Backend  ',
-      role: 'engineer',
       defaultProviderId: 'claude-code',
+      accessMode: 'edit',
     })
     expect(created.name).toBe('Backend')
     expect(created.defaultProviderId).toBe('claude-code')
+    expect(created.avatar).toBe('🤖')
+    expect(created.maxConcurrency).toBe(5)
+    expect(created.accessMode).toBe('edit')
 
-    const updated = h.agents.update({ id: created.id, maxConcurrency: 2, skills: ['go'] })
-    expect(updated).toMatchObject({ maxConcurrency: 2, skills: ['go'], name: 'Backend' })
+    const updated = h.agents.update({ id: created.id, maxConcurrency: 2, accessMode: 'analyze' })
+    expect(updated).toMatchObject({ maxConcurrency: 2, accessMode: 'analyze', name: 'Backend' })
+    expect(updated.toolPermissions.deny).toContain('Write')
 
     const archived = h.agents.archive(created.id)
     expect(archived.status).toBe('archived')
@@ -986,13 +1005,74 @@ describe('AgentService', () => {
     expect(h.agents.list(true).map((agent) => agent.id)).toContain(created.id)
     expect(h.agents.archive(created.id).status).toBe('archived')
   })
+
+  it('requires an explicit provider at the service boundary', async () => {
+    const h = await harness()
+    expect(() => h.agents.create({ name: 'NoProvider' } as never)).toThrow(
+      expect.objectContaining({ code: 'INVALID_PARAMS' }),
+    )
+  })
+
+  it('accepts image data URLs as avatars and rejects unsupported formats', async () => {
+    const h = await harness()
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo='
+    const created = h.agents.create({
+      name: 'Pix',
+      defaultProviderId: 'claude-code',
+      avatar: dataUrl,
+    })
+    expect(created.avatar).toBe(dataUrl)
+
+    expect(() =>
+      h.agents.create({
+        name: 'Bad Avatar',
+        defaultProviderId: 'claude-code',
+        avatar: 'data:image/svg+xml;base64,PHN2Zz4=',
+      }),
+    ).toThrow(expect.objectContaining({ code: 'INVALID_PARAMS' }))
+    expect(() =>
+      h.agents.create({
+        name: 'Long Avatar',
+        defaultProviderId: 'claude-code',
+        avatar: 'x'.repeat(40),
+      }),
+    ).toThrow(expect.objectContaining({ code: 'INVALID_PARAMS' }))
+  })
+
+  it('derives the tool policy from access mode', async () => {
+    const h = await harness()
+    const analyze = h.agents.create({ name: 'Analyzer', defaultProviderId: 'claude-code' })
+    expect(analyze.accessMode).toBe('analyze')
+    expect(analyze.toolPermissions).toEqual({
+      version: 1,
+      allow: ['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Bash'],
+      deny: ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'],
+    })
+
+    const editor = h.agents.create({
+      name: 'Editor',
+      defaultProviderId: 'claude-code',
+      accessMode: 'edit',
+    })
+    expect(editor.toolPermissions.allow).toContain('Write')
+    expect(editor.toolPermissions.allow).toContain('Edit')
+    expect(editor.toolPermissions.deny).toEqual([])
+  })
 })
 
 describe('工具权限强制（U3）', () => {
   it('拒绝 allow 为空的 Agent，且不创建 Execution', async () => {
     const h = await harness()
-    const unconfigured = h.agents.create({ name: 'NoTools', role: 'engineer' })
-    expect(unconfigured.toolPermissions).toEqual({ version: 1, allow: [], deny: [] })
+    const unconfigured = h.agents.create({ name: 'NoTools', defaultProviderId: 'claude-code' })
+    // 模拟历史遗留行：新模型下 allow 由 accessMode 派生，这里直接改库以覆盖执行层兜底。
+    h.db
+      .prepare('UPDATE agent_profiles SET tool_permissions_json = ? WHERE id = ?')
+      .run('{"version":1,"allow":[],"deny":[]}', unconfigured.id)
+    expect(h.agents.get(unconfigured.id).toolPermissions).toEqual({
+      version: 1,
+      allow: [],
+      deny: [],
+    })
 
     await expect(
       h.executions.start({ agentId: unconfigured.id, prompt: 'hello' }),
@@ -1009,11 +1089,26 @@ describe('工具权限强制（U3）', () => {
     h.db
       .prepare(
         `INSERT INTO agent_profiles (
-          id, name, role, description, system_prompt, skills_json,
-          default_provider_id, max_concurrency, status, created_at, updated_at, archived_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, name, avatar, description, system_prompt, skill_ids_json, access_mode,
+          system_kind, default_provider_id, max_concurrency, status, created_at, updated_at, archived_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run('agt-legacy', 'Legacy', 'engineer', '', '', '[]', null, 1, 'active', NOW, NOW, null)
+      .run(
+        'agt-legacy',
+        'Legacy',
+        '🤖',
+        '',
+        '',
+        '[]',
+        'analyze',
+        null,
+        null,
+        1,
+        'active',
+        NOW,
+        NOW,
+        null,
+      )
 
     expect(h.agents.get('agt-legacy').toolPermissions).toEqual({
       version: 1,
@@ -1029,15 +1124,18 @@ describe('工具权限强制（U3）', () => {
     const h = await harness()
     const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
 
-    // 读取回来的是落库值
+    // 读取回来的是按 accessMode 派生的策略
     expect(h.agents.get(h.agentId).toolPermissions).toEqual({
       version: 1,
-      allow: ['Read'],
-      deny: ['Bash'],
+      allow: ['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Bash'],
+      deny: ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'],
     })
     // Core → Daemon
     const start = h.runtime.starts[0]
-    expect(start).toMatchObject({ allowedTools: ['Read'], disallowedTools: ['Bash'] })
+    expect(start).toMatchObject({
+      allowedTools: ['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Bash'],
+      disallowedTools: ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'],
+    })
     // Daemon → CLI 参数
     const args = buildClaudeArgs({
       executionId: execution.id,
@@ -1048,7 +1146,7 @@ describe('工具权限强制（U3）', () => {
       disallowedTools: start?.disallowedTools,
     })
     expect(args[args.indexOf('--allowedTools') + 1]).toBe('Read')
-    expect(args[args.indexOf('--disallowedTools') + 1]).toBe('Bash')
+    expect(args[args.indexOf('--disallowedTools') + 1]).toBe('Write')
 
     // 审计：execution_logs 里有一条 tool_policy 记录
     const policyLog = h.logs
@@ -1058,47 +1156,52 @@ describe('工具权限强制（U3）', () => {
     expect(policyLog?.content).toContain('Read')
   })
 
-  it('保存时 trim 生效、空白项被过滤、顺序保留（不因空白产生拒绝）', async () => {
+  it('appends selected skill instructions to the system prompt', async () => {
     const h = await harness()
-    const created = h.agents.create({
-      name: 'Trim',
-      role: 'engineer',
-      toolPermissions: { version: 1, allow: [' Read ', 'Edit', ' '], deny: [' Bash '] },
+    h.skills.insert({
+      id: 'skl-review',
+      name: '代码评审清单',
+      description: '',
+      instructions: '先看错误路径，再看测试覆盖。',
+      createdAt: NOW,
+      updatedAt: NOW,
     })
-    expect(h.agents.get(created.id).toolPermissions).toEqual({
-      version: 1,
-      allow: ['Read', 'Edit'],
-      deny: ['Bash'],
-    })
+    h.agents.update({ id: h.agentId, skillIds: ['skl-review'] })
+
+    await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    const start = h.runtime.starts[0]
+    expect(start?.systemPrompt).toContain('代码评审清单')
+    expect(start?.systemPrompt).toContain('先看错误路径，再看测试覆盖。')
   })
 
-  it('保存时拒绝重复项，比较前先 trim（A-23 ②）', async () => {
+  it('injects team instructions only for members of teams linked to the work', async () => {
     const h = await harness()
-    for (const allow of [
-      ['Read', 'Read'],
-      [' Read', 'Read'],
-      ['Read', 'Read '],
-    ]) {
-      expect(() =>
-        h.agents.create({
-          name: 'Dup',
-          role: 'engineer',
-          toolPermissions: { version: 1, allow, deny: [] },
-        }),
-      ).toThrow(expect.objectContaining({ code: 'INVALID_PARAMS' }))
-    }
-    expect(h.agents.list().some((agent) => agent.name === 'Dup')).toBe(false)
-  })
+    const work = h.works.create({
+      name: 'Team Work',
+      rootPath: path.join(h.dir, 'team-work-root'),
+    })
+    h.works.activate(work.id)
+    h.assignments.create({ workId: work.id, agentId: h.agentId, workRole: 'dev' })
+    h.db
+      .prepare(
+        `INSERT INTO teams (id, name, description, instructions, settings_json, status, created_at, updated_at, archived_at)
+         VALUES ('team-1', 'Delivery', '', '团队规则：先写测试，再改实现。', '{}', 'active', ?, ?, NULL)`,
+      )
+      .run(NOW, NOW)
+    h.db
+      .prepare(
+        `INSERT INTO team_members (id, team_id, agent_id, permissions_json, joined_at)
+         VALUES ('tm-1', 'team-1', ?, '{}', ?)`,
+      )
+      .run(h.agentId, NOW)
+    h.db
+      .prepare('INSERT INTO work_teams (work_id, team_id, created_at) VALUES (?, ?, ?)')
+      .run(work.id, 'team-1', NOW)
 
-  it('保存时拒绝 trim 后才冲突的 allow/deny（同一工具不同空白）', async () => {
-    const h = await harness()
-    expect(() =>
-      h.agents.create({
-        name: 'Conflict',
-        role: 'engineer',
-        toolPermissions: { version: 1, allow: ['Read'], deny: [' Read '] },
-      }),
-    ).toThrow(expect.objectContaining({ code: 'INVALID_PARAMS' }))
+    await h.executions.start({ agentId: h.agentId, workId: work.id, prompt: 'hello' })
+    const start = h.runtime.starts[0]
+    expect(start?.systemPrompt).toContain('团队指引 · Delivery')
+    expect(start?.systemPrompt).toContain('团队规则：先写测试，再改实现。')
   })
 })
 

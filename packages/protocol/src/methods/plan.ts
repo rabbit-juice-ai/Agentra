@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { IsoTimestamp, Work } from '../dto'
+import { AgentAccessMode, IsoTimestamp, Work } from '../dto'
 import { Project } from './project'
 import { WorkflowRun } from './workflow'
 
@@ -32,8 +32,11 @@ export const PlanTask = z.object({
   description: z.string().min(1).max(4000),
   /** 责任角色，如 product / frontend / backend / testing。 */
   responsibilityRole: z.string().min(1).max(64),
-  /** 结构化能力要求；Planner 不能只靠名称或职责描述选人。 */
-  requiredCapabilities: z.array(CapabilityTag).max(20).default([]),
+  /**
+   * 该任务要求的工作权限；选人按此严格匹配：
+   * analyze 任务只能交给只读分析 Agent，edit 任务只能交给可编辑 Agent。
+   */
+  requiredAccessMode: AgentAccessMode.default('edit'),
   /** Planner 建议的负责人；必须是 Registry 中真实 active 的 Agent，或 null。 */
   suggestedAgentId: z.string().min(1).max(128).nullable().default(null),
   inputs: z.array(z.string().max(200)).max(20).default([]),

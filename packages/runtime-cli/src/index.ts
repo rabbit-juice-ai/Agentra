@@ -1,3 +1,15 @@
+export {
+  ANTIGRAVITY_CAPABILITIES,
+  ANTIGRAVITY_PROVIDER_ID,
+  ANTIGRAVITY_PROVIDER_NAME,
+} from './antigravity/capabilities'
+export {
+  type DiscoveryOptions as AntigravityDiscoveryOptions,
+  discoverAntigravity,
+  findAntigravityExecutable,
+  parseVersion as parseAntigravityVersion,
+} from './antigravity/discovery'
+export { AntigravityProvider } from './antigravity/provider'
 export { buildChildEnv, buildClaudeArgs } from './claude-code/args'
 export {
   CLAUDE_CODE_CAPABILITIES,

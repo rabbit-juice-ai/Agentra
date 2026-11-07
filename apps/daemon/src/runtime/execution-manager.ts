@@ -12,6 +12,7 @@ import {
 import {
   type ExecutionState,
   type ProviderCapabilities,
+  type ProviderModelInfo,
   RuntimeError,
   type RuntimeErrorCode,
   type RuntimeEvent,
@@ -100,6 +101,27 @@ export class ExecutionManager {
       [...this.providers.values()].map((provider) => provider.discover()),
     )
     return infos.flat()
+  }
+
+  /** 读取 Provider 的真实可用模型；适配器未实现或命令失败时返回空，由 Core 回退目录。 */
+  async listModels(providerId: string): Promise<ProviderModelInfo[]> {
+    const provider = this.providers.get(providerId)
+    if (!provider) {
+      throw new RpcMethodError(
+        'PROVIDER_NOT_FOUND',
+        `daemon has no runtime for provider ${providerId}`,
+      )
+    }
+    if (!provider.listModels) return []
+    try {
+      return await provider.listModels()
+    } catch (error) {
+      this.logger?.warn('provider model listing failed', {
+        providerId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return []
+    }
   }
 
   async start(params: DaemonExecutionStartParams): Promise<DaemonExecutionStartResult> {

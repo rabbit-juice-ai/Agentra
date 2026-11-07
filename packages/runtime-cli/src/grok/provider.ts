@@ -1,5 +1,7 @@
-import type { StartExecutionConfig } from '@agentra/runtime-sdk'
+import type { ProviderModelInfo, StartExecutionConfig } from '@agentra/runtime-sdk'
+import { parseGrokModels } from '../one-shot/models'
 import { OneShotCliProvider, type OneShotParseState } from '../one-shot/provider'
+import { runCommand } from '../run-command'
 import { GROK_CAPABILITIES, GROK_PROVIDER_ID, GROK_PROVIDER_NAME } from './capabilities'
 import { type DiscoveryOptions, discoverGrok, findGrokExecutable } from './discovery'
 
@@ -22,6 +24,21 @@ export class GrokProvider extends OneShotCliProvider {
 
   async discover() {
     return [await discoverGrok(this.discovery)]
+  }
+
+  /** `grok models`：未认证时 CLI 仍会返回默认/可用模型，认证状态由 discovery 判断。 */
+  async listModels(): Promise<ProviderModelInfo[]> {
+    if (!this.executablePath) return []
+    const run = this.discovery.run ?? runCommand
+    try {
+      const result = await run(this.executablePath, ['models'], {
+        env: this.discovery.env,
+        timeoutMs: 8000,
+      })
+      return result.code === 0 ? parseGrokModels(result.stdout) : []
+    } catch {
+      return []
+    }
   }
 
   protected argsFor(config: StartExecutionConfig): string[] {

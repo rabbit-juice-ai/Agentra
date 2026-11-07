@@ -101,7 +101,7 @@ export function ConsolePage({
               {activeAgents.length === 0 && <option value="">（无可用 Agent）</option>}
               {activeAgents.map((agent) => (
                 <option key={agent.id} value={agent.id}>
-                  {agent.name} · {agent.role}
+                  {agent.name}
                 </option>
               ))}
             </select>

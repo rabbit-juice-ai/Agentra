@@ -10,6 +10,7 @@ export type TeamRecord = {
   id: string
   name: string
   description: string
+  instructions: string
   settings: Record<string, unknown>
   status: TeamStatus
   createdAt: string
@@ -21,7 +22,6 @@ export type TeamMemberRecord = {
   id: string
   teamId: string
   agentId: string
-  teamRole: string
   permissions: Record<string, unknown>
   joinedAt: string
 }
@@ -32,6 +32,7 @@ type TeamRow = {
   id: string
   name: string
   description: string
+  instructions: string
   settings_json: string
   status: string
   created_at: string
@@ -43,7 +44,6 @@ type TeamMemberRow = {
   id: string
   team_id: string
   agent_id: string
-  team_role: string
   permissions_json: string
   joined_at: string
 }
@@ -56,6 +56,7 @@ function toTeam(row: TeamRow): TeamRecord {
     id: row.id,
     name: row.name,
     description: row.description,
+    instructions: row.instructions,
     settings: parseJsonColumn(JsonObject, row.settings_json, `teams.settings_json(${row.id})`),
     status: row.status,
     createdAt: row.created_at,
@@ -69,7 +70,6 @@ function toMember(row: TeamMemberRow): TeamMemberRecord {
     id: row.id,
     teamId: row.team_id,
     agentId: row.agent_id,
-    teamRole: row.team_role,
     permissions: parseJsonColumn(
       JsonObject,
       row.permissions_json,
@@ -86,13 +86,14 @@ export class TeamRepository {
   insert(team: TeamRecord): void {
     this.db
       .prepare(
-        `INSERT INTO teams (id, name, description, settings_json, status, created_at, updated_at, archived_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO teams (id, name, description, instructions, settings_json, status, created_at, updated_at, archived_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         team.id,
         team.name,
         team.description,
+        team.instructions,
         serializeJsonColumn(JsonObject, team.settings, 'team.settings'),
         team.status,
         team.createdAt,
@@ -104,12 +105,13 @@ export class TeamRepository {
   update(team: TeamRecord): void {
     const result = this.db
       .prepare(
-        `UPDATE teams SET name = ?, description = ?, settings_json = ?, status = ?,
+        `UPDATE teams SET name = ?, description = ?, instructions = ?, settings_json = ?, status = ?,
           updated_at = ?, archived_at = ? WHERE id = ?`,
       )
       .run(
         team.name,
         team.description,
+        team.instructions,
         serializeJsonColumn(JsonObject, team.settings, 'team.settings'),
         team.status,
         team.updatedAt,
@@ -140,14 +142,13 @@ export class TeamRepository {
   addMember(member: TeamMemberRecord): void {
     this.db
       .prepare(
-        `INSERT INTO team_members (id, team_id, agent_id, team_role, permissions_json, joined_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO team_members (id, team_id, agent_id, permissions_json, joined_at)
+         VALUES (?, ?, ?, ?, ?)`,
       )
       .run(
         member.id,
         member.teamId,
         member.agentId,
-        member.teamRole,
         serializeJsonColumn(JsonObject, member.permissions, 'teamMember.permissions'),
         member.joinedAt,
       )

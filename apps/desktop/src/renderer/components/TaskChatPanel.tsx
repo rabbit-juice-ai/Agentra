@@ -1,4 +1,5 @@
 import type { AgentProfile, PlanGetResult, PlanThreadView } from '@agentra/protocol'
+import { AGENT_ACCESS_MODE_LABEL } from '@agentra/protocol'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, api } from '../services/api'
 import { Icon } from './Icon'
@@ -560,7 +561,7 @@ export function TaskChatPanel({
                   onClick={() => pickMention(agent)}
                 >
                   <strong>{agent.name}</strong>
-                  <span className="faint">{agent.role}</span>
+                  <span className="faint">{AGENT_ACCESS_MODE_LABEL[agent.accessMode]}</span>
                 </button>
               ))}
             </div>

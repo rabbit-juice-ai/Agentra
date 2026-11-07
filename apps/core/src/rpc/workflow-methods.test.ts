@@ -16,6 +16,7 @@ import { ExecutionRepository } from '../db/repositories/execution-repository'
 import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
+import { SkillRepository } from '../db/repositories/skill-repository'
 import { TeamRepository } from '../db/repositories/team-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
@@ -25,6 +26,7 @@ import { AssignmentService } from '../services/assignment-service'
 import { CoreEventHub } from '../services/event-hub'
 import { ExecutionService } from '../services/execution-service'
 import { ProviderRegistry } from '../services/provider-registry'
+import { SkillService } from '../services/skill-service'
 import { TeamService } from '../services/team-service'
 import { WorkService } from '../services/work-service'
 import { WorkdirLockService } from '../services/workdir-lock-service'
@@ -107,8 +109,10 @@ function harness(): {
     now: () => NOW,
   })
 
+  const skillRepository = new SkillRepository(db)
   const methods = coreMethods('0.1.0', '/tmp/none.sock', {
-    agents: new AgentService(db, agentRepository, providerRepository, () => NOW),
+    agents: new AgentService(db, agentRepository, providerRepository, skillRepository, () => NOW),
+    skills: new SkillService(db, skillRepository, agentRepository, () => NOW),
     registry,
     executions,
     hub: new CoreEventHub(),

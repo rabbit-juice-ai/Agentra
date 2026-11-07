@@ -1,4 +1,6 @@
 import {
+  AGENT_ACCESS_MODE_LABEL,
+  type AgentAccessMode,
   type AgentCreateParams,
   type AgentProfile,
   type AgentUpdateParams,
@@ -10,17 +12,15 @@ import {
   type PlanValidationResult,
   type PlanViolation,
   RpcMethodError,
+  type RuntimeProviderRecord,
+  type Skill,
   type Work,
 } from '@agentra/protocol'
-import {
-  findMatchingAgents,
-  matchesAgentCapabilities,
-  missingCapabilities,
-} from './agent-capability-matcher'
+import { findMatchingAgents, matchesAgentAccess } from './agent-access-matcher'
 
 export type PlannerAgentPort = {
   list(): AgentProfile[]
-  create(params: AgentCreateParams): AgentProfile
+  create(params: AgentCreateParams, options?: { systemKind?: 'planner' | null }): AgentProfile
   update(params: AgentUpdateParams): AgentProfile
 }
 
@@ -37,6 +37,14 @@ export type PlannerWorkPort = {
   get(id: string): PlannerWork
 }
 
+export type PlannerProviderPort = {
+  list(): RuntimeProviderRecord[]
+}
+
+export type PlannerSkillPort = {
+  list(): Skill[]
+}
+
 export type PlannerLogger = {
   info(message: string, meta?: Record<string, unknown>): void
   warn(message: string, meta?: Record<string, unknown>): void
@@ -46,6 +54,10 @@ export type PlannerServiceDeps = {
   agents: PlannerAgentPort
   executions: PlannerExecutionPort
   works: PlannerWorkPort
+  /** 系统 Planner Agent 必须显式绑定一个真实 Provider（不再自动兜底）。 */
+  providers: PlannerProviderPort
+  /** 可选：把技能名称放进 Planner Registry，便于理解每个 Agent 的专长。 */
+  skills?: PlannerSkillPort
   /** 只接受 Agent 的结构化输出；不把聊天文本猜成计划。 */
   extractOutput: (executionId: string) => Record<string, unknown>
   logger?: PlannerLogger
@@ -57,7 +69,9 @@ export type PlannerServiceDeps = {
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'crashed'])
 
 const PLANNER_SYSTEM_PROMPT = `You are Agentra's Planner. You turn a human goal into a structured plan for a team of AI agents.
-You do not execute tasks. You only produce a plan. Return one JSON document and no commentary.`
+You do not execute tasks. You only produce a plan. Do not run shell commands or inspect the filesystem:
+the goal, constraints and agent registry in the prompt are sufficient context.
+Return one JSON document and no commentary. Your entire final message must be that JSON object.`
 
 const PLANNER_AGENT_NAME = 'Planner Agent'
 /** 规划任务用更快的模型；本地 Opus 默认模型对开放式规划容易长时间 thinking。 */
@@ -189,7 +203,7 @@ export class PlannerService {
   }
 
   /**
-   * 不调用模型的确定性草稿：按能力找产品/前端/后端/QA，生成
+   * 不调用模型的确定性草稿：按工作权限找产品/前端/后端/QA，生成
    * product → (frontend ∥ backend) → verify 的最小闭环。
    * 这是兜底，不替代 Planner 模型；结果会明确标记 source=fallback。
    */
@@ -199,27 +213,15 @@ export class PlannerService {
     agents: AgentProfile[],
   ): PlanDraft {
     const active = agents.filter((agent) => agent.status === 'active')
-    const find = (taskType: string, kind: 'execute' | 'verify' = 'execute') =>
-      findMatchingAgents(active, {
-        taskType,
-        requiredCapabilities: [taskType],
-        kind,
-      })[0] ?? null
-
-    const product = find('product')
-    const frontend = find('frontend')
-    const backend = find('backend')
-    const verificationTargets = [frontend ? 'frontend' : null, backend ? 'backend' : null].filter(
-      (item): item is string => item !== null,
+    // Planner 自己是系统只读 Agent，不参与业务分工。
+    const analyzers = active.filter(
+      (agent) => agent.accessMode === 'analyze' && agent.systemKind !== 'planner',
     )
-    const qa =
-      verificationTargets.length > 0
-        ? (findMatchingAgents(active, {
-            taskType: 'testing',
-            requiredCapabilities: verificationTargets,
-            kind: 'verify',
-          })[0] ?? null)
-        : null
+    const editors = active.filter((agent) => agent.accessMode === 'edit')
+    const product = analyzers[0] ?? null
+    const qa = analyzers.find((agent) => agent.id !== product?.id) ?? product
+    const frontend = editors[0] ?? null
+    const backend = editors[1] ?? editors[0] ?? null
 
     const tasks: PlanTask[] = []
     const capabilityGaps: PlanDraft['capabilityGaps'] = []
@@ -230,7 +232,7 @@ export class PlannerService {
         title: '澄清需求与验收标准',
         description: '把目标转成可实现的需求、边界和验收标准。',
         responsibilityRole: 'product',
-        requiredCapabilities: ['product'],
+        requiredAccessMode: 'analyze',
         suggestedAgentId: product.id,
         inputs: ['goal'],
         outputs: ['spec'],
@@ -243,8 +245,8 @@ export class PlannerService {
     } else {
       capabilityGaps.push({
         role: 'product',
-        missingCapabilities: ['product'],
-        reason: '没有可承担产品/需求职责的 Agent',
+        missingCapabilities: ['analyze'],
+        reason: '没有只读分析权限的 Agent',
       })
     }
 
@@ -255,7 +257,7 @@ export class PlannerService {
         title: '前端实现',
         description: '按需求实现界面、交互和前端状态。',
         responsibilityRole: 'frontend',
-        requiredCapabilities: ['frontend'],
+        requiredAccessMode: 'edit',
         suggestedAgentId: frontend.id,
         inputs: product ? ['spec'] : ['goal'],
         outputs: ['ui'],
@@ -268,8 +270,8 @@ export class PlannerService {
     } else {
       capabilityGaps.push({
         role: 'frontend',
-        missingCapabilities: ['frontend'],
-        reason: '没有可承担前端实现职责的 Agent',
+        missingCapabilities: ['edit'],
+        reason: '没有编辑权限的 Agent',
       })
     }
     if (backend) {
@@ -278,7 +280,7 @@ export class PlannerService {
         title: '后端实现',
         description: '按需求实现 API、数据流和持久化。',
         responsibilityRole: 'backend',
-        requiredCapabilities: ['backend'],
+        requiredAccessMode: 'edit',
         suggestedAgentId: backend.id,
         inputs: product ? ['spec'] : ['goal'],
         outputs: ['api'],
@@ -291,8 +293,8 @@ export class PlannerService {
     } else {
       capabilityGaps.push({
         role: 'backend',
-        missingCapabilities: ['backend'],
-        reason: '没有可承担后端实现职责的 Agent',
+        missingCapabilities: ['edit'],
+        reason: '没有编辑权限的 Agent',
       })
     }
 
@@ -306,7 +308,7 @@ export class PlannerService {
         title: '集成验收',
         description: '验证实现是否满足需求；失败时输出结构化测试报告和相关任务。',
         responsibilityRole: 'testing',
-        requiredCapabilities: verificationTargets,
+        requiredAccessMode: 'analyze',
         suggestedAgentId: qa.id,
         inputs: [frontend ? 'ui' : '', backend ? 'api' : ''].filter(Boolean),
         outputs: ['test-report'],
@@ -319,8 +321,8 @@ export class PlannerService {
     } else if (verificationDependencies.length > 0) {
       capabilityGaps.push({
         role: 'testing',
-        missingCapabilities: verificationTargets,
-        reason: '没有可承担验收职责的 Agent',
+        missingCapabilities: ['analyze'],
+        reason: '没有只读分析权限的 Agent',
       })
     }
 
@@ -328,9 +330,9 @@ export class PlannerService {
       tasks.push({
         key: 'delivery',
         title: '交付',
-        description: '没有匹配的 Agent；需要先配置 Agent 能力或补充成员。',
+        description: '没有匹配的 Agent；需要先配置 Agent 工作权限或补充成员。',
         responsibilityRole: 'delivery',
-        requiredCapabilities: ['delivery'],
+        requiredAccessMode: 'edit',
         suggestedAgentId: null,
         inputs: [],
         outputs: [],
@@ -347,7 +349,7 @@ export class PlannerService {
       goal,
       constraints,
       tasks,
-      risks: ['由能力匹配生成的快速草稿，建议用 AI 规划复核'],
+      risks: ['由工作权限匹配生成的快速草稿，建议用 AI 规划复核'],
       capabilityGaps,
       approvalsRequired: [],
     })
@@ -409,11 +411,7 @@ export class PlannerService {
     this.detectCycles(plan.tasks, byKey, violations)
 
     const assignments = plan.tasks.map((task) => {
-      const requirement = {
-        taskType: task.responsibilityRole,
-        requiredCapabilities: task.requiredCapabilities,
-        kind: task.verification ? ('verify' as const) : ('execute' as const),
-      }
+      const requiredAccessMode: AgentAccessMode = task.requiredAccessMode
       let agent: AgentProfile | null = null
       if (task.suggestedAgentId) {
         agent = active.find((candidate) => candidate.id === task.suggestedAgentId) ?? null
@@ -423,39 +421,24 @@ export class PlannerService {
             taskKey: task.key,
             message: `建议负责人 "${task.suggestedAgentId}" 不存在或未启用`,
           })
-        } else if (
-          agent.capabilities.excludedTaskTypes.includes(task.responsibilityRole) ||
-          task.requiredCapabilities.some((capability) =>
-            agent?.capabilities.excludedTaskTypes.includes(capability),
-          )
-        ) {
+        } else if (!matchesAgentAccess(agent, requiredAccessMode)) {
           violations.push({
-            code: 'capability_mismatch',
+            code: 'access_mode_mismatch',
             taskKey: task.key,
-            message: `Agent "${agent.name}" 明确不接该职责或能力`,
-          })
-        } else if (
-          task.requiredCapabilities.length > 0 &&
-          !matchesAgentCapabilities(agent, requirement)
-        ) {
-          violations.push({
-            code: 'capability_mismatch',
-            taskKey: task.key,
-            message: `Agent "${agent.name}" 缺少能力：${missingCapabilities(
-              agent,
-              requirement,
-            ).join(', ')}`,
+            message: `Agent "${agent.name}" 的工作权限是「${
+              AGENT_ACCESS_MODE_LABEL[agent.accessMode]
+            }」，但任务需要「${AGENT_ACCESS_MODE_LABEL[requiredAccessMode]}」`,
           })
         }
       } else {
-        const candidates = findMatchingAgents(active, requirement)
+        const candidates = findMatchingAgents(active, requiredAccessMode)
         if (candidates.length === 0) {
           violations.push({
             code: 'capability_gap',
             taskKey: task.key,
-            message: `没有 Agent 同时满足 ${task.responsibilityRole} 与 [${task.requiredCapabilities.join(
-              ', ',
-            )}]`,
+            message: `没有工作权限为「${AGENT_ACCESS_MODE_LABEL[requiredAccessMode]}」的 Agent，无法承接 ${
+              task.responsibilityRole
+            }`,
           })
         } else {
           agent = this.leastLoaded(candidates)
@@ -481,31 +464,60 @@ export class PlannerService {
   private ensurePlannerAgent(): AgentProfile {
     const existing = this.deps.agents
       .list()
-      .find((agent) => agent.role === 'planner' && agent.status === 'active')
+      .find((agent) => agent.systemKind === 'planner' && agent.status === 'active')
     if (existing) {
+      const provider = this.deps.providers
+        .list()
+        .find((item) => item.id === existing.defaultProviderId)
+      // 系统 Planner 的 Provider 被卸载/不可用时，重新绑定到优先 Provider。
+      if (provider?.healthStatus !== 'healthy') {
+        const preferred = this.pickPlannerProvider()
+        if (preferred.healthStatus === 'healthy') {
+          return this.deps.agents.update({
+            id: existing.id,
+            defaultProviderId: preferred.id,
+            model: preferred.providerName === 'Claude Code' ? PLANNER_MODEL : null,
+          })
+        }
+      }
       // 旧 Planner Agent 没有模型时补上更快的默认模型；用户显式设置过则不覆盖。
-      if (existing.model === null) {
+      if (existing.model === null && provider?.providerName === 'Claude Code') {
         return this.deps.agents.update({ id: existing.id, model: PLANNER_MODEL })
       }
       return existing
     }
-    return this.deps.agents.create({
-      name: PLANNER_AGENT_NAME,
-      role: 'planner',
-      description: '把老板目标拆成结构化任务计划；只读，不执行实现。',
-      systemPrompt: PLANNER_SYSTEM_PROMPT,
-      model: PLANNER_MODEL,
-      toolPermissions: { version: 1, allow: ['Read'], deny: [] },
-      capabilities: {
-        taskTypes: ['planning'],
-        inputTypes: ['goal'],
-        outputTypes: ['plan'],
-        canVerify: [],
-        canApprove: [],
-        excludedTaskTypes: [],
+    const provider = this.pickPlannerProvider()
+    return this.deps.agents.create(
+      {
+        name: PLANNER_AGENT_NAME,
+        avatar: '🧭',
+        description: '把老板目标拆成结构化任务计划；只读，不执行实现。',
+        systemPrompt: PLANNER_SYSTEM_PROMPT,
+        accessMode: 'analyze',
+        model: provider.providerName === 'Claude Code' ? PLANNER_MODEL : null,
+        defaultProviderId: provider.id,
+        maxConcurrency: 1,
       },
-      maxConcurrency: 1,
-    })
+      { systemKind: 'planner' },
+    )
+  }
+
+  /**
+   * Planner 也必须是显式绑定；系统 Agent 优先使用 Claude Code（规划质量与 JSON 稳定性最好），
+   * 否则退回第一个健康 Provider，最后才用任何已发现 Provider 让执行层给出明确失败。
+   */
+  private pickPlannerProvider(): RuntimeProviderRecord {
+    const providers = this.deps.providers.list()
+    const healthy = providers.filter((item) => item.healthStatus === 'healthy')
+    const provider =
+      healthy.find((item) => item.providerName === 'Claude Code') ??
+      healthy[0] ??
+      providers.find((item) => item.providerName === 'Claude Code') ??
+      providers[0]
+    if (!provider) {
+      throw new RpcMethodError('INTERNAL', '没有可用的 Provider，无法创建 Planner Agent')
+    }
+    return provider
   }
 
   private registrySnapshot(agents: AgentProfile[]) {
@@ -517,17 +529,23 @@ export class PlannerService {
         load.set(execution.agentId, (load.get(execution.agentId) ?? 0) + 1)
       }
     }
+    const skillNames = new Map(
+      (this.deps.skills?.list() ?? []).map((skill) => [skill.id, skill.name]),
+    )
     return agents.map((agent) => ({
       id: agent.id,
       name: agent.name,
-      role: agent.role,
+      avatar: agent.avatar,
       description: agent.description,
-      skills: agent.skills,
-      capabilities: agent.capabilities,
+      accessMode: agent.accessMode,
+      accessModeLabel: AGENT_ACCESS_MODE_LABEL[agent.accessMode],
+      skills: agent.skillIds
+        .map((id) => skillNames.get(id))
+        .filter((name): name is string => name !== undefined),
+      model: agent.model,
       maxConcurrency: agent.maxConcurrency,
       activeExecutions: load.get(agent.id) ?? 0,
       defaultProviderId: agent.defaultProviderId,
-      tools: agent.toolPermissions.allow,
     }))
   }
 
@@ -553,10 +571,10 @@ export class PlannerService {
     const compactRegistry = registry.map((agent) => ({
       id: agent.id,
       name: agent.name,
-      role: agent.role,
       description: agent.description.slice(0, 160),
-      taskTypes: agent.capabilities.taskTypes,
-      canVerify: agent.capabilities.canVerify,
+      accessMode: agent.accessMode,
+      skills: agent.skills,
+      model: agent.model,
       maxConcurrency: agent.maxConcurrency,
       activeExecutions: agent.activeExecutions,
     }))
@@ -568,13 +586,19 @@ Work: ${work ? `${work.name} (${work.status})` : '(none)'}
 Agents: ${JSON.stringify(compactRegistry)}
 
 Rules:
+- Do not run tools or inspect the filesystem; produce the JSON plan directly.
+- Your entire final message must be the JSON object, with no markdown fences or commentary.
 - Use only the agent ids above, or null. Never invent an agent.
-- requiredCapabilities must come from that agent's taskTypes/canVerify.
+- Every task must set requiredAccessMode to exactly "analyze" or "edit".
+- "analyze" tasks are read-only: requirements/PRD analysis, research, review, verification, test reports.
+- "edit" tasks change files: implementation, bug fixes, refactors, UI/API work.
+- suggestedAgentId must be an agent whose accessMode matches requiredAccessMode. Never assign an edit task to an analyze agent, and never assign an analyze task to an edit agent.
 - Task keys are unique; dependsOn must be acyclic.
-- For multi-step delivery include one verification task with verification.verifies.
+- capabilityGaps must be [] unless a required role truly has no matching agent. If non-empty, each item is {"role":"frontend","missingCapabilities":["edit"],"reason":"..."}; never use bare strings.
+- For multi-step delivery include one verification task with requiredAccessMode "analyze" and verification.verifies.
 
 Shape:
-{"agentraPlanVersion":1,"goal":"...","constraints":[],"tasks":[{"key":"kebab-key","title":"...","description":"...","responsibilityRole":"frontend","requiredCapabilities":["frontend"],"suggestedAgentId":"id-or-null","inputs":[],"outputs":[],"acceptanceCriteria":[],"dependsOn":[],"parallelGroup":null,"approvalRequired":false,"verification":null}],"risks":[],"capabilityGaps":[],"approvalsRequired":[]}`
+{"agentraPlanVersion":1,"goal":"...","constraints":[],"tasks":[{"key":"kebab-key","title":"...","description":"...","responsibilityRole":"frontend","requiredAccessMode":"edit","suggestedAgentId":"id-or-null","inputs":[],"outputs":[],"acceptanceCriteria":[],"dependsOn":[],"parallelGroup":null,"approvalRequired":false,"verification":null}],"risks":[],"capabilityGaps":[],"approvalsRequired":[]}`
   }
 
   private async waitForTerminal(executionId: string): Promise<Execution> {

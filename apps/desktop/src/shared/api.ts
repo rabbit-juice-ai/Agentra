@@ -1,5 +1,7 @@
 import type {
   AgentCreateParams,
+  AgentGenerateDraftParams,
+  AgentGenerateDraftResult,
   AgentListResult,
   AgentResult,
   AgentUpdateParams,
@@ -65,6 +67,13 @@ import type {
   RestoreStatusResult,
   RuntimeEvent,
   RuntimeProviderListResult,
+  RuntimeProviderModelsParams,
+  RuntimeProviderModelsResult,
+  SkillCreateParams,
+  SkillDeleteResult,
+  SkillListResult,
+  SkillResult,
+  SkillUpdateParams,
   TeamArchiveParams,
   TeamCreateParams,
   TeamGetParams,
@@ -74,6 +83,7 @@ import type {
   TeamMemberRemoveParams,
   TeamMemberResult,
   TeamResult,
+  TeamUpdateParams,
   WorkCreateParams,
   WorkflowRunGetParams,
   WorkflowRunGetResult,
@@ -106,6 +116,11 @@ export const PLAN_GENERATE_TIMEOUT_MS = 120_000
 export const PLAN_START_RUN_TIMEOUT_MS = 60_000
 export const PLAN_REASSIGN_TIMEOUT_MS = 30_000
 
+/** Provider 模型读取需要启动一次 CLI 子进程，放宽 IPC/Daemon 超时。 */
+export const PROVIDER_MODELS_TIMEOUT_MS = 25_000
+/** AI 生成 Agent 草案会等待一次本地 CLI 执行。 */
+export const AGENT_GENERATE_DRAFT_TIMEOUT_MS = 120_000
+
 export function backupRpcTimeoutMs(
   operation: 'create' | 'list' | 'export' | 'precheck',
 ): number | undefined {
@@ -136,9 +151,18 @@ export type AgentraApi = {
   createAgent(params: AgentCreateParams): Promise<RpcResult<AgentResult>>
   updateAgent(params: AgentUpdateParams): Promise<RpcResult<AgentResult>>
   archiveAgent(params: { id: string }): Promise<RpcResult<AgentResult>>
+  generateAgentDraft(params: AgentGenerateDraftParams): Promise<RpcResult<AgentGenerateDraftResult>>
 
   listProviders(): Promise<RpcResult<RuntimeProviderListResult>>
   refreshProviders(): Promise<RpcResult<RuntimeProviderListResult>>
+  listProviderModels(
+    params: RuntimeProviderModelsParams,
+  ): Promise<RpcResult<RuntimeProviderModelsResult>>
+
+  listSkills(): Promise<RpcResult<SkillListResult>>
+  createSkill(params: SkillCreateParams): Promise<RpcResult<SkillResult>>
+  updateSkill(params: SkillUpdateParams): Promise<RpcResult<SkillResult>>
+  deleteSkill(params: { id: string }): Promise<RpcResult<SkillDeleteResult>>
 
   generatePlan(params: PlanGenerateParams): Promise<RpcResult<PlanGenerateResult>>
   getPlan(params: PlanGetParams): Promise<RpcResult<PlanGetResult>>
@@ -171,6 +195,7 @@ export type AgentraApi = {
   listTeams(params?: { includeArchived?: boolean }): Promise<RpcResult<TeamListResult>>
   getTeam(params: TeamGetParams): Promise<RpcResult<TeamResult>>
   createTeam(params: TeamCreateParams): Promise<RpcResult<TeamResult>>
+  updateTeam(params: TeamUpdateParams): Promise<RpcResult<TeamResult>>
   archiveTeam(params: TeamArchiveParams): Promise<RpcResult<TeamResult>>
   listTeamMembers(params: { teamId: string }): Promise<RpcResult<TeamMemberListResult>>
   addTeamMember(params: TeamMemberAddParams): Promise<RpcResult<TeamMemberResult>>

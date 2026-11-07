@@ -2,8 +2,10 @@ import path from 'node:path'
 import {
   AGENT_ARCHIVE_METHOD,
   AGENT_CREATE_METHOD,
+  AGENT_GENERATE_DRAFT_METHOD,
   AGENT_LIST_METHOD,
   AGENT_UPDATE_METHOD,
+  AgentGenerateDraftResult,
   AgentListResult,
   AgentResult,
   APPROVAL_DECIDE_METHOD,
@@ -85,8 +87,17 @@ import {
   RESTORE_STATUS_METHOD,
   RestoreStatusResultValue,
   RUNTIME_PROVIDER_LIST_METHOD,
+  RUNTIME_PROVIDER_MODELS_METHOD,
   RUNTIME_PROVIDER_REFRESH_METHOD,
   RuntimeProviderListResult,
+  RuntimeProviderModelsResult,
+  SKILL_CREATE_METHOD,
+  SKILL_DELETE_METHOD,
+  SKILL_LIST_METHOD,
+  SKILL_UPDATE_METHOD,
+  SkillDeleteResult,
+  SkillListResult,
+  SkillResult,
   TEAM_ARCHIVE_METHOD,
   TEAM_CREATE_METHOD,
   TEAM_GET_METHOD,
@@ -94,6 +105,7 @@ import {
   TEAM_MEMBER_ADD_METHOD,
   TEAM_MEMBER_LIST_METHOD,
   TEAM_MEMBER_REMOVE_METHOD,
+  TEAM_UPDATE_METHOD,
   TeamListResult,
   TeamMemberListResult,
   TeamMemberRemoveResult,
@@ -120,11 +132,13 @@ import {
 import { agentraHome, agentraPaths } from '@agentra/shared'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import {
+  AGENT_GENERATE_DRAFT_TIMEOUT_MS,
   BACKUP_LIST_DEFAULT_LIMIT,
   backupRpcTimeoutMs,
   PLAN_GENERATE_TIMEOUT_MS,
   PLAN_REASSIGN_TIMEOUT_MS,
   PLAN_START_RUN_TIMEOUT_MS,
+  PROVIDER_MODELS_TIMEOUT_MS,
   type RpcResult,
 } from '../shared/api'
 import { ensureCore } from './core-launcher'
@@ -202,12 +216,39 @@ function registerIpc(): void {
   ipcMain.handle('agentra:agent-archive', (_event, params: unknown) =>
     callCore(AGENT_ARCHIVE_METHOD, params, AgentResult),
   )
+  ipcMain.handle('agentra:agent-generate-draft', (_event, params: unknown) =>
+    callCore(
+      AGENT_GENERATE_DRAFT_METHOD,
+      params,
+      AgentGenerateDraftResult,
+      AGENT_GENERATE_DRAFT_TIMEOUT_MS,
+    ),
+  )
 
   ipcMain.handle('agentra:provider-list', () =>
     callCore(RUNTIME_PROVIDER_LIST_METHOD, {}, RuntimeProviderListResult),
   )
   ipcMain.handle('agentra:provider-refresh', () =>
     callCore(RUNTIME_PROVIDER_REFRESH_METHOD, {}, RuntimeProviderListResult),
+  )
+  ipcMain.handle('agentra:provider-models', (_event, params: unknown) =>
+    callCore(
+      RUNTIME_PROVIDER_MODELS_METHOD,
+      params,
+      RuntimeProviderModelsResult,
+      PROVIDER_MODELS_TIMEOUT_MS,
+    ),
+  )
+
+  ipcMain.handle('agentra:skill-list', () => callCore(SKILL_LIST_METHOD, {}, SkillListResult))
+  ipcMain.handle('agentra:skill-create', (_event, params: unknown) =>
+    callCore(SKILL_CREATE_METHOD, params, SkillResult),
+  )
+  ipcMain.handle('agentra:skill-update', (_event, params: unknown) =>
+    callCore(SKILL_UPDATE_METHOD, params, SkillResult),
+  )
+  ipcMain.handle('agentra:skill-delete', (_event, params: unknown) =>
+    callCore(SKILL_DELETE_METHOD, params, SkillDeleteResult),
   )
 
   ipcMain.handle('agentra:plan-generate', (_event, params: unknown) =>
@@ -266,6 +307,9 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:team-create', (_event, params: unknown) =>
     callCore(TEAM_CREATE_METHOD, params, TeamResult),
+  )
+  ipcMain.handle('agentra:team-update', (_event, params: unknown) =>
+    callCore(TEAM_UPDATE_METHOD, params, TeamResult),
   )
   ipcMain.handle('agentra:team-archive', (_event, params: unknown) =>
     callCore(TEAM_ARCHIVE_METHOD, params, TeamResult),

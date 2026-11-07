@@ -7,18 +7,21 @@ import {
   DAEMON_EXECUTION_SEND_MESSAGE_METHOD,
   DAEMON_EXECUTION_START_METHOD,
   DAEMON_EXECUTION_STATUS_METHOD,
+  DAEMON_PROVIDER_MODELS_METHOD,
   DAEMON_SUBSCRIBE_METHOD,
   DaemonDiscoverResult,
   DaemonExecutionListActiveResult,
   type DaemonExecutionStartParams,
   type DaemonExecutionStartResult,
   type DaemonExecutionStatusResult,
+  DaemonProviderModelsResult,
   EventFrame,
   PROTOCOL_VERSION,
   RpcMethodError,
   type RpcResponse,
   type RuntimeEvent,
   type RuntimeInfo,
+  type RuntimeProviderModel,
   DaemonExecutionStartResult as StartResultSchema,
   DaemonExecutionStatusResult as StatusResultSchema,
 } from '@agentra/protocol'
@@ -27,6 +30,8 @@ import type { DrainCoordinator } from '../lifecycle/drain-coordinator'
 
 export type RuntimeClient = {
   discover(): Promise<RuntimeInfo[]>
+  /** 可选：动态读取 Provider 模型；旧 Daemon/测试桩不支持时省略，Core 回退内置目录。 */
+  listModels?(providerId: string): Promise<RuntimeProviderModel[]>
   start(params: DaemonExecutionStartParams): Promise<DaemonExecutionStartResult>
   sendMessage(executionId: string, message: string): Promise<void>
   interrupt(executionId: string): Promise<{ interrupted: boolean }>
@@ -50,6 +55,7 @@ export type DaemonClientLogger = {
 }
 
 const CALL_TIMEOUT_MS = 15_000
+const MODEL_LIST_TIMEOUT_MS = 20_000
 const RECONNECT_BASE_MS = 500
 const RECONNECT_MAX_MS = 10_000
 /** S55-2B-1B：单次订阅 ACK 超时；超时销毁连接走既有退避重连。 */
@@ -96,6 +102,16 @@ export class DaemonClient implements RuntimeClient {
   async discover(): Promise<RuntimeInfo[]> {
     const result = await this.call(DAEMON_DISCOVER_METHOD, {})
     return DaemonDiscoverResult.parse(result).providers
+  }
+
+  async listModels(providerId: string): Promise<RuntimeProviderModel[]> {
+    // CLI 模型探测可能包含一次网络/进程启动，单独放宽超时。
+    const result = await this.call(
+      DAEMON_PROVIDER_MODELS_METHOD,
+      { providerId },
+      MODEL_LIST_TIMEOUT_MS,
+    )
+    return DaemonProviderModelsResult.parse(result).models
   }
 
   async start(params: DaemonExecutionStartParams): Promise<DaemonExecutionStartResult> {

@@ -9,6 +9,7 @@ import type {
   RuntimeProviderRecord,
   Work,
 } from '@agentra/protocol'
+import { AGENT_ACCESS_MODE_LABEL } from '@agentra/protocol'
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError, api } from '../services/api'
 import { Icon } from './Icon'
@@ -1022,11 +1023,7 @@ function PlanTaskCard({
           {task.description}
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          {task.requiredCapabilities.map((capability) => (
-            <span className="chip" key={capability}>
-              {capability}
-            </span>
-          ))}
+          <span className="chip">需要：{AGENT_ACCESS_MODE_LABEL[task.requiredAccessMode]}</span>
           {task.dependsOn.length > 0 && (
             <span className="faint" style={{ fontSize: 11 }}>
               依赖：{task.dependsOn.join('、')}

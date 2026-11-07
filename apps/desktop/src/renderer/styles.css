@@ -689,6 +689,16 @@ a {
   color: #3d5f51;
 }
 
+.provider-mark.ag {
+  background: #e6e3f2;
+  color: #514a73;
+}
+
+.provider-mark.gk {
+  background: #e8e8e8;
+  color: #3f3f3f;
+}
+
 .avatar {
   width: 24px;
   height: 24px;
@@ -1266,6 +1276,248 @@ a {
   margin-top: 3px;
 }
 
+/* ---------- team page (Multica squad style) ---------- */
+
+.team-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.team-list {
+  display: grid;
+  gap: 8px;
+}
+
+.team-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+}
+
+.team-list-item:hover {
+  border-color: var(--border-2);
+}
+
+.team-list-item.on {
+  border-color: var(--accent);
+  background: var(--fill);
+}
+
+.team-list-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.team-list-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-list-meta {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.team-detail {
+  min-width: 0;
+}
+
+.team-detail-card {
+  padding: 18px;
+}
+
+.team-detail-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.team-detail-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  background: var(--fill);
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.team-detail-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.team-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.team-detail-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.team-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.team-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 12px 0 14px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.team-detail-meta strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.team-detail-card .tabs {
+  margin-bottom: 12px;
+}
+
+.team-tab-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.team-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.team-panel-title {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.team-panel-desc {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-3);
+  max-width: 640px;
+}
+
+.team-member-list,
+.team-work-list {
+  display: grid;
+  gap: 6px;
+}
+
+.team-member-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.team-member-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.team-member-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.team-member-sub {
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-instructions-view {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--fill);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.team-instructions-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.team-instructions-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.team-work-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.team-work-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.team-work-name {
+  font-size: 12px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-work-meta {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
 /* ---------- forms / drawers ---------- */
 
 .drawer {
@@ -1292,6 +1544,18 @@ a {
   color: var(--text-3);
 }
 
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.field-label-row label {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
 .field .input,
 .field .select,
 .field .textarea {
@@ -1302,6 +1566,204 @@ a {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+
+/* 字段说明：淡到像暗纹，但足以解释字段用途。 */
+.field-hint {
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-3);
+  opacity: 0.72;
+}
+
+.agent-form {
+  display: grid;
+  gap: 14px;
+}
+
+.agent-form-identity {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.avatar-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.avatar-field {
+  position: relative;
+}
+
+.avatar-current-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.avatar-current {
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.avatar-current:hover .avatar {
+  border-color: var(--accent);
+}
+
+.avatar-current-copy {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+}
+
+.avatar-image {
+  display: block;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--fill);
+}
+
+.avatar-popover {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  width: 300px;
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--border-2);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 12%);
+}
+
+.avatar-popover-title {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.avatar-popover-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.avatar-choice {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  font-size: 17px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.avatar-choice:hover {
+  background: var(--fill);
+}
+
+.avatar-choice.on {
+  border-color: var(--accent);
+  background: var(--accent-soft, #f6e8e2);
+}
+
+.avatar-emoji {
+  font-size: 15px;
+  background: var(--fill);
+  color: inherit;
+}
+
+.access-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.access-option {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.access-option:hover {
+  background: var(--fill);
+}
+
+.access-option.on {
+  border-color: var(--accent);
+  background: var(--accent-soft, #f6e8e2);
+}
+
+.access-option-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.access-option-summary {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+.skill-picker {
+  display: grid;
+  gap: 5px;
+  max-height: 168px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--fill);
+}
+
+.skill-option {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.skill-option.on {
+  border-color: var(--accent);
+}
+
+.skill-option input {
+  margin-top: 2px;
+}
+
+.skill-option strong {
+  display: block;
+  font-size: 12px;
+}
+
+.skill-option-desc {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-3);
+  line-height: 1.5;
 }
 
 /* ---------- works board ---------- */
@@ -2362,6 +2824,12 @@ a {
   gap: 8px;
   width: min(420px, calc(100vw - 40px));
   pointer-events: none;
+}
+
+/* 弹框打开时把轻提示移到顶部，避免遮住弹框底部的提交按钮。 */
+body:has(.modal-backdrop) .toast-stack {
+  top: 16px;
+  bottom: auto;
 }
 
 .toast {

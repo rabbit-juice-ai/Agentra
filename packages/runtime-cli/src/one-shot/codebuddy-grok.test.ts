@@ -103,6 +103,26 @@ describe('GrokProvider', () => {
     })
   })
 
+  it('reads the model list from grok models output', async () => {
+    const provider = new GrokProvider({
+      executablePath: FAKE_GROK_PATH,
+      discovery: {
+        run: async () => ({
+          code: 0,
+          signal: null,
+          stdout:
+            'You are not authenticated.\n\nDefault model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n',
+          stderr: '',
+          timedOut: false,
+        }),
+      },
+    })
+    expect(await provider.listModels()).toEqual([
+      { id: 'grok-4.6', label: 'grok-4.6' },
+      { id: 'grok-4.5', label: 'grok-4.5' },
+    ])
+  })
+
   it('collects text deltas and the final result', async () => {
     const provider = new GrokProvider({ executablePath: FAKE_GROK_PATH })
     const executionId = 'exe-grok-1'

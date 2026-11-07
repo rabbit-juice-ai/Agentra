@@ -38,7 +38,7 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 0,
-        to: 22,
+        to: 26,
         applied: [
           'phase1_agent_runtime',
           'phase1_tool_permissions_and_provider_auth',
@@ -62,9 +62,13 @@ describe('migrate', () => {
           'node_assignment_overrides',
           'projects',
           'plans_nullable_work',
+          'agent_access_skills',
+          'agent_system_agents',
+          'team_members_drop_role',
+          'team_instructions',
         ],
       })
-      expect(currentUserVersion(db)).toBe(22)
+      expect(currentUserVersion(db)).toBe(26)
     } finally {
       db.close()
     }
@@ -94,10 +98,10 @@ describe('migrate', () => {
     try {
       migrate(db)
       const second = migrate(db)
-      expect(second).toEqual({ from: 22, to: 22, applied: [] })
+      expect(second).toEqual({ from: 26, to: 26, applied: [] })
       const third = migrate(db, MIGRATIONS)
       expect(third.applied).toEqual([])
-      expect(currentUserVersion(db)).toBe(22)
+      expect(currentUserVersion(db)).toBe(26)
     } finally {
       db.close()
     }
@@ -111,7 +115,7 @@ describe('migrate', () => {
 
     const second = openDatabase(file)
     try {
-      expect(currentUserVersion(second)).toBe(22)
+      expect(currentUserVersion(second)).toBe(26)
       const journal = second.prepare('PRAGMA journal_mode').get() as { journal_mode: string }
       expect(journal.journal_mode).toBe('wal')
       const fk = second.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }
@@ -179,7 +183,7 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 2,
-        to: 22,
+        to: 26,
         applied: [
           'phase2_team_work_assignment',
           'phase2_worktree_and_workdir_locks',
@@ -201,6 +205,10 @@ describe('migrate', () => {
           'node_assignment_overrides',
           'projects',
           'plans_nullable_work',
+          'agent_access_skills',
+          'agent_system_agents',
+          'team_members_drop_role',
+          'team_instructions',
         ],
       })
 
@@ -332,6 +340,214 @@ describe('migrate', () => {
       expect(fks.map((fk) => fk.from)).not.toContain('assignment_id')
       // 失败后外键开关必须恢复
       expect(db.prepare('PRAGMA foreign_keys').get()).toEqual({ foreign_keys: 1 })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('migrates Agent permissions to accessMode and creates the skills library (v23)', () => {
+    const file = tempDb()
+    const db = openDatabase(file)
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 22),
+      )
+      expect(currentUserVersion(db)).toBe(22)
+      db.prepare(
+        `INSERT INTO agent_profiles (
+          id, name, role, description, system_prompt, skills_json, capabilities_json,
+          model, tool_permissions_json, default_provider_id, max_concurrency, status,
+          created_at, updated_at, archived_at
+        ) VALUES (?, ?, ?, '', '', '[]', '{}', NULL, ?, NULL, 1, 'active', 't0', 't0', NULL)`,
+      ).run(
+        'agt-planner',
+        'Planner',
+        'planner',
+        '{"version":1,"allow":["Read","Edit","Write"],"deny":[]}',
+      )
+      db.prepare(
+        `INSERT INTO agent_profiles (
+          id, name, role, description, system_prompt, skills_json, capabilities_json,
+          model, tool_permissions_json, default_provider_id, max_concurrency, status,
+          created_at, updated_at, archived_at
+        ) VALUES (?, ?, ?, '', '', '[]', '{}', NULL, ?, NULL, 1, 'active', 't0', 't0', NULL)`,
+      ).run('agt-analyze', 'Analyzer', 'reviewer', '{"version":1,"allow":["Read"],"deny":[]}')
+
+      const result = migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 23),
+      )
+      expect(result).toEqual({ from: 22, to: 23, applied: ['agent_access_skills'] })
+
+      const rows = db
+        .prepare(
+          'SELECT id, avatar, access_mode, system_kind, skill_ids_json FROM agent_profiles ORDER BY id',
+        )
+        .all()
+      expect(rows).toEqual([
+        {
+          id: 'agt-analyze',
+          avatar: '🤖',
+          access_mode: 'analyze',
+          system_kind: null,
+          skill_ids_json: '[]',
+        },
+        {
+          id: 'agt-planner',
+          avatar: '🤖',
+          access_mode: 'edit',
+          system_kind: 'planner',
+          skill_ids_json: '[]',
+        },
+      ])
+
+      const columns = (
+        db.prepare("SELECT name FROM pragma_table_info('agent_profiles')").all() as {
+          name: string
+        }[]
+      ).map((column) => column.name)
+      expect(columns).toEqual(expect.arrayContaining(['avatar', 'access_mode', 'skill_ids_json']))
+      expect(columns).not.toContain('role')
+      expect(columns).not.toContain('skills_json')
+      expect(columns).not.toContain('capabilities_json')
+
+      const tables = (
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+          name: string
+        }[]
+      ).map((row) => row.name)
+      expect(tables).toContain('skills')
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    } finally {
+      db.close()
+    }
+  })
+
+  it('rebuilds agent_profiles to allow the agent_designer system kind (v24)', () => {
+    const file = tempDb()
+    const db = openDatabase(file)
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 23),
+      )
+      expect(currentUserVersion(db)).toBe(23)
+      const insertAgent = db.prepare(
+        `INSERT INTO agent_profiles (
+          id, name, description, system_prompt, default_provider_id, max_concurrency, status,
+          created_at, updated_at, archived_at, tool_permissions_json, model, avatar, access_mode,
+          skill_ids_json, system_kind
+        ) VALUES (?, ?, '', '', NULL, 1, 'active', 't0', 't0', NULL,
+          '{"version":1,"allow":["Read"],"deny":[]}', NULL, '🤖', 'analyze', '[]', ?)`,
+      )
+      insertAgent.run('agt-planner', 'Planner', 'planner')
+
+      const result = migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 24),
+      )
+      expect(result).toEqual({ from: 23, to: 24, applied: ['agent_system_agents'] })
+      expect(
+        db.prepare("SELECT system_kind FROM agent_profiles WHERE id = 'agt-planner'").get(),
+      ).toEqual({ system_kind: 'planner' })
+
+      insertAgent.run('agt-designer', 'Agent 设计师', 'agent_designer')
+      expect(
+        db.prepare("SELECT system_kind FROM agent_profiles WHERE id = 'agt-designer'").get(),
+      ).toEqual({ system_kind: 'agent_designer' })
+      expect(() => insertAgent.run('agt-hacker', 'Hacker', 'hacker')).toThrow(/CHECK/)
+
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+      expect(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_profiles_status'",
+          )
+          .get(),
+      ).toEqual({ name: 'idx_agent_profiles_status' })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('drops the team role column while preserving memberships (v25)', () => {
+    const file = tempDb()
+    const db = openDatabase(file)
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 24),
+      )
+      expect(currentUserVersion(db)).toBe(24)
+      db.prepare(
+        `INSERT INTO teams (id, name, description, settings_json, status, created_at, updated_at, archived_at)
+         VALUES ('team-1', 'T', '', '{}', 'active', 't0', 't0', NULL)`,
+      ).run()
+      db.prepare(
+        `INSERT INTO agent_profiles (
+          id, name, description, system_prompt, default_provider_id, max_concurrency, status,
+          created_at, updated_at, archived_at, tool_permissions_json, model, avatar, access_mode,
+          skill_ids_json, system_kind
+        ) VALUES ('agt-1', 'A', '', '', NULL, 1, 'active', 't0', 't0', NULL,
+          '{"version":1,"allow":["Read"],"deny":[]}', NULL, '🤖', 'analyze', '[]', NULL)`,
+      ).run()
+      db.prepare(
+        `INSERT INTO team_members (id, team_id, agent_id, team_role, permissions_json, joined_at)
+         VALUES ('tm-1', 'team-1', 'agt-1', 'lead', '{}', 't0')`,
+      ).run()
+
+      const result = migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 25),
+      )
+      expect(result).toEqual({ from: 24, to: 25, applied: ['team_members_drop_role'] })
+      const columns = (
+        db.prepare("SELECT name FROM pragma_table_info('team_members')").all() as {
+          name: string
+        }[]
+      ).map((column) => column.name)
+      expect(columns).not.toContain('team_role')
+      expect(
+        db.prepare('SELECT id, team_id, agent_id, permissions_json FROM team_members').get(),
+      ).toEqual({
+        id: 'tm-1',
+        team_id: 'team-1',
+        agent_id: 'agt-1',
+        permissions_json: '{}',
+      })
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    } finally {
+      db.close()
+    }
+  })
+
+  it('adds team instructions while preserving existing teams (v26)', () => {
+    const file = tempDb()
+    const db = openDatabase(file)
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 25),
+      )
+      expect(currentUserVersion(db)).toBe(25)
+      db.prepare(
+        `INSERT INTO teams (id, name, description, settings_json, status, created_at, updated_at, archived_at)
+         VALUES ('team-1', 'T', 'desc', '{}', 'active', 't0', 't0', NULL)`,
+      ).run()
+
+      const result = migrate(db)
+      expect(result).toEqual({ from: 25, to: 26, applied: ['team_instructions'] })
+      expect(db.prepare('SELECT id, name, description, instructions FROM teams').get()).toEqual({
+        id: 'team-1',
+        name: 'T',
+        description: 'desc',
+        instructions: '',
+      })
+      db.prepare("UPDATE teams SET instructions = '先写测试' WHERE id = 'team-1'").run()
+      expect(db.prepare('SELECT instructions FROM teams').get()).toEqual({
+        instructions: '先写测试',
+      })
     } finally {
       db.close()
     }

@@ -6,6 +6,7 @@ import {
   DAEMON_EXECUTION_SEND_MESSAGE_METHOD,
   DAEMON_EXECUTION_START_METHOD,
   DAEMON_EXECUTION_STATUS_METHOD,
+  DAEMON_PROVIDER_MODELS_METHOD,
   DAEMON_SUBSCRIBE_METHOD,
   DaemonDiscoverParams,
   DaemonDiscoverResult,
@@ -19,6 +20,8 @@ import {
   DaemonExecutionStartParams,
   DaemonExecutionStartResult,
   DaemonExecutionStatusResult,
+  DaemonProviderModelsParams,
+  DaemonProviderModelsResult,
   DaemonSubscribeParams,
   DaemonSubscribeResult,
   defineMethod,
@@ -34,6 +37,11 @@ export function runtimeMethods(manager: ExecutionManager, hub: RuntimeEventHub):
       DaemonDiscoverParams,
       DaemonDiscoverResult,
       async () => ({ providers: await manager.discover() }),
+    ),
+    [DAEMON_PROVIDER_MODELS_METHOD]: defineMethod(
+      DaemonProviderModelsParams,
+      DaemonProviderModelsResult,
+      async (params) => ({ models: await manager.listModels(params.providerId) }),
     ),
     [DAEMON_EXECUTION_START_METHOD]: defineMethod(
       DaemonExecutionStartParams,

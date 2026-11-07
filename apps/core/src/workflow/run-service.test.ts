@@ -122,10 +122,10 @@ function setup(options: { repositoryPath?: string | null } = {}): {
      VALUES ('work-1', 'W', '', '', 'active', 'normal', '/tmp/w', ?, '{}', ?, ?, NULL)`,
   ).run(options.repositoryPath ?? null, NOW, NOW)
   const insertAgent = db.prepare(
-    `INSERT INTO agent_profiles (id, name, role, description, system_prompt, skills_json,
-       default_provider_id, max_concurrency, status, created_at, updated_at, archived_at,
+    `INSERT INTO agent_profiles (id, name, avatar, description, system_prompt, skill_ids_json,
+       access_mode, system_kind, default_provider_id, max_concurrency, status, created_at, updated_at, archived_at,
        tool_permissions_json)
-     VALUES (?, ?, 'dev', '', '', '[]', NULL, 1, 'active', ?, ?, NULL,
+     VALUES (?, ?, '🤖', '', '', '[]', 'edit', NULL, NULL, 1, 'active', ?, ?, NULL,
        '{"version":1,"allow":["Read"],"deny":[]}')`,
   )
   for (const id of ['agent-1', 'agent-2']) insertAgent.run(id, id, NOW, NOW)

@@ -6,7 +6,9 @@
 产品面（2026-11-06，D-028/D-029/D-030）：用户只面对 项目 → 任务 → 群聊 → 计划/执行 → 审批/返工；工作流引擎是内部执行内核，模板/版本/画布与原始启动入口已移除。  
 规划可以独立于任务，完成后转为任务或项目；也可以在任务群聊里直接规划、批准并启动执行。  
 任务详情以群聊为主，概览/团队/交付物/设置位于右侧；群聊支持 @ Agent 协作。  
-Provider 通过 Runtime SDK 接入：当前支持 Claude Code、Codex、Gemini CLI 的自动发现（Codex/Gemini 为单回合 headless）。
+团队页按「成员 / 指引 / 近期任务」组织；团队指引是成员执行关联任务时的共享上下文，不授予权限、不改变选人。  
+Agent 只保留一个「工作权限」维度（只读分析 / 编辑），工具策略由 Core 派生；技能放入全局技能库，Agent 从库中选择；新建 Agent 必须显式选择 Provider 与模型，并支持手动创建或 AI 生成草案后调整。  
+Provider 通过 Runtime SDK 接入：当前自动发现 Claude Code、Codex、Gemini CLI、CodeBuddy、Grok CLI、Antigravity CLI（Claude Code 为原生双向会话，其余为单回合 headless）；模型列表读取当前配置的真实模型（Claude Code 通过代理/官方 `/v1/models`，Codex 通过 cc-switch 目录，Antigravity/Grok 调 CLI），不支持时回退内置候选。
 UI/UX 参考：Antumi（参考交互与布局；源码 Apache-2.0，复用需保留版权与许可声明；其无工作流引擎，本产品 Workflow Engine 自研）
 
 ## 给本地 AI 编程 Agent 的启动说明

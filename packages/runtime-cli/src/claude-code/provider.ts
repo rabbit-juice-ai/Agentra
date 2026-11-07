@@ -6,6 +6,7 @@ import {
   type ExecutionStatus,
   type InterruptResult,
   type ProviderCapabilities,
+  type ProviderModelInfo,
   type RuntimeConfig,
   RuntimeError,
   type RuntimeEvent,
@@ -20,6 +21,7 @@ import {
 import { buildChildEnv, buildClaudeArgs } from './args'
 import { CLAUDE_CODE_CAPABILITIES, CLAUDE_CODE_PROVIDER_ID } from './capabilities'
 import { type DiscoveryOptions, discoverClaudeCode } from './discovery'
+import { discoverClaudeModels } from './models'
 import {
   buildInterruptFrame,
   buildUserFrame,
@@ -84,6 +86,14 @@ export class ClaudeCodeProvider implements RuntimeProvider {
     const info = await this.discoverInfo()
     this.executablePath = info.executablePath
     return [info]
+  }
+
+  /** 读取当前 Claude Code 配置的真实模型目录（代理 /v1/models 或 settings 映射）。 */
+  async listModels(): Promise<ProviderModelInfo[]> {
+    return discoverClaudeModels({
+      env: this.discovery.env,
+      homeDir: this.discovery.homeDir,
+    })
   }
 
   protected async discoverInfo(): Promise<RuntimeInfo> {

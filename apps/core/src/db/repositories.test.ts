@@ -56,22 +56,16 @@ function agentProfile(overrides: Partial<AgentProfile> = {}): AgentProfile {
   return {
     id: 'agt-1',
     name: 'Frontend Engineer',
-    role: 'engineer',
+    avatar: '🧑‍💻',
     description: 'builds UI',
     systemPrompt: 'be precise',
-    skills: ['react', 'css'],
-    capabilities: {
-      taskTypes: ['frontend'],
-      inputTypes: ['spec'],
-      outputTypes: ['code'],
-      canVerify: [],
-      canApprove: [],
-      excludedTaskTypes: [],
-    },
+    skillIds: ['skl-react', 'skl-css'],
+    accessMode: 'edit',
+    systemKind: null,
     model: null,
     toolPermissions: { version: 1, allow: ['Read', 'Edit'], deny: ['Bash'] },
     defaultProviderId: null,
-    maxConcurrency: 1,
+    maxConcurrency: 5,
     status: 'active',
     createdAt: NOW,
     updatedAt: NOW,
@@ -166,22 +160,17 @@ describe('AgentRepository', () => {
     expect(agents.get('agt-1')).toEqual(agentProfile())
     expect(agents.list()).toHaveLength(1)
 
-    agents.update(agentProfile({ name: 'Senior FE', updatedAt: LATER, skills: ['react'] }))
-    expect(agents.get('agt-1')).toMatchObject({ name: 'Senior FE', skills: ['react'] })
+    agents.update(agentProfile({ name: 'Senior FE', updatedAt: LATER, skillIds: ['skl-react'] }))
+    expect(agents.get('agt-1')).toMatchObject({ name: 'Senior FE', skillIds: ['skl-react'] })
 
     agents.update(
       agentProfile({
-        capabilities: {
-          ...agentProfile().capabilities,
-          taskTypes: ['frontend', 'design-system'],
-          canVerify: ['frontend'],
-        },
+        accessMode: 'analyze',
+        avatar: '🧪',
+        updatedAt: LATER,
       }),
     )
-    expect(agents.get('agt-1')?.capabilities).toMatchObject({
-      taskTypes: ['frontend', 'design-system'],
-      canVerify: ['frontend'],
-    })
+    expect(agents.get('agt-1')).toMatchObject({ accessMode: 'analyze', avatar: '🧪' })
 
     agents.update(agentProfile({ status: 'archived', archivedAt: LATER, updatedAt: LATER }))
     expect(agents.list()).toHaveLength(0)
@@ -227,11 +216,11 @@ describe('AgentRepository', () => {
     expect(agents.defaultProviderId('agt-1')).toBeNull()
   })
 
-  it('rejects corrupted skills JSON on read', () => {
+  it('rejects corrupted skill ids JSON on read', () => {
     seedProvider()
     agents.insert(agentProfile())
-    db.prepare('UPDATE agent_profiles SET skills_json = ? WHERE id = ?').run('not json', 'agt-1')
-    expect(() => agents.get('agt-1')).toThrow(/skills_json/)
+    db.prepare('UPDATE agent_profiles SET skill_ids_json = ? WHERE id = ?').run('not json', 'agt-1')
+    expect(() => agents.get('agt-1')).toThrow(/skill_ids_json/)
   })
 
   it('rejects a duplicate agent id (primary key)', () => {

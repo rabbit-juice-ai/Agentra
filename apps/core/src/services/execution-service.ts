@@ -34,6 +34,8 @@ import {
 } from '../db/repositories/execution-repository'
 import type { NodeRunRepository } from '../db/repositories/node-run-repository'
 import type { SessionRepository } from '../db/repositories/session-repository'
+import type { SkillRepository } from '../db/repositories/skill-repository'
+import type { TeamRepository } from '../db/repositories/team-repository'
 import type { WorkRepository } from '../db/repositories/work-repository'
 import type { DrainCoordinator } from '../lifecycle/drain-coordinator'
 import type { NodeRunStatus } from '../workflow/state-machine'
@@ -78,6 +80,10 @@ export type ExecutionServiceDeps = {
   worktrees: WorktreeService
   locks: WorkdirLockService
   agents: AgentRepository
+  /** 可选：把 Agent 选中的技能指令追加到工作指令之后；缺省不注入。 */
+  skills?: SkillRepository
+  /** 可选：Work 关联团队且 Agent 是成员时，注入团队指引。 */
+  teams?: TeamRepository
   assignments: AssignmentRepository
   sessions: SessionRepository
   executions: ExecutionRepository
@@ -316,6 +322,8 @@ export class ExecutionService {
   private readonly runtime: RuntimeClient
   private readonly registry: ProviderRegistry
   private readonly agents: AgentRepository
+  private readonly skills: SkillRepository | undefined
+  private readonly teams: TeamRepository | undefined
   private readonly assignments: AssignmentRepository
   private readonly sessions: SessionRepository
   private readonly executions: ExecutionRepository
@@ -342,6 +350,8 @@ export class ExecutionService {
     this.runtime = deps.runtime
     this.registry = deps.registry
     this.agents = deps.agents
+    this.skills = deps.skills
+    this.teams = deps.teams
     this.assignments = deps.assignments
     this.sessions = deps.sessions
     this.executions = deps.executions
@@ -383,6 +393,37 @@ export class ExecutionService {
     } finally {
       lease?.release()
     }
+  }
+
+  /**
+   * 工作指令 = Agent 自身提示词 + 所选技能 + 关联团队指引。
+   * 团队指引只在「Work 关联该团队」且「Agent 是该团队成员」时注入；
+   * 它提供共享上下文，不是权限，也不影响选人。
+   */
+  private composeSystemPrompt(agent: AgentProfile, workId: string | null): string | undefined {
+    const base = agent.systemPrompt.trim()
+    const skills = this.skills?.listByIds(agent.skillIds) ?? []
+    const skillBlocks = skills
+      .map((skill) => `## ${skill.name}\n${skill.instructions.trim()}`)
+      .filter((block) => block.length > 0)
+    const teamBlocks: string[] = []
+    if (workId && this.teams) {
+      for (const teamId of this.works.listTeamIds(workId)) {
+        const team = this.teams.get(teamId)
+        if (team?.status !== 'active') continue
+        if (!this.teams.getMember(teamId, agent.id)) continue
+        const instructions = team.instructions.trim()
+        if (instructions.length > 0) {
+          teamBlocks.push(`# 团队指引 · ${team.name}\n\n${instructions}`)
+        }
+      }
+    }
+    const sections = [
+      base,
+      skillBlocks.length > 0 ? `# 技能\n\n${skillBlocks.join('\n\n')}` : '',
+      ...teamBlocks,
+    ].filter((section) => section.length > 0)
+    return sections.length > 0 ? sections.join('\n\n') : undefined
   }
 
   private assertStartAllowed(): void {
@@ -522,7 +563,7 @@ export class ExecutionService {
       workingDirectory,
       sessionId,
       externalSessionId,
-      systemPrompt: agent.systemPrompt.length > 0 ? agent.systemPrompt : undefined,
+      systemPrompt: this.composeSystemPrompt(agent, workId),
       model: agent.model ?? undefined,
       allowedTools: toolPermissions.allow,
       disallowedTools: toolPermissions.deny,

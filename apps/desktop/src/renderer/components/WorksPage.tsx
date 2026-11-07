@@ -723,7 +723,7 @@ export function WorksPage({
               >
                 {agents.map((agent) => (
                   <option key={agent.id} value={agent.id}>
-                    {agent.name} · {agent.role}
+                    {agent.name}
                   </option>
                 ))}
               </select>

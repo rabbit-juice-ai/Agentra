@@ -2,11 +2,14 @@ import type {} from '@agentra/protocol'
 import {
   AGENT_ARCHIVE_METHOD,
   AGENT_CREATE_METHOD,
+  AGENT_GENERATE_DRAFT_METHOD,
   AGENT_GET_METHOD,
   AGENT_LIST_METHOD,
   AGENT_UPDATE_METHOD,
   AgentArchiveParams,
   AgentCreateParams,
+  AgentGenerateDraftParams,
+  AgentGenerateDraftResult,
   AgentGetParams,
   AgentListParams,
   AgentListResult,
@@ -142,10 +145,24 @@ import {
   RestoreStatusResultValue,
   RpcMethodError,
   RUNTIME_PROVIDER_LIST_METHOD,
+  RUNTIME_PROVIDER_MODELS_METHOD,
   RUNTIME_PROVIDER_REFRESH_METHOD,
   RuntimeProviderListParams,
   RuntimeProviderListResult,
+  RuntimeProviderModelsParams,
+  RuntimeProviderModelsResult,
   RuntimeProviderRefreshParams,
+  SKILL_CREATE_METHOD,
+  SKILL_DELETE_METHOD,
+  SKILL_LIST_METHOD,
+  SKILL_UPDATE_METHOD,
+  SkillCreateParams,
+  SkillDeleteParams,
+  SkillDeleteResult,
+  SkillListParams,
+  SkillListResult,
+  SkillResult,
+  SkillUpdateParams,
   TEAM_ARCHIVE_METHOD,
   TEAM_CREATE_METHOD,
   TEAM_GET_METHOD,
@@ -153,6 +170,7 @@ import {
   TEAM_MEMBER_ADD_METHOD,
   TEAM_MEMBER_LIST_METHOD,
   TEAM_MEMBER_REMOVE_METHOD,
+  TEAM_UPDATE_METHOD,
   TeamArchiveParams,
   TeamCreateParams,
   TeamGetParams,
@@ -165,6 +183,7 @@ import {
   TeamMemberRemoveResult,
   TeamMemberResult,
   TeamResult,
+  TeamUpdateParams,
   WORK_ACTIVATE_METHOD,
   WORK_ARCHIVE_METHOD,
   WORK_COMPLETE_METHOD,
@@ -198,6 +217,7 @@ import {
 } from '@agentra/protocol'
 import { DrainCoordinator } from '../lifecycle/drain-coordinator'
 import { MaintenanceController } from '../lifecycle/maintenance-controller'
+import type { AgentDesignerService } from '../services/agent-designer-service'
 import type { AgentService } from '../services/agent-service'
 import type { ApprovalRpcService } from '../services/approval-rpc-service'
 import type { ArtifactRpcService } from '../services/artifact-rpc-service'
@@ -215,6 +235,7 @@ import { ProjectServiceError } from '../services/project-service'
 import type { ProviderRegistry } from '../services/provider-registry'
 import type { RestoreCoordinator } from '../services/restore-coordinator'
 import { RestoreCoordinatorError } from '../services/restore-coordinator'
+import type { SkillService } from '../services/skill-service'
 import type { TeamService } from '../services/team-service'
 import type { WorkService } from '../services/work-service'
 import type { WorktreeService } from '../services/worktree-service'
@@ -224,6 +245,8 @@ import type { MethodTable, RpcMethodDef } from './dispatcher'
 
 export type CoreMethodServices = {
   agents: AgentService
+  skills: SkillService
+  agentDesigner?: AgentDesignerService
   planner?: PlannerService
   plans?: PlanService
   projects?: ProjectService
@@ -370,6 +393,32 @@ export function coreMethods(
     [AGENT_ARCHIVE_METHOD]: defineMethod(AgentArchiveParams, AgentResult, (params) => ({
       agent: services.agents.archive(params.id),
     })),
+    [AGENT_GENERATE_DRAFT_METHOD]: defineMethod(
+      AgentGenerateDraftParams,
+      AgentGenerateDraftResult,
+      async (params) => {
+        if (!services.agentDesigner) {
+          throw new RpcMethodError('NOT_READY', 'agent designer is not configured')
+        }
+        return services.agentDesigner.generateDraft(params.brief)
+      },
+    ),
+
+    [SKILL_LIST_METHOD]: defineMethod(
+      SkillListParams,
+      SkillListResult,
+      () => ({ skills: services.skills.list() }),
+      'read',
+    ),
+    [SKILL_CREATE_METHOD]: defineMethod(SkillCreateParams, SkillResult, (params) => ({
+      skill: services.skills.create(params),
+    })),
+    [SKILL_UPDATE_METHOD]: defineMethod(SkillUpdateParams, SkillResult, (params) => ({
+      skill: services.skills.update(params),
+    })),
+    [SKILL_DELETE_METHOD]: defineMethod(SkillDeleteParams, SkillDeleteResult, (params) =>
+      services.skills.delete(params.id),
+    ),
 
     [PLAN_GENERATE_METHOD]: defineMethod(PlanGenerateParams, PlanGenerateResult, async (params) => {
       try {
@@ -524,6 +573,15 @@ export function coreMethods(
       RuntimeProviderListResult,
       async () => ({ providers: await services.registry.refresh() }),
     ),
+    [RUNTIME_PROVIDER_MODELS_METHOD]: defineMethod(
+      RuntimeProviderModelsParams,
+      RuntimeProviderModelsResult,
+      async (params) => {
+        const { provider, models, source } = await services.registry.listModels(params.providerId)
+        return { providerName: provider.providerName, models, source }
+      },
+      'read',
+    ),
 
     [EXECUTION_START_METHOD]: defineMethod(
       ExecutionStartParams,
@@ -599,6 +657,10 @@ export function coreMethods(
     [TEAM_CREATE_METHOD]: defineMethod(TeamCreateParams, TeamResult, (params) => ({
       team: services.teams.create(params),
     })),
+    [TEAM_UPDATE_METHOD]: defineMethod(TeamUpdateParams, TeamResult, (params) => {
+      const { id, ...input } = params
+      return { team: services.teams.update(id, input) }
+    }),
     [TEAM_ARCHIVE_METHOD]: defineMethod(TeamArchiveParams, TeamResult, (params) => ({
       team: services.teams.archive(params.id),
     })),
@@ -609,7 +671,7 @@ export function coreMethods(
       'read',
     ),
     [TEAM_MEMBER_ADD_METHOD]: defineMethod(TeamMemberAddParams, TeamMemberResult, (params) => ({
-      member: services.teams.addMember(params.teamId, params.agentId, params.teamRole),
+      member: services.teams.addMember(params.teamId, params.agentId),
     })),
     [TEAM_MEMBER_REMOVE_METHOD]: defineMethod(
       TeamMemberRemoveParams,

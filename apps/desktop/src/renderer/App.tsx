@@ -8,6 +8,7 @@ import { PlanPage } from './components/PlanPage'
 import { ProjectsPage } from './components/ProjectsPage'
 import { providerMark, providerMarkClass } from './components/ProviderBadge'
 import { SettingsPage } from './components/SettingsPage'
+import { SkillsPage } from './components/SkillsPage'
 import { StatusBadge } from './components/StatusBadge'
 import { TeamsPage } from './components/TeamsPage'
 import { WorksPage } from './components/WorksPage'
@@ -22,6 +23,7 @@ type Tab =
   | 'plan'
   | 'projects'
   | 'agents'
+  | 'skills'
   | 'teams'
   | 'works'
   | 'approvals'
@@ -49,6 +51,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { tab: 'approvals', label: '审批中心', icon: 'check', hot: true },
       { tab: 'artifacts', label: '交付物', icon: 'box' },
       { tab: 'agents', label: 'Agents', icon: 'users' },
+      { tab: 'skills', label: '技能', icon: 'doc' },
       { tab: 'teams', label: '团队', icon: 'users' },
     ],
   },
@@ -122,6 +125,7 @@ export function App() {
     if (item.tab === 'projects') return store.projects.length > 0 ? store.projects.length : null
     if (item.tab === 'works') return store.works.length > 0 ? store.works.length : null
     if (item.tab === 'agents') return store.agents.length > 0 ? store.agents.length : null
+    if (item.tab === 'skills') return store.skills.length > 0 ? store.skills.length : null
     if (item.tab === 'teams') return store.teams.length > 0 ? store.teams.length : null
     return null
   }
@@ -215,11 +219,16 @@ export function App() {
               teams={store.teams}
               agents={store.agents}
               providers={store.providers}
+              works={store.works}
               membersByTeam={store.teamMembers}
               busy={store.busy}
               onCreate={store.actions.createTeam}
+              onUpdate={store.actions.updateTeam}
+              onArchive={store.actions.archiveTeam}
               onAddMember={store.actions.addTeamMember}
+              onRemoveMember={store.actions.removeTeamMember}
               onRefreshMembers={store.actions.refreshTeamMembers}
+              onOpenTasks={() => setTab('works')}
             />
           ) : tab === 'projects' ? (
             <ProjectsPage
@@ -267,10 +276,19 @@ export function App() {
               onRefreshProviders={store.actions.refreshProviderDiscovery}
               onOpenBackups={() => setTab('backups')}
             />
+          ) : tab === 'skills' ? (
+            <SkillsPage
+              skills={store.skills}
+              busy={store.busy}
+              onCreate={store.actions.createSkill}
+              onUpdate={store.actions.updateSkill}
+              onDelete={store.actions.deleteSkill}
+            />
           ) : (
             <AgentsPage
               agents={store.agents}
               providers={store.providers}
+              skills={store.skills}
               busy={store.busy}
               runningExecutionByAgent={runningExecutionByAgent}
               onCreate={store.actions.createAgent}

@@ -27,6 +27,7 @@ import { ProjectRepository } from './db/repositories/project-repository'
 import { ProviderRepository } from './db/repositories/provider-repository'
 import { ReworkRequestRepository } from './db/repositories/rework-request-repository'
 import { SessionRepository } from './db/repositories/session-repository'
+import { SkillRepository } from './db/repositories/skill-repository'
 import { TeamRepository } from './db/repositories/team-repository'
 import { WorkRepository } from './db/repositories/work-repository'
 import { WorkflowEventRepository } from './db/repositories/workflow-event-repository'
@@ -40,6 +41,7 @@ import { type RestoreJournal, RestoreJournalStore } from './lifecycle/restore-jo
 import { startBootSocket } from './rpc/boot-socket'
 import { coreMethods } from './rpc/methods'
 import { startWsServer } from './rpc/ws-server'
+import { AgentDesignerService } from './services/agent-designer-service'
 import { AgentService } from './services/agent-service'
 import { ApprovalRpcService } from './services/approval-rpc-service'
 import { ArtifactRpcService } from './services/artifact-rpc-service'
@@ -59,6 +61,7 @@ import { RestoreArchiveService } from './services/restore-archive-service'
 import { RestoreBootService } from './services/restore-boot-service'
 import { RestoreCoordinator } from './services/restore-coordinator'
 import { RestoreExecutor } from './services/restore-executor'
+import { SkillService } from './services/skill-service'
 import { TeamService } from './services/team-service'
 import { WorkService } from './services/work-service'
 import { currentBootUuid, WorkdirLockService } from './services/workdir-lock-service'
@@ -412,6 +415,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   }
 
   const agentRepository = new AgentRepository(db)
+  const skillRepository = new SkillRepository(db)
   const teamRepository = new TeamRepository(db)
   const workRepository = new WorkRepository(db)
   const projectRepository = new ProjectRepository(db)
@@ -439,7 +443,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const registry = new ProviderRegistry(providerRepository, runtime, logger, undefined, drain)
   await registry.refreshQuietly()
 
-  const agentService = new AgentService(db, agentRepository, providerRepository)
+  const agentService = new AgentService(db, agentRepository, providerRepository, skillRepository)
+  const skillService = new SkillService(db, skillRepository, agentRepository)
   const locks = new WorkdirLockService(db)
   // Core 启动即回收陈旧锁（上一次 Core 被 kill -9 之后留下的）。
   // 身份不可读时只按 holder_pid 死亡回收，并在日志里标明 degraded。
@@ -506,6 +511,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     locks,
     assignments: assignmentRepository,
     agents: agentRepository,
+    skills: skillRepository,
+    teams: teamRepository,
     sessions: sessionRepository,
     executions: executionRepository,
     logs: executionLogRepository,
@@ -627,6 +634,16 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     agents: agentService,
     executions: executionService,
     works: workService,
+    providers: registry,
+    skills: skillRepository,
+    extractOutput: (executionId) => artifactExchange.extract(executionId),
+    logger,
+  })
+  const agentDesignerService = new AgentDesignerService({
+    agents: agentService,
+    executions: executionService,
+    providers: registry,
+    skills: skillRepository,
     extractOutput: (executionId) => artifactExchange.extract(executionId),
     logger,
   })
@@ -992,6 +1009,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
         paths.daemonSocket,
         {
           agents: agentService,
+          skills: skillService,
+          agentDesigner: agentDesignerService,
           planner: plannerService,
           plans: planService,
           projects: projectService,

@@ -28,6 +28,7 @@ import { ExecutionRepository } from '../db/repositories/execution-repository'
 import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
+import { SkillRepository } from '../db/repositories/skill-repository'
 import { TeamRepository } from '../db/repositories/team-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
@@ -37,6 +38,7 @@ import { AssignmentService } from '../services/assignment-service'
 import { CoreEventHub } from '../services/event-hub'
 import { ExecutionService } from '../services/execution-service'
 import { ProviderRegistry } from '../services/provider-registry'
+import { SkillService } from '../services/skill-service'
 import { TeamService } from '../services/team-service'
 import { WorkService } from '../services/work-service'
 import { WorkdirLockService } from '../services/workdir-lock-service'
@@ -115,8 +117,10 @@ function harness(): {
     now: () => NOW,
   })
 
+  const skillRepository = new SkillRepository(db)
   const methods: MethodTable = coreMethods('0.1.0', '/tmp/none.sock', {
-    agents: new AgentService(db, agentRepository, providerRepository, () => NOW),
+    agents: new AgentService(db, agentRepository, providerRepository, skillRepository, () => NOW),
+    skills: new SkillService(db, skillRepository, agentRepository, () => NOW),
     registry,
     executions,
     hub: new CoreEventHub(),
@@ -267,8 +271,8 @@ describe('阶段 2 RPC 方法表', () => {
     if (!agent) {
       h.db
         .prepare(
-          `INSERT INTO agent_profiles (id, name, role, description, system_prompt, skills_json, tool_permissions_json, default_provider_id, max_concurrency, status, created_at, updated_at, archived_at)
-           VALUES ('agt-1', 'A', 'engineer', '', '', '[]', '{"version":1,"allow":["Read"],"deny":[]}', NULL, 1, 'active', ?, ?, NULL)`,
+          `INSERT INTO agent_profiles (id, name, avatar, description, system_prompt, skill_ids_json, access_mode, system_kind, tool_permissions_json, default_provider_id, max_concurrency, status, created_at, updated_at, archived_at)
+           VALUES ('agt-1', 'A', '🤖', '', '', '[]', 'edit', NULL, '{"version":1,"allow":["Read"],"deny":[]}', NULL, 1, 'active', ?, ?, NULL)`,
         )
         .run(NOW, NOW)
     }

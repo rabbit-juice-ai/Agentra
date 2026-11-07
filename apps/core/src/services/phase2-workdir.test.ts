@@ -351,9 +351,9 @@ describe('WorktreeService', () => {
     seedWork(db, 'work-1', tempDir('agentra-root-'), repo)
     seedWork(db, 'work-2', tempDir('agentra-root-'), repo)
     db.prepare(
-      `INSERT INTO agent_profiles (id, name, role, description, system_prompt, skills_json,
-         tool_permissions_json, default_provider_id, max_concurrency, status, created_at, updated_at, archived_at)
-       VALUES ('agt-1', 'A', 'engineer', '', '', '[]', '{"version":1,"allow":["Read"],"deny":[]}', NULL, 1, 'active', ?, ?, NULL)`,
+      `INSERT INTO agent_profiles (id, name, avatar, description, system_prompt, skill_ids_json,
+         access_mode, system_kind, tool_permissions_json, default_provider_id, max_concurrency, status, created_at, updated_at, archived_at)
+       VALUES ('agt-1', 'A', '🤖', '', '', '[]', 'edit', NULL, '{"version":1,"allow":["Read"],"deny":[]}', NULL, 1, 'active', ?, ?, NULL)`,
     ).run(NOW, NOW)
     db.prepare(
       `INSERT INTO assignments (id, work_id, agent_id, team_id, work_role, task_scope, status,

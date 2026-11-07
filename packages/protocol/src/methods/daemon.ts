@@ -1,12 +1,13 @@
 import { ProviderCapabilities } from '@agentra/runtime-sdk'
 import { z } from 'zod'
-import { ExecutionState, IsoTimestamp, RuntimeInfo } from '../dto'
+import { ExecutionState, IsoTimestamp, RuntimeInfo, RuntimeProviderModel } from '../dto'
 
 /**
  * Core → Daemon 内部方法（UDS NDJSON）。Desktop 不直连 Daemon。
  * Daemon 只报告执行事实；工作流/业务状态由 Core 决定。
  */
 export const DAEMON_DISCOVER_METHOD = 'runtime.discover'
+export const DAEMON_PROVIDER_MODELS_METHOD = 'runtime.provider.models'
 export const DAEMON_EXECUTION_START_METHOD = 'runtime.execution.start'
 export const DAEMON_EXECUTION_SEND_MESSAGE_METHOD = 'runtime.execution.sendMessage'
 export const DAEMON_EXECUTION_INTERRUPT_METHOD = 'runtime.execution.interrupt'
@@ -23,6 +24,14 @@ export type DaemonEmptyParams = z.infer<typeof DaemonEmptyParams>
 
 export const DaemonDiscoverResult = z.object({ providers: z.array(RuntimeInfo) })
 export type DaemonDiscoverResult = z.infer<typeof DaemonDiscoverResult>
+
+export const DaemonProviderModelsParams = z.object({ providerId: z.string().min(1) }).strict()
+export type DaemonProviderModelsParams = z.infer<typeof DaemonProviderModelsParams>
+
+export const DaemonProviderModelsResult = z.object({
+  models: z.array(RuntimeProviderModel),
+})
+export type DaemonProviderModelsResult = z.infer<typeof DaemonProviderModelsResult>
 
 export const DaemonExecutionStartParams = z
   .object({

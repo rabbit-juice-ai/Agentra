@@ -1,5 +1,4 @@
 import {
-  AgentCapabilities,
   type AgentProfile,
   AgentProfile as AgentProfileSchema,
   ToolPermissions,
@@ -9,16 +8,17 @@ import { z } from 'zod'
 import type { Database } from '../database'
 import { parseJsonColumn, serializeJsonColumn } from '../json'
 
-const SkillsSchema = z.array(z.string())
+const SkillIdsSchema = z.array(z.string())
 
 type AgentRow = {
   id: string
   name: string
-  role: string
+  avatar: string
   description: string
   system_prompt: string
-  skills_json: string
-  capabilities_json: string
+  skill_ids_json: string
+  access_mode: string
+  system_kind: string | null
   model: string | null
   tool_permissions_json: string
   default_provider_id: string | null
@@ -33,15 +33,16 @@ function toProfile(row: AgentRow): AgentProfile {
   return AgentProfileSchema.parse({
     id: row.id,
     name: row.name,
-    role: row.role,
+    avatar: row.avatar,
     description: row.description,
     systemPrompt: row.system_prompt,
-    skills: parseJsonColumn(SkillsSchema, row.skills_json, `agent_profiles.skills_json(${row.id})`),
-    capabilities: parseJsonColumn(
-      AgentCapabilities,
-      row.capabilities_json,
-      `agent_profiles.capabilities_json(${row.id})`,
+    skillIds: parseJsonColumn(
+      SkillIdsSchema,
+      row.skill_ids_json,
+      `agent_profiles.skill_ids_json(${row.id})`,
     ),
+    accessMode: row.access_mode,
+    systemKind: row.system_kind,
     model: row.model,
     toolPermissions: parseJsonColumn(
       ToolPermissions,
@@ -81,13 +82,31 @@ export class AgentRepository {
     return row ? toProfile(row) : null
   }
 
+  /**
+   * 技能被删除时，从所有 Agent 的引用列表中移除。
+   * 调用方负责事务；返回受影响的 Agent 数量。
+   */
+  removeSkillReference(skillId: string, now: string): number {
+    const rows = this.db.prepare('SELECT * FROM agent_profiles').all() as AgentRow[]
+    let changed = 0
+    for (const row of rows) {
+      const skillIds = parseJsonColumn(
+        SkillIdsSchema,
+        row.skill_ids_json,
+        `agent_profiles.skill_ids_json(${row.id})`,
+      )
+      if (!skillIds.includes(skillId)) continue
+      const next = skillIds.filter((id) => id !== skillId)
+      this.db
+        .prepare('UPDATE agent_profiles SET skill_ids_json = ?, updated_at = ? WHERE id = ?')
+        .run(serializeJsonColumn(SkillIdsSchema, next, 'agent.skillIds'), now, row.id)
+      changed += 1
+    }
+    return changed
+  }
+
   insert(profile: AgentProfile): void {
-    const skills = serializeJsonColumn(SkillsSchema, profile.skills, 'agent.skills')
-    const capabilities = serializeJsonColumn(
-      AgentCapabilities,
-      profile.capabilities,
-      'agent.capabilities',
-    )
+    const skillIds = serializeJsonColumn(SkillIdsSchema, profile.skillIds, 'agent.skillIds')
     const toolPermissions = serializeJsonColumn(
       ToolPermissions,
       profile.toolPermissions,
@@ -96,19 +115,20 @@ export class AgentRepository {
     this.db
       .prepare(
         `INSERT INTO agent_profiles (
-          id, name, role, description, system_prompt, skills_json, capabilities_json,
+          id, name, avatar, description, system_prompt, skill_ids_json, access_mode, system_kind,
           model, tool_permissions_json, default_provider_id, max_concurrency, status, created_at,
           updated_at, archived_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         profile.id,
         profile.name,
-        profile.role,
+        profile.avatar,
         profile.description,
         profile.systemPrompt,
-        skills,
-        capabilities,
+        skillIds,
+        profile.accessMode,
+        profile.systemKind,
         profile.model,
         toolPermissions,
         profile.defaultProviderId,
@@ -121,12 +141,7 @@ export class AgentRepository {
   }
 
   update(profile: AgentProfile): void {
-    const skills = serializeJsonColumn(SkillsSchema, profile.skills, 'agent.skills')
-    const capabilities = serializeJsonColumn(
-      AgentCapabilities,
-      profile.capabilities,
-      'agent.capabilities',
-    )
+    const skillIds = serializeJsonColumn(SkillIdsSchema, profile.skillIds, 'agent.skillIds')
     const toolPermissions = serializeJsonColumn(
       ToolPermissions,
       profile.toolPermissions,
@@ -135,18 +150,19 @@ export class AgentRepository {
     const result = this.db
       .prepare(
         `UPDATE agent_profiles SET
-          name = ?, role = ?, description = ?, system_prompt = ?, skills_json = ?,
-          capabilities_json = ?, model = ?, tool_permissions_json = ?, default_provider_id = ?,
-          max_concurrency = ?, status = ?, updated_at = ?, archived_at = ?
+          name = ?, avatar = ?, description = ?, system_prompt = ?, skill_ids_json = ?,
+          access_mode = ?, system_kind = ?, model = ?, tool_permissions_json = ?,
+          default_provider_id = ?, max_concurrency = ?, status = ?, updated_at = ?, archived_at = ?
         WHERE id = ?`,
       )
       .run(
         profile.name,
-        profile.role,
+        profile.avatar,
         profile.description,
         profile.systemPrompt,
-        skills,
-        capabilities,
+        skillIds,
+        profile.accessMode,
+        profile.systemKind,
         profile.model,
         toolPermissions,
         profile.defaultProviderId,

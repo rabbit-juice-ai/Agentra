@@ -1,10 +1,16 @@
-import type {
-  AgentCreateParams,
-  AgentProfile,
-  AgentUpdateParams,
-  RuntimeProviderRecord,
+import {
+  AGENT_ACCESS_MODE_LABEL,
+  type AgentCreateParams,
+  type AgentDraft,
+  type AgentGenerateDraftResult,
+  type AgentProfile,
+  type AgentUpdateParams,
+  type RuntimeProviderRecord,
+  type Skill,
 } from '@agentra/protocol'
 import { useMemo, useState } from 'react'
+import { AgentAiCreateModal } from './AgentAiCreateModal'
+import { AgentAvatar } from './AgentAvatar'
 import { AgentForm } from './AgentForm'
 import { Icon } from './Icon'
 import { PageHeader } from './PageHeader'
@@ -15,6 +21,7 @@ import { StatusBadge } from './StatusBadge'
 type Props = {
   agents: AgentProfile[]
   providers: RuntimeProviderRecord[]
+  skills: Skill[]
   busy: boolean
   /** agentId → 正在运行的 executionId；用于把 Agent 标成“执行中”。 */
   runningExecutionByAgent?: Record<string, string>
@@ -34,13 +41,10 @@ const STATUS_LABEL: Record<string, string> = {
 
 const STATUS_RANK: Record<string, number> = { active: 0, disabled: 1, archived: 2 }
 
-function initials(name: string): string {
-  return name.trim().slice(0, 1) || 'A'
-}
-
 export function AgentsPage({
   agents,
   providers,
+  skills,
   busy,
   runningExecutionByAgent = {},
   onCreate,
@@ -51,65 +55,73 @@ export function AgentsPage({
 }: Props) {
   const [formMode, setFormMode] = useState<'none' | 'create' | 'edit'>('none')
   const [editing, setEditing] = useState<AgentProfile | null>(null)
+  const [formDraft, setFormDraft] = useState<AgentDraft | null>(null)
+  const [formNotice, setFormNotice] = useState<string | null>(null)
+  const [aiOpen, setAiOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const [roleFilter, setRoleFilter] = useState('all')
+  const [accessFilter, setAccessFilter] = useState<'all' | 'analyze' | 'edit'>('all')
   const [providerFilter, setProviderFilter] = useState('all')
   const [menuAgentId, setMenuAgentId] = useState<string | null>(null)
 
   const openCreate = (): void => {
     setEditing(null)
+    setFormDraft(null)
+    setFormNotice(null)
     setFormMode('create')
   }
   const openEdit = (agent: AgentProfile): void => {
     setEditing(agent)
+    setFormDraft(null)
+    setFormNotice(null)
     setFormMode('edit')
   }
   const closeForm = (): void => {
     setEditing(null)
+    setFormDraft(null)
+    setFormNotice(null)
     setFormMode('none')
+  }
+  const handleGenerated = (result: AgentGenerateDraftResult): void => {
+    setAiOpen(false)
+    setEditing(null)
+    setFormDraft(result.draft)
+    setFormNotice(
+      result.source === 'fallback'
+        ? `AI 生成不可用，已给出基础草案：${result.reason ?? '未知原因'}`
+        : 'AI 草案已生成；请选择 Provider，并确认或调整内容后创建。',
+    )
+    setFormMode('create')
   }
 
   const providerOf = (agent: AgentProfile): RuntimeProviderRecord | null =>
     providers.find((provider) => provider.id === agent.defaultProviderId) ?? null
 
-  const roles = useMemo(
-    () =>
-      [...new Set(agents.map((agent) => agent.role))].sort((left, right) =>
-        left.localeCompare(right),
-      ),
-    [agents],
-  )
+  const skillNames = useMemo(() => new Map(skills.map((skill) => [skill.id, skill.name])), [skills])
 
   const query = search.trim().toLowerCase()
 
   const providerCounts = (() => {
     const counts = new Map<string, number>()
-    let auto = 0
     for (const agent of agents) {
-      const provider = providerOf(agent)
-      if (provider) counts.set(provider.id, (counts.get(provider.id) ?? 0) + 1)
-      else auto += 1
+      if (agent.defaultProviderId) {
+        counts.set(agent.defaultProviderId, (counts.get(agent.defaultProviderId) ?? 0) + 1)
+      }
     }
-    return { counts, auto }
+    return counts
   })()
 
   const filtered = agents
     .filter((agent) => {
-      if (roleFilter !== 'all' && agent.role !== roleFilter) return false
-      const provider = providerOf(agent)
-      if (providerFilter === 'auto' && provider) return false
-      if (
-        providerFilter !== 'all' &&
-        providerFilter !== 'auto' &&
-        provider?.id !== providerFilter
-      ) {
+      if (accessFilter !== 'all' && agent.accessMode !== accessFilter) return false
+      if (providerFilter !== 'all' && agent.defaultProviderId !== providerFilter) {
         return false
       }
       if (query.length === 0) return true
+      const names = agent.skillIds.map((id) => skillNames.get(id) ?? '')
       return (
         agent.name.toLowerCase().includes(query) ||
-        agent.role.toLowerCase().includes(query) ||
-        agent.description.toLowerCase().includes(query)
+        agent.description.toLowerCase().includes(query) ||
+        names.some((skillName) => skillName.toLowerCase().includes(query))
       )
     })
     .sort((left, right) => {
@@ -139,25 +151,33 @@ export function AgentsPage({
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="搜索 Agent 名称或角色"
+                placeholder="搜索名称、专长或技能"
               />
             </label>
             <select
               className="select"
-              value={roleFilter}
-              onChange={(event) => setRoleFilter(event.target.value)}
-              aria-label="按角色筛选"
+              value={accessFilter}
+              onChange={(event) =>
+                setAccessFilter(event.target.value as 'all' | 'analyze' | 'edit')
+              }
+              aria-label="按工作权限筛选"
             >
-              <option value="all">全部角色</option>
-              {roles.map((role) => (
-                <option key={role} value={role}>
-                  {role}
-                </option>
-              ))}
+              <option value="all">全部权限</option>
+              <option value="analyze">只读分析</option>
+              <option value="edit">编辑</option>
             </select>
             <button type="button" className="btn btn-primary" onClick={openCreate} disabled={busy}>
               <Icon name="plus" size={14} />
               新建 Agent
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setAiOpen(true)}
+              disabled={busy}
+            >
+              <Icon name="zap" size={14} />
+              AI 创建
             </button>
           </>
         }
@@ -175,7 +195,7 @@ export function AgentsPage({
         {providers
           .filter(
             (provider) =>
-              (providerCounts.counts.get(provider.id) ?? 0) > 0 || providerFilter === provider.id,
+              (providerCounts.get(provider.id) ?? 0) > 0 || providerFilter === provider.id,
           )
           .map((provider) => (
             <button
@@ -188,19 +208,9 @@ export function AgentsPage({
                 {providerMark(provider.providerName)}
               </span>
               {provider.providerName}
-              <span className="count">{providerCounts.counts.get(provider.id) ?? 0}</span>
+              <span className="count">{providerCounts.get(provider.id) ?? 0}</span>
             </button>
           ))}
-        {providerCounts.auto > 0 && (
-          <button
-            type="button"
-            className={`chip-filter ${providerFilter === 'auto' ? 'on' : ''}`}
-            onClick={() => setProviderFilter('auto')}
-          >
-            自动选择
-            <span className="count">{providerCounts.auto}</span>
-          </button>
-        )}
       </div>
 
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
@@ -215,10 +225,9 @@ export function AgentsPage({
                 <thead>
                   <tr>
                     <th>Agent</th>
-                    <th>角色</th>
-                    <th>Provider</th>
-                    <th>能力</th>
-                    <th>工具权限</th>
+                    <th>工作权限</th>
+                    <th>Provider / 模型</th>
+                    <th>技能</th>
                     <th>并发</th>
                     <th>当前任务</th>
                     <th>状态</th>
@@ -229,55 +238,54 @@ export function AgentsPage({
                   {filtered.map((agent) => {
                     const provider = providerOf(agent)
                     const runningExecution = runningExecutionByAgent[agent.id]
-                    const tools = agent.toolPermissions.allow
+                    const agentSkills = agent.skillIds
+                      .map((id) => skillNames.get(id))
+                      .filter((name): name is string => name !== undefined)
                     return (
                       <tr key={agent.id}>
                         <td>
                           <div className="agent-cell">
-                            <span className="avatar">{initials(agent.name)}</span>
+                            <AgentAvatar avatar={agent.avatar} size={26} />
                             <div>
-                              <div className="name">{agent.name}</div>
-                              <div className="sub">
-                                {agent.description || agent.role}
-                                {agent.model ? ` · ${agent.model}` : ''}
+                              <div className="name">
+                                {agent.name}
+                                {agent.systemKind !== null && (
+                                  <span className="pill plain" style={{ marginLeft: 6 }}>
+                                    系统
+                                  </span>
+                                )}
                               </div>
+                              <div className="sub">{agent.description || '未填写擅长的工作'}</div>
                             </div>
                           </div>
                         </td>
-                        <td>{agent.role}</td>
                         <td>
-                          <ProviderBadge provider={provider} />
+                          <span
+                            className={`pill ${agent.accessMode === 'edit' ? 'running' : 'plain'}`}
+                          >
+                            {AGENT_ACCESS_MODE_LABEL[agent.accessMode]}
+                          </span>
                         </td>
                         <td>
-                          {agent.capabilities.taskTypes.length === 0 ? (
-                            <span className="task-none">未配置</span>
-                          ) : (
-                            <div className="tool-chips">
-                              {agent.capabilities.taskTypes.slice(0, 2).map((capability) => (
-                                <span className="chip" key={capability}>
-                                  {capability}
-                                </span>
-                              ))}
-                              {agent.capabilities.taskTypes.length > 2 && (
-                                <span className="chip">
-                                  +{agent.capabilities.taskTypes.length - 2}
-                                </span>
-                              )}
+                          <ProviderBadge provider={provider} />
+                          {agent.model && (
+                            <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>
+                              {agent.model}
                             </div>
                           )}
                         </td>
                         <td>
-                          {tools.length === 0 ? (
-                            <span className="pill danger">未配置</span>
+                          {agentSkills.length === 0 ? (
+                            <span className="task-none">—</span>
                           ) : (
                             <div className="tool-chips">
-                              {tools.slice(0, 3).map((tool) => (
-                                <span className="chip" key={tool}>
-                                  {tool}
+                              {agentSkills.slice(0, 2).map((skill) => (
+                                <span className="chip" key={skill}>
+                                  {skill}
                                 </span>
                               ))}
-                              {tools.length > 3 && (
-                                <span className="chip">+{tools.length - 3}</span>
+                              {agentSkills.length > 2 && (
+                                <span className="chip">+{agentSkills.length - 2}</span>
                               )}
                             </div>
                           )}
@@ -386,23 +394,30 @@ export function AgentsPage({
             onRefresh={() => void onRefreshProviders()}
           />
         </div>
-
-        {formMode !== 'none' && (
-          <div className="drawer">
-            <AgentForm
-              providers={providers}
-              initial={formMode === 'edit' ? editing : null}
-              busy={busy}
-              onSubmit={(params) =>
-                formMode === 'edit'
-                  ? onUpdate(params as AgentUpdateParams)
-                  : onCreate(params as AgentCreateParams)
-              }
-              onCancel={closeForm}
-            />
-          </div>
-        )}
       </div>
+
+      {formMode !== 'none' && (
+        <AgentForm
+          providers={providers}
+          skills={skills}
+          initial={formMode === 'edit' ? editing : null}
+          draft={formDraft}
+          notice={formNotice}
+          busy={busy}
+          onSubmit={(params) =>
+            formMode === 'edit'
+              ? onUpdate(params as AgentUpdateParams)
+              : onCreate(params as AgentCreateParams)
+          }
+          onCancel={closeForm}
+        />
+      )}
+
+      <AgentAiCreateModal
+        open={aiOpen}
+        onClose={() => setAiOpen(false)}
+        onGenerated={handleGenerated}
+      />
     </div>
   )
 }

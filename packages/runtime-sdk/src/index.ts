@@ -15,6 +15,7 @@ export {
   type OutputStream,
   PROVIDER_HEALTH_STATUSES,
   type ProviderHealthStatus,
+  type ProviderModelInfo,
   type RuntimeConfig,
   type RuntimeEvent,
   type RuntimeEventListener,

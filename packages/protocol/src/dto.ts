@@ -65,52 +65,71 @@ export const ToolPermissions = z
   })
 export type ToolPermissions = z.infer<typeof ToolPermissions>
 
-/** 未配置时的默认值：空 allow，按 U3 即「拒绝执行」。 */
+/** 未配置时的默认值：空 allow，按 U3 即「拒绝执行」。旧数据兜底，不再由表单产生。 */
 export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = { version: 1, allow: [], deny: [] }
 
-const CapabilityTag = z.string().min(1).max(64)
+/** 默认头像：Agent 在群聊、列表中的识别符号。 */
+export const DEFAULT_AGENT_AVATAR = '🤖'
+
+const AVATAR_DATA_URL = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/
 
 /**
- * Agent 的结构化能力标签。Planner 用它做确定性匹配；
- * 职责描述（description）只用于语义理解，不能替代这里的校验，更不能扩大工具权限。
+ * Agent 头像：内置 emoji（短字符串）或本地图片的 data URL。
+ * 图片由桌面端裁剪为 128×128 后转 data URL；限制长度，避免大文件拖垮 RPC/数据库快照。
  */
-export const AgentCapabilities = z
-  .object({
-    /** 可承担的任务类型，如 frontend / backend / testing / product / design。 */
-    taskTypes: z.array(CapabilityTag).max(50).default([]),
-    /** 可消费的输入类型，如 spec / code / test-report。 */
-    inputTypes: z.array(CapabilityTag).max(50).default([]),
-    /** 可产出的交付物类型。 */
-    outputTypes: z.array(CapabilityTag).max(50).default([]),
-    /** 可验收的任务类型（QA/Reviewer 使用）。 */
-    canVerify: z.array(CapabilityTag).max(50).default([]),
-    /** 可审批的任务类型。 */
-    canApprove: z.array(CapabilityTag).max(50).default([]),
-    /** 明确不接的任务类型，优先于 taskTypes。 */
-    excludedTaskTypes: z.array(CapabilityTag).max(50).default([]),
-  })
-  .strict()
-export type AgentCapabilities = z.infer<typeof AgentCapabilities>
+export const AgentAvatar = z
+  .string()
+  .min(1)
+  .max(300_000)
+  .refine(
+    (value) =>
+      value.startsWith('data:image/') ? AVATAR_DATA_URL.test(value) : [...value].length <= 32,
+    { message: '头像必须是 emoji（≤32 字符）或 png/jpeg/webp/gif 的 data URL' },
+  )
+export type AgentAvatar = z.infer<typeof AgentAvatar>
 
-export const EMPTY_AGENT_CAPABILITIES: AgentCapabilities = {
-  taskTypes: [],
-  inputTypes: [],
-  outputTypes: [],
-  canVerify: [],
-  canApprove: [],
-  excludedTaskTypes: [],
+/**
+ * Agent 的工作权限（唯一的能力维度）：
+ * - analyze：只读分析。可以读文件/检索/执行只读命令，但不能写入或修改代码。
+ * - edit：编辑。可以修改代码并执行命令。
+ * 工具权限由 Core 从该字段派生，用户不能手工扩大。
+ */
+export const AgentAccessMode = z.enum(['analyze', 'edit'])
+export type AgentAccessMode = z.infer<typeof AgentAccessMode>
+
+export const AGENT_ACCESS_MODE_LABEL: Record<AgentAccessMode, string> = {
+  analyze: '只读分析',
+  edit: '编辑',
 }
+
+/** 系统托管 Agent 的用途标记；普通 Agent 为 null。 */
+export const AgentSystemKind = z.enum(['planner', 'agent_designer'])
+export type AgentSystemKind = z.infer<typeof AgentSystemKind>
+
+/** 全局技能库中的一项；Agent 通过 skillIds 引用，不复制内容。 */
+export const Skill = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string(),
+  instructions: z.string().min(1),
+  createdAt: IsoTimestamp,
+  updatedAt: IsoTimestamp,
+})
+export type Skill = z.infer<typeof Skill>
 
 export const AgentProfile = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  role: z.string().min(1),
+  avatar: AgentAvatar,
   description: z.string(),
   systemPrompt: z.string(),
-  skills: z.array(z.string()),
-  capabilities: AgentCapabilities,
+  /** 引用全局技能库；执行时把技能指令追加到工作指令之后。 */
+  skillIds: z.array(z.string().min(1)).default([]),
+  accessMode: AgentAccessMode,
+  systemKind: AgentSystemKind.nullable().default(null),
   /** 可选模型别名/ID；null 表示使用 Provider 默认模型。 */
   model: z.string().min(1).max(200).nullable().default(null),
+  /** 由 accessMode 派生；保留在 DTO 中供执行层原样下发给 Daemon。 */
   toolPermissions: ToolPermissions,
   defaultProviderId: z.string().min(1).nullable(),
   maxConcurrency: z.number().int().min(1),
@@ -144,6 +163,13 @@ export const RuntimeProviderRecord = z.object({
   updatedAt: IsoTimestamp,
 })
 export type RuntimeProviderRecord = z.infer<typeof RuntimeProviderRecord>
+
+/** Provider 可选的模型候选；来自内置目录（source 标注来源，UI 不把它当作实时保证）。 */
+export const RuntimeProviderModel = z.object({
+  id: z.string().min(1).max(200),
+  label: z.string().min(1).max(200),
+})
+export type RuntimeProviderModel = z.infer<typeof RuntimeProviderModel>
 
 export const ExecutionState = z.enum(EXECUTION_STATES)
 export type ExecutionState = z.infer<typeof ExecutionState>
@@ -210,6 +236,8 @@ export const Team = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string(),
+  /** 团队指引：成员执行关联任务时注入工作指令；不授予权限。 */
+  instructions: z.string().max(20_000),
   status: TeamStatus,
   createdAt: IsoTimestamp,
   updatedAt: IsoTimestamp,
@@ -221,7 +249,6 @@ export const TeamMember = z.object({
   id: z.string().min(1),
   teamId: z.string().min(1),
   agentId: z.string().min(1),
-  teamRole: z.string().min(1),
   joinedAt: IsoTimestamp,
 })
 export type TeamMember = z.infer<typeof TeamMember>

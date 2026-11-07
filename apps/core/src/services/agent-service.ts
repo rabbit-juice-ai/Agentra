@@ -1,17 +1,40 @@
 import {
-  AgentCapabilities,
+  type AgentAccessMode,
+  AgentAvatar,
   type AgentCreateParams,
   type AgentProfile,
+  type AgentSystemKind,
   type AgentUpdateParams,
-  DEFAULT_TOOL_PERMISSIONS,
+  DEFAULT_AGENT_AVATAR,
   RpcMethodError,
-  ToolPermissions,
+  type ToolPermissions,
 } from '@agentra/protocol'
 import { newId } from '@agentra/shared'
 import type { Database } from '../db/database'
 import { transaction } from '../db/database'
 import type { AgentRepository } from '../db/repositories/agent-repository'
 import type { ProviderRepository } from '../db/repositories/provider-repository'
+import type { SkillRepository } from '../db/repositories/skill-repository'
+
+/** 工作权限 → 实际工具策略。用户只选权限，不直接编辑工具清单。 */
+export const ACCESS_MODE_TOOL_POLICY: Record<AgentAccessMode, ToolPermissions> = {
+  analyze: {
+    version: 1,
+    // 只读分析允许执行命令（例如跑测试/检查），但禁止任何写入或改码工具。
+    allow: ['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Bash'],
+    deny: ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'],
+  },
+  edit: {
+    version: 1,
+    allow: ['Read', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Grep', 'Glob', 'WebFetch', 'WebSearch'],
+    deny: [],
+  },
+}
+
+export function toolPermissionsForAccessMode(accessMode: AgentAccessMode): ToolPermissions {
+  const policy = ACCESS_MODE_TOOL_POLICY[accessMode]
+  return { version: 1, allow: [...policy.allow], deny: [...policy.deny] }
+}
 
 function requireText(value: string, field: string): string {
   const trimmed = value.trim()
@@ -21,26 +44,16 @@ function requireText(value: string, field: string): string {
   return trimmed
 }
 
-/**
- * 工具权限归一化：只做「去空白 + 过滤空白项 + 保持顺序」，不去重。
- * 重复项与 allow/deny 冲突由 protocol 的 ToolPermissions schema 拒绝（RPC 边界返回 INVALID_PARAMS）；
- * 这里再 parse 一次，保证直接调用服务层（绕过 RPC）时同样拒绝，而不是把非法配置落库。
- */
-function normalizeToolPermissions(input: ToolPermissions): ToolPermissions {
-  const parsed = ToolPermissions.safeParse(input)
+function normalizeAvatar(value: string | undefined, fallback: string): string {
+  if (value === undefined) return fallback
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return fallback
+  const parsed = AgentAvatar.safeParse(trimmed)
   if (!parsed.success) {
-    throw new RpcMethodError('INVALID_PARAMS', `工具权限配置非法：${parsed.error.message}`)
-  }
-  const clean = (tools: string[]): string[] =>
-    tools.map((tool) => tool.trim()).filter((tool) => tool.length > 0)
-  return { version: 1, allow: clean(parsed.data.allow), deny: clean(parsed.data.deny) }
-}
-
-/** 能力标签只做结构化归一化；不读取 description，也不触碰工具权限。 */
-function normalizeCapabilities(input: unknown): AgentCapabilities {
-  const parsed = AgentCapabilities.safeParse(input ?? {})
-  if (!parsed.success) {
-    throw new RpcMethodError('INVALID_PARAMS', `Agent 能力配置非法：${parsed.error.message}`)
+    throw new RpcMethodError(
+      'INVALID_PARAMS',
+      `头像格式非法：${parsed.error.issues[0]?.message ?? 'invalid avatar'}`,
+    )
   }
   return parsed.data
 }
@@ -51,6 +64,7 @@ export class AgentService {
     private readonly db: Database,
     private readonly agents: AgentRepository,
     private readonly providers: ProviderRepository,
+    private readonly skills: SkillRepository,
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
@@ -64,26 +78,30 @@ export class AgentService {
     return agent
   }
 
-  create(params: AgentCreateParams): AgentProfile {
+  create(
+    params: AgentCreateParams,
+    options: { systemKind?: AgentSystemKind | null } = {},
+  ): AgentProfile {
     const now = this.now()
-    const defaultProviderId = params.defaultProviderId ?? null
-    if (defaultProviderId) this.assertProviderExists(defaultProviderId)
+    // Provider 必须显式选择；协议层已必填，这里再拦截直接调用服务层的路径。
+    const defaultProviderId = requireText(params.defaultProviderId ?? '', 'defaultProviderId')
+    this.assertProviderExists(defaultProviderId)
 
+    const accessMode = params.accessMode ?? 'analyze'
+    const skillIds = this.normalizeSkillIds(params.skillIds)
     const agent: AgentProfile = {
       id: newId('agt'),
       name: requireText(params.name, 'name'),
-      role: requireText(params.role, 'role'),
+      avatar: normalizeAvatar(params.avatar, DEFAULT_AGENT_AVATAR),
       description: params.description ?? '',
       systemPrompt: params.systemPrompt ?? '',
-      skills: params.skills ?? [],
-      capabilities: normalizeCapabilities(params.capabilities),
+      skillIds,
+      accessMode,
+      systemKind: options.systemKind ?? null,
       model: params.model?.trim() || null,
-      toolPermissions:
-        params.toolPermissions === undefined
-          ? DEFAULT_TOOL_PERMISSIONS
-          : normalizeToolPermissions(params.toolPermissions),
+      toolPermissions: toolPermissionsForAccessMode(accessMode),
       defaultProviderId,
-      maxConcurrency: params.maxConcurrency ?? 1,
+      maxConcurrency: params.maxConcurrency ?? 5,
       status: 'active',
       createdAt: now,
       updatedAt: now,
@@ -102,25 +120,29 @@ export class AgentService {
     const now = this.now()
     const defaultProviderId =
       params.defaultProviderId === undefined ? existing.defaultProviderId : params.defaultProviderId
-    if (defaultProviderId) this.assertProviderExists(defaultProviderId)
+    // 历史 Agent 可能没有 Provider；允许它们继续被停用/归档。新建与表单编辑都强制选择。
+    if (defaultProviderId !== null) this.assertProviderExists(defaultProviderId)
 
     const status = params.status ?? existing.status
+    const accessMode = params.accessMode ?? existing.accessMode
+    if (existing.systemKind !== null && accessMode !== 'analyze') {
+      throw new RpcMethodError(
+        'INVALID_PARAMS',
+        '系统 Agent 的工作权限固定为只读分析，不能改为编辑',
+      )
+    }
     const agent: AgentProfile = {
       ...existing,
       name: params.name === undefined ? existing.name : requireText(params.name, 'name'),
-      role: params.role === undefined ? existing.role : requireText(params.role, 'role'),
+      avatar: normalizeAvatar(params.avatar, existing.avatar),
       description: params.description ?? existing.description,
       systemPrompt: params.systemPrompt ?? existing.systemPrompt,
-      skills: params.skills ?? existing.skills,
-      capabilities:
-        params.capabilities === undefined
-          ? existing.capabilities
-          : normalizeCapabilities(params.capabilities),
+      skillIds:
+        params.skillIds === undefined ? existing.skillIds : this.normalizeSkillIds(params.skillIds),
+      accessMode,
+      // 权限是工具策略的唯一来源；任何更新都重新派生，避免遗留手工配置漂移。
+      toolPermissions: toolPermissionsForAccessMode(accessMode),
       model: params.model === undefined ? existing.model : params.model?.trim() || null,
-      toolPermissions:
-        params.toolPermissions === undefined
-          ? existing.toolPermissions
-          : normalizeToolPermissions(params.toolPermissions),
       defaultProviderId,
       maxConcurrency: params.maxConcurrency ?? existing.maxConcurrency,
       status,
@@ -141,6 +163,17 @@ export class AgentService {
     const existing = this.get(id)
     if (existing.status === 'archived') return existing
     return this.update({ id, status: 'archived' })
+  }
+
+  /** 去重、保序，并拒绝引用了不存在技能的配置。 */
+  private normalizeSkillIds(input: string[] | undefined): string[] {
+    if (input === undefined) return []
+    const ids = [...new Set(input.map((id) => id.trim()).filter((id) => id.length > 0))]
+    const missing = ids.filter((id) => !this.skills.get(id))
+    if (missing.length > 0) {
+      throw new RpcMethodError('SKILL_NOT_FOUND', `技能不存在，无法绑定：${missing.join(', ')}`)
+    }
+    return ids
   }
 
   private assertProviderExists(providerId: string): void {

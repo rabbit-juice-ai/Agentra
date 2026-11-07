@@ -11,3 +11,6 @@ export const FAKE_GEMINI_PATH = fileURLToPath(
   new URL('../fixtures/fake-gemini.mjs', import.meta.url),
 )
 export const FAKE_GROK_PATH = fileURLToPath(new URL('../fixtures/fake-grok.mjs', import.meta.url))
+export const FAKE_ANTIGRAVITY_PATH = fileURLToPath(
+  new URL('../fixtures/fake-antigravity.mjs', import.meta.url),
+)

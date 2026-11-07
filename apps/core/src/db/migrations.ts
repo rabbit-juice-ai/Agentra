@@ -839,6 +839,100 @@ ALTER TABLE plans_new RENAME TO plans;
 CREATE INDEX IF NOT EXISTS idx_plans_work_status ON plans(work_id, status);
 `
 
+/**
+ * Agent 权限模型：删除自由角色与能力标签，改为唯一的 accessMode（只读分析 / 编辑）；
+ * 工具权限由 accessMode 派生。技能改为全局库，Agent 只存 skillIds 引用。
+ * 角色列不再参与任何业务，直接删除；Planner 用 system_kind 识别。
+ */
+const AGENT_ACCESS_SKILLS = `
+ALTER TABLE agent_profiles ADD COLUMN avatar TEXT NOT NULL DEFAULT '🤖';
+ALTER TABLE agent_profiles ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'analyze'
+  CHECK (access_mode IN ('analyze', 'edit'));
+ALTER TABLE agent_profiles ADD COLUMN skill_ids_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE agent_profiles ADD COLUMN system_kind TEXT
+  CHECK (system_kind IS NULL OR system_kind IN ('planner'));
+
+-- 旧数据回填：允许过写工具的 Agent 归为 edit，其余安全地归为 analyze。
+UPDATE agent_profiles SET access_mode = 'edit'
+  WHERE tool_permissions_json LIKE '%"Write"%'
+     OR tool_permissions_json LIKE '%"Edit"%'
+     OR tool_permissions_json LIKE '%"MultiEdit"%'
+     OR tool_permissions_json LIKE '%"NotebookEdit"%';
+
+-- Planner 由系统托管；识别不依赖可被用户修改的角色名。
+UPDATE agent_profiles SET system_kind = 'planner' WHERE role = 'planner';
+
+CREATE TABLE IF NOT EXISTS skills (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
+  instructions TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+ALTER TABLE agent_profiles DROP COLUMN role;
+ALTER TABLE agent_profiles DROP COLUMN skills_json;
+ALTER TABLE agent_profiles DROP COLUMN capabilities_json;
+`
+
+/**
+ * 系统 Agent 新增 agent_designer（AI 生成 Agent 草案）。
+ * SQLite 不能修改 CHECK，只能重建表；保留所有行、外键与索引。
+ */
+const AGENT_SYSTEM_AGENTS = `
+CREATE TABLE agent_profiles_new (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  default_provider_id TEXT REFERENCES runtime_providers(id) ON DELETE SET NULL,
+  max_concurrency INTEGER NOT NULL DEFAULT 1 CHECK (max_concurrency >= 1),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled', 'archived')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  archived_at TEXT,
+  tool_permissions_json TEXT NOT NULL DEFAULT '{"version":1,"allow":[],"deny":[]}',
+  model TEXT,
+  avatar TEXT NOT NULL DEFAULT '🤖',
+  access_mode TEXT NOT NULL DEFAULT 'analyze' CHECK (access_mode IN ('analyze', 'edit')),
+  skill_ids_json TEXT NOT NULL DEFAULT '[]',
+  system_kind TEXT CHECK (system_kind IS NULL OR system_kind IN ('planner', 'agent_designer'))
+);
+
+INSERT INTO agent_profiles_new (
+  id, name, description, system_prompt, default_provider_id, max_concurrency, status,
+  created_at, updated_at, archived_at, tool_permissions_json, model, avatar, access_mode,
+  skill_ids_json, system_kind
+)
+SELECT
+  id, name, description, system_prompt, default_provider_id, max_concurrency, status,
+  created_at, updated_at, archived_at, tool_permissions_json, model, avatar, access_mode,
+  skill_ids_json, system_kind
+FROM agent_profiles;
+
+DROP TABLE agent_profiles;
+ALTER TABLE agent_profiles_new RENAME TO agent_profiles;
+
+CREATE INDEX IF NOT EXISTS idx_agent_profiles_status ON agent_profiles(status);
+`
+
+/**
+ * 团队角色没有执行语义：任务执行只认 Assignment(workRole) 与 Agent accessMode。
+ * 删除自由文本 team_role，团队只保留成员关系。
+ */
+const TEAM_MEMBERS_DROP_ROLE = `
+ALTER TABLE team_members DROP COLUMN team_role;
+`
+
+/**
+ * 团队指引：成员执行「关联到该团队的任务」时，作为共享上下文注入系统提示词。
+ * 它不是权限，也不改变 Assignment / 工作流选人。
+ */
+const TEAM_INSTRUCTIONS = `
+ALTER TABLE teams ADD COLUMN instructions TEXT NOT NULL DEFAULT '';
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -997,6 +1091,35 @@ export const MIGRATIONS: Migration[] = [
     rebuildsTables: true,
     up: (db) => {
       db.exec(PLANS_NULLABLE_WORK)
+    },
+  },
+  {
+    version: 23,
+    name: 'agent_access_skills',
+    up: (db) => {
+      db.exec(AGENT_ACCESS_SKILLS)
+    },
+  },
+  {
+    version: 24,
+    name: 'agent_system_agents',
+    rebuildsTables: true,
+    up: (db) => {
+      db.exec(AGENT_SYSTEM_AGENTS)
+    },
+  },
+  {
+    version: 25,
+    name: 'team_members_drop_role',
+    up: (db) => {
+      db.exec(TEAM_MEMBERS_DROP_ROLE)
+    },
+  },
+  {
+    version: 26,
+    name: 'team_instructions',
+    up: (db) => {
+      db.exec(TEAM_INSTRUCTIONS)
     },
   },
 ]

@@ -37,6 +37,12 @@ export type RuntimeConfig = {
   executablePath: string | null
 }
 
+/** Provider 暴露的模型候选；由适配器从 CLI 实际输出解析。 */
+export type ProviderModelInfo = {
+  id: string
+  label: string
+}
+
 export type StartExecutionConfig = {
   executionId: string
   prompt: string
