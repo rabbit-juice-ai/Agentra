@@ -150,7 +150,11 @@ const TOOL_POLICY = {
   deny: [],
 }
 
-function seed(dataDir: string, repoDir: string): { checkpointId: string } {
+function seed(
+  dataDir: string,
+  repoDir: string,
+  taskPrompt = 'TASK_RECOVER_WITH_ARTIFACT',
+): { checkpointId: string } {
   const paths = agentraPaths(dataDir)
   ensureDirs(paths)
   const db = openDatabase(paths.database)
@@ -270,7 +274,7 @@ function seed(dataDir: string, repoDir: string): { checkpointId: string } {
         position: { x: 0, y: 1 },
         config: {
           assignmentSelector: { workRole: 'dev' },
-          taskPrompt: 'TASK_RECOVER_WITH_ARTIFACT',
+          taskPrompt,
           inputArtifactRefs: [],
           artifacts: [{ name: 'spec', type: 'markdown', required: true }],
           workingDirectoryPolicy: 'worktree',
@@ -649,6 +653,62 @@ describe('workflow node recovery end-to-end (real Core + Daemon + fake CLI)', ()
         .prepare("SELECT status FROM node_runs WHERE workflow_node_key = 'end'")
         .get() as { status: string }
       expect(endNode.status).toBe('succeeded')
+    } finally {
+      db.close()
+    }
+  }, 120_000)
+
+  it('marks a crashed recovery execution failed without creating a retry attempt', async () => {
+    const dataDir = tempDir('a-nr-cr-')
+    const repoDir = tempDir('a-nr-repo-')
+    initRepo(repoDir)
+    const { checkpointId } = seed(dataDir, repoDir, 'CRASH')
+    const coreSocket = path.join(dataDir, 'runtime', 'core.sock')
+    spawnCore(dataDir)
+    await waitFor(async () => (await probeSocket(coreSocket)) === 'live', 60_000)
+    const startResponse = await call(coreSocket, WORKFLOW_NODE_RECOVERY_START_METHOD, {
+      workflowRunId: 'run-rec',
+      nodeRunId: 'nrn-rec',
+      checkpointId,
+      confirm: true,
+      idempotencyKey: 'idem-crash-exec',
+    })
+    expect(startResponse.ok).toBe(true)
+    if (!startResponse.ok) throw new Error(JSON.stringify(startResponse.error))
+    const started = startResponse.result as { newNodeRunId: string }
+
+    const db = openDatabase(path.join(dataDir, 'agentra.db'))
+    try {
+      await waitFor(async () => {
+        const row = db
+          .prepare(
+            "SELECT status FROM task_recovery_attempts WHERE idempotency_key = 'idem-crash-exec'",
+          )
+          .get() as { status?: string } | undefined
+        return row?.status === 'failed'
+      }, 60_000)
+      const execution = db
+        .prepare('SELECT status FROM executions WHERE node_run_id = ?')
+        .get(started.newNodeRunId) as { status: string }
+      expect(execution.status).toBe('crashed')
+      const node = db
+        .prepare('SELECT status FROM node_runs WHERE id = ?')
+        .get(started.newNodeRunId) as { status: string }
+      expect(node.status).toBe('failed')
+      const executions = db
+        .prepare('SELECT COUNT(*) AS c FROM executions WHERE node_run_id = ?')
+        .get(started.newNodeRunId) as { c: number }
+      expect(executions.c).toBe(1)
+      const retries = db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM node_runs WHERE workflow_node_key = 'task_1' AND attempt > 2",
+        )
+        .get() as { c: number }
+      expect(retries.c).toBe(0)
+      const run = db.prepare("SELECT status FROM workflow_runs WHERE id = 'run-rec'").get() as {
+        status: string
+      }
+      expect(run.status).not.toBe('completed')
     } finally {
       db.close()
     }

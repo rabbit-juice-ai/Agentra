@@ -18,6 +18,10 @@ lines.on('line', (line) => {
   const frame = JSON.parse(line)
   if (frame.type !== 'user') return
   const prompt = frame.message.content.map((block) => block.text ?? '').join('\n')
+  if (prompt.includes('CRASH')) {
+    process.kill(process.pid, 'SIGKILL')
+    return
+  }
   const artifacts = prompt.includes('WITH_ARTIFACT')
     ? [{ name: 'spec', content: 'node-recovery-artifact-proof' }]
     : []
