@@ -82,6 +82,85 @@ describe('Artifact output extraction (normalized CLI logs)', () => {
       extractor([{ stream: 'stdout', content: 'x'.repeat(8_000_001) }]).extract('e'),
     ).toThrow(/exceeds extraction budget/)
   })
+  it('builds a recovery prompt with input artifacts without writing the NodeRun', () => {
+    const checksum = 'a'.repeat(64)
+    const ref = {
+      name: 'PRD',
+      artifactId: 'art-1',
+      versionId: 'ver-1',
+      version: 1,
+      nodeRunId: 'nrn-src',
+      checksum,
+    }
+    const sourceNode = {
+      key: 'source',
+      type: 'agent_task',
+      label: '',
+      position: { x: 0, y: 0 },
+      config: {
+        assignmentSelector: { workRole: 'dev' },
+        taskPrompt: 'write prd',
+        artifacts: [{ name: 'PRD', type: 'markdown', required: true }],
+      },
+    }
+    const targetNode = {
+      key: 'task',
+      type: 'agent_task',
+      label: '',
+      position: { x: 0, y: 1 },
+      config: {
+        assignmentSelector: { workRole: 'dev' },
+        taskPrompt: 'recover task',
+        inputArtifactRefs: [{ nodeKey: 'source' }],
+        artifacts: [{ name: 'out', type: 'markdown', required: true }],
+        outputContract: { profile: 'generic', fields: [] },
+      },
+    }
+    let wroteInputSnapshot = false
+    const exchange = new ArtifactExchange(
+      {} as ExecutionLogRepository,
+      {
+        preview: () => ({
+          artifact: { workId: 'work-1', artifactType: 'markdown' },
+          version: {
+            id: 'ver-1',
+            checksum,
+            metadata: { nodeRunId: 'nrn-src', workflowRunId: 'run-1' },
+          },
+          content: Buffer.from('# upstream'),
+        }),
+      } as unknown as ArtifactService,
+      {
+        listByRun: () => [
+          {
+            id: 'nrn-src',
+            workflowNodeKey: 'source',
+            status: 'succeeded',
+            attempt: 1,
+            outputSnapshot: { artifacts: [ref] },
+          },
+        ],
+        setInputSnapshot: () => {
+          wroteInputSnapshot = true
+        },
+      } as unknown as NodeRunRepository,
+    )
+    const prompt = exchange.promptForRecovery({
+      run: { id: 'run-1', workId: 'work-1' } as never,
+      node: targetNode as never,
+      definition: {
+        schemaVersion: 1,
+        nodes: [sourceNode, targetNode],
+        edges: [],
+        settings: {},
+      } as never,
+    })
+    expect(prompt).toContain('# upstream')
+    expect(prompt).toContain('agentraOutputVersion')
+    expect(prompt).toContain('recover task')
+    expect(wroteInputSnapshot).toBe(false)
+  })
+
   it('describes test_result as flat output fields, not a nested contract descriptor', () => {
     const description = describeOutputContract({ profile: 'test_result', fields: [] })
     expect(description).toContain('top-level fields')

@@ -26,7 +26,14 @@ afterEach(() => {
     fs.rmSync(path.dirname(file), { recursive: true, force: true })
 })
 
-function harness(options: { policy?: 'worktree' | 'work_root' } = {}) {
+function harness(
+  options: {
+    policy?: 'worktree' | 'work_root'
+    mutateDuringPrepare?: (db: ReturnType<typeof openDatabase>) => void
+    recoveryManifest?: { totalChars: number }
+    buildRecoveryPrompt?: () => string
+  } = {},
+) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentra-node-recovery-'))
   const file = path.join(dir, 'agentra.db')
   dbFiles.push(file)
@@ -127,15 +134,18 @@ function harness(options: { policy?: 'worktree' | 'work_root' } = {}) {
   }
   const worktrees = {
     branchName: () => 'agentra/run/task-1/abc-r1',
-    prepare: () => ({
-      worktreeId: 'wt-1',
-      worktreePath: '/tmp/wt-1',
-      branchName: 'agentra/run/task-1/abc-r1',
-      baseCommit: 'a'.repeat(40),
-      gitCommonDir: '/tmp/repo/.git',
-      registeredWorktreePath: '/tmp/wt-1',
-      worktreeOwnerToken: 'owner-token',
-    }),
+    prepare: () => {
+      options.mutateDuringPrepare?.(db)
+      return {
+        worktreeId: 'wt-1',
+        worktreePath: '/tmp/wt-1',
+        branchName: 'agentra/run/task-1/abc-r1',
+        baseCommit: 'a'.repeat(40),
+        gitCommonDir: '/tmp/repo/.git',
+        registeredWorktreePath: '/tmp/wt-1',
+        worktreeOwnerToken: 'owner-token',
+      }
+    },
     validate: () => undefined,
   }
   const prepared: { executionId: string; sessionId: string }[] = []
@@ -191,18 +201,22 @@ function harness(options: { policy?: 'worktree' | 'work_root' } = {}) {
           },
           plan: {
             sections: { p0: 'p0', p1: '', p2: '', p3: '' },
-            manifest: { trimmed: { p1: false, p2: false, p3: false } },
+            manifest: {
+              totalChars: options.recoveryManifest?.totalChars ?? 2,
+              trimmed: { p1: false, p2: false, p3: false },
+            },
           },
         }) as never,
       assertCanStart: () => undefined,
     },
     executionRunner,
     worktrees: worktrees as never,
+    ...(options.buildRecoveryPrompt ? { buildRecoveryPrompt: options.buildRecoveryPrompt } : {}),
     audit: new AuditRepository(db),
     onRunReentered: (runId) => reentered.push(runId),
     now: () => NOW,
   })
-  return { db, service, attempts, nodes, prepared, reentered, checkpoint }
+  return { db, service, attempts, nodes, prepared, reentered, checkpoint, executionRunner }
 }
 
 describe('WorkflowNodeRecoveryService', () => {
@@ -240,6 +254,263 @@ describe('WorkflowNodeRecoveryService', () => {
     expect(attempt?.status).toBe('running')
     expect(attempt?.nodeRunId).toBe(result.newNodeRunId)
     expect(h.nodes.get('nrn-a')?.status).toBe('failed')
+    h.db.close()
+  })
+
+  it('revalidates branch state inside T3 after T2 worktree preparation', async () => {
+    const h = harness({
+      mutateDuringPrepare: (db) => {
+        db.prepare("UPDATE branch_runs SET status = 'paused' WHERE id = 'brn-1'").run()
+      },
+    })
+    await expect(
+      h.service.start({
+        workflowRunId: 'run-1',
+        nodeRunId: 'nrn-a',
+        confirm: true,
+        idempotencyKey: 'idem-t3-revalidate',
+      }),
+    ).rejects.toMatchObject({ code: 'NODE_RECOVERY_BRANCH_NOT_ACTIVE' })
+    expect(h.prepared).toHaveLength(0)
+    const attempt = h.db
+      .prepare('SELECT status FROM task_recovery_attempts WHERE idempotency_key = ?')
+      .get('idem-t3-revalidate') as { status: string } | undefined
+    expect(attempt?.status).toBe('failed')
+    h.db.close()
+  })
+
+  it('revalidates Run state inside T3 after T2 worktree preparation', async () => {
+    const h = harness({
+      mutateDuringPrepare: (db) => {
+        db.prepare("UPDATE workflow_runs SET status = 'paused' WHERE id = 'run-1'").run()
+      },
+    })
+    await expect(
+      h.service.start({
+        workflowRunId: 'run-1',
+        nodeRunId: 'nrn-a',
+        confirm: true,
+        idempotencyKey: 'idem-t3-run-revalidate',
+      }),
+    ).rejects.toMatchObject({ code: 'NODE_RECOVERY_RUN_STATE_INVALID' })
+    expect(h.prepared).toHaveLength(0)
+    h.db.close()
+  })
+
+  it('reports the real context budget from the recovery plan', async () => {
+    const h = harness({ recoveryManifest: { totalChars: 1234 } })
+    const plan = await h.service.plan({ workflowRunId: 'run-1', nodeRunId: 'nrn-a' })
+    expect(plan.contextBudget.totalChars).toBe(1234)
+    h.db.close()
+  })
+
+  it('carries the node output contract into the recovery prompt', async () => {
+    const h = harness()
+    let prompt = ''
+    h.executionRunner.prepareRecoveryForNode = (_tx, nodeRunId, params, options) => {
+      prompt = params.prompt
+      const value = { executionId: 'exe-contract', sessionId: 'ses-contract' }
+      h.db
+        .prepare(
+          `INSERT INTO agent_sessions (id, assignment_id, provider_id, external_session_id,
+             context_ref, status, created_at, updated_at, last_active_at)
+           VALUES (?, NULL, 'prov-test', NULL, NULL, 'active', ?, ?, ?)`,
+        )
+        .run(value.sessionId, NOW, NOW, NOW)
+      h.db
+        .prepare(
+          `INSERT INTO executions (id, session_id, node_run_id, provider_id, external_execution_id,
+             process_id, status, working_directory, started_at, ended_at, exit_code,
+             capabilities_snapshot_json, recovery_state_json, created_at, updated_at)
+           VALUES (?, ?, ?, 'prov-test', NULL, NULL, 'pending', '/tmp/wt-1', NULL, NULL, NULL,
+             '{}', NULL, ?, ?)`,
+        )
+        .run(value.executionId, value.sessionId, nodeRunId, NOW, NOW)
+      void options
+      return value
+    }
+    await h.service.start({
+      workflowRunId: 'run-1',
+      nodeRunId: 'nrn-a',
+      confirm: true,
+      idempotencyKey: 'idem-contract',
+    })
+    expect(prompt).toContain('agentraOutputVersion')
+    expect(prompt).toContain('no fields are required')
+    h.db.close()
+  })
+
+  it('rolls back T3 atomically when Session/Execution creation fails', async () => {
+    const h = harness()
+    h.executionRunner.prepareRecoveryForNode = (_tx, nodeRunId) => {
+      h.db
+        .prepare(
+          `INSERT INTO agent_sessions (id, assignment_id, provider_id, external_session_id,
+             context_ref, status, created_at, updated_at, last_active_at)
+           VALUES ('ses-rollback', NULL, 'prov-test', NULL, NULL, 'active', ?, ?, ?)`,
+        )
+        .run(NOW, NOW, NOW)
+      h.db
+        .prepare(
+          `INSERT INTO executions (id, session_id, node_run_id, provider_id, external_execution_id,
+             process_id, status, working_directory, started_at, ended_at, exit_code,
+             capabilities_snapshot_json, recovery_state_json, created_at, updated_at)
+           VALUES ('exe-rollback', 'ses-rollback', ?, 'prov-test', NULL, NULL, 'pending',
+             '/tmp/wt-1', NULL, NULL, NULL, '{}', NULL, ?, ?)`,
+        )
+        .run(nodeRunId, NOW, NOW)
+      throw new Error('injected T3 failure')
+    }
+    await expect(
+      h.service.start({
+        workflowRunId: 'run-1',
+        nodeRunId: 'nrn-a',
+        confirm: true,
+        idempotencyKey: 'idem-rollback',
+      }),
+    ).rejects.toThrow('injected T3 failure')
+    const counts = h.db
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM node_runs) AS nodes,
+                (SELECT COUNT(*) FROM agent_sessions) AS sessions,
+                (SELECT COUNT(*) FROM executions) AS executions`,
+      )
+      .get() as { nodes: number; sessions: number; executions: number }
+    expect(counts).toEqual({ nodes: 1, sessions: 0, executions: 0 })
+    expect(h.nodes.get('nrn-a')?.status).toBe('reconciliation_required')
+    const attempt = h.db
+      .prepare('SELECT status FROM task_recovery_attempts WHERE idempotency_key = ?')
+      .get('idem-rollback') as { status: string }
+    expect(attempt.status).toBe('failed')
+    h.db.close()
+  })
+
+  it('uses the injected recovery prompt builder with input artifacts', async () => {
+    const h = harness({
+      buildRecoveryPrompt: () => 'task prompt\n\ninput artifact: # upstream',
+    })
+    let prompt = ''
+    h.executionRunner.prepareRecoveryForNode = (_tx, nodeRunId, params) => {
+      prompt = params.prompt
+      const value = { executionId: 'exe-injected', sessionId: 'ses-injected' }
+      h.db
+        .prepare(
+          `INSERT INTO agent_sessions (id, assignment_id, provider_id, external_session_id,
+             context_ref, status, created_at, updated_at, last_active_at)
+           VALUES (?, NULL, 'prov-test', NULL, NULL, 'active', ?, ?, ?)`,
+        )
+        .run(value.sessionId, NOW, NOW, NOW)
+      h.db
+        .prepare(
+          `INSERT INTO executions (id, session_id, node_run_id, provider_id, external_execution_id,
+             process_id, status, working_directory, started_at, ended_at, exit_code,
+             capabilities_snapshot_json, recovery_state_json, created_at, updated_at)
+           VALUES (?, ?, ?, 'prov-test', NULL, NULL, 'pending', '/tmp/wt-1', NULL, NULL, NULL,
+             '{}', NULL, ?, ?)`,
+        )
+        .run(value.executionId, value.sessionId, nodeRunId, NOW, NOW)
+      return value
+    }
+    await h.service.start({
+      workflowRunId: 'run-1',
+      nodeRunId: 'nrn-a',
+      confirm: true,
+      idempotencyKey: 'idem-injected',
+    })
+    expect(prompt).toContain('p0')
+    expect(prompt).toContain('# upstream')
+    h.db.close()
+  })
+
+  it('rejects start without creating an attempt when recovery input cannot be built', async () => {
+    const h = harness({
+      buildRecoveryPrompt: () => {
+        throw new Error('missing input artifact')
+      },
+    })
+    await expect(
+      h.service.start({
+        workflowRunId: 'run-1',
+        nodeRunId: 'nrn-a',
+        confirm: true,
+        idempotencyKey: 'idem-input-missing',
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_PARAMS' })
+    expect(h.db.prepare('SELECT count(*) AS c FROM task_recovery_attempts').get()).toEqual({ c: 0 })
+    expect(h.db.prepare('SELECT count(*) AS c FROM agent_sessions').get()).toEqual({ c: 0 })
+    expect(h.db.prepare('SELECT count(*) AS c FROM executions').get()).toEqual({ c: 0 })
+    h.db.close()
+  })
+
+  it('rolls back B/Session/Execution when the recovery attempt can no longer transition', async () => {
+    const h = harness()
+    h.executionRunner.prepareRecoveryForNode = (_tx, nodeRunId, _params, options) => {
+      h.db
+        .prepare(
+          `INSERT INTO agent_sessions (id, assignment_id, provider_id, external_session_id,
+             context_ref, status, created_at, updated_at, last_active_at)
+           VALUES ('ses-late', NULL, 'prov-test', NULL, NULL, 'active', ?, ?, ?)`,
+        )
+        .run(NOW, NOW, NOW)
+      h.db
+        .prepare(
+          `INSERT INTO executions (id, session_id, node_run_id, provider_id, external_execution_id,
+             process_id, status, working_directory, started_at, ended_at, exit_code,
+             capabilities_snapshot_json, recovery_state_json, created_at, updated_at)
+           VALUES ('exe-late', 'ses-late', ?, 'prov-test', NULL, NULL, 'pending',
+             '/tmp/wt-1', NULL, NULL, NULL, '{}', NULL, ?, ?)`,
+        )
+        .run(nodeRunId, NOW, NOW)
+      // 模拟并发：R 在 T3 内已不再是 starting。
+      h.db
+        .prepare("UPDATE task_recovery_attempts SET status = 'running' WHERE id = ?")
+        .run(options.recoveryAttemptId)
+      return { executionId: 'exe-late', sessionId: 'ses-late' }
+    }
+    await expect(
+      h.service.start({
+        workflowRunId: 'run-1',
+        nodeRunId: 'nrn-a',
+        confirm: true,
+        idempotencyKey: 'idem-late',
+      }),
+    ).rejects.toMatchObject({ code: 'NODE_RECOVERY_ACTIVE_EXISTS' })
+    const counts = h.db
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM node_runs) AS nodes,
+                (SELECT COUNT(*) FROM agent_sessions) AS sessions,
+                (SELECT COUNT(*) FROM executions) AS executions`,
+      )
+      .get() as { nodes: number; sessions: number; executions: number }
+    expect(counts).toEqual({ nodes: 1, sessions: 0, executions: 0 })
+    expect(h.nodes.get('nrn-a')?.status).toBe('reconciliation_required')
+    h.db.close()
+  })
+
+  it('allows only one of two concurrent recovery starts for the same target', async () => {
+    const h = harness()
+    const results = await Promise.allSettled([
+      h.service.start({
+        workflowRunId: 'run-1',
+        nodeRunId: 'nrn-a',
+        confirm: true,
+        idempotencyKey: 'idem-concurrent-a',
+      }),
+      h.service.start({
+        workflowRunId: 'run-1',
+        nodeRunId: 'nrn-a',
+        confirm: true,
+        idempotencyKey: 'idem-concurrent-b',
+      }),
+    ])
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    const rejected = results.find((result) => result.status === 'rejected')
+    expect(rejected).toBeDefined()
+    if (rejected?.status === 'rejected') {
+      expect(rejected.reason).toMatchObject({ code: 'NODE_RECOVERY_ACTIVE_EXISTS' })
+    }
+    expect(h.db.prepare('SELECT count(*) AS c FROM task_recovery_attempts').get()).toEqual({ c: 1 })
+    expect(h.prepared).toHaveLength(1)
     h.db.close()
   })
 

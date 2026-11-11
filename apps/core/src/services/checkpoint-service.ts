@@ -265,6 +265,41 @@ export class CheckpointService {
     return this.deps.checkpoints.getLatestByExecution(executionId)
   }
 
+  /** 只读复算 content_hash；篡改/损坏的 Checkpoint 不得作为恢复成功证明。 */
+  verifyContentHash(record: CheckpointRecord): boolean {
+    try {
+      const expected = hashCheckpointContent({
+        schemaVersion: 1,
+        workId: record.workId,
+        seq: record.seq,
+        baseDedupeKey: record.baseDedupeKey,
+        dedupeKey: record.dedupeKey,
+        attemptNo: record.attemptNo,
+        state: record.state,
+        kind: record.kind,
+        stage: record.stage,
+        executionId: record.executionId,
+        sessionId: record.sessionId,
+        nodeRunId: record.nodeRunId,
+        teamRunId: record.teamRunId,
+        parentCheckpointId: record.parentCheckpointId,
+        acceptanceCriteriaWorkVersion: record.acceptanceCriteriaWorkVersion,
+        taskMemoryVersion: record.taskMemoryVersion,
+        riskLevel: record.riskLevel,
+        evidenceStatus: record.evidenceStatus,
+        sideEffectCompleteness: record.sideEffectCompleteness,
+        checkpointJson: record.checkpointJson,
+        evidenceJson: record.evidenceJson,
+        verificationJson: record.verificationJson,
+        errorJson: record.errorJson,
+        createdAt: record.createdAt,
+      })
+      return expected === record.contentHash
+    } catch {
+      return false
+    }
+  }
+
   getRecoveryPlan(workId: string, checkpointId?: string): RecoveryPlanResult {
     const work = this.deps.works.get(workId)
     const record = checkpointId

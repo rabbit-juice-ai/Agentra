@@ -723,7 +723,8 @@ export class RecoveryService {
         checkpoint.executionId !== event.executionId ||
         checkpoint.nodeRunId !== attempt.nodeRunId ||
         checkpoint.state !== 'valid' ||
-        checkpoint.workId !== attempt.workId
+        checkpoint.workId !== attempt.workId ||
+        !this.deps.checkpoints.verifyContentHash(checkpoint)
       ) {
         this.finishAttempt(attempt, 'failed', {
           reason: 'CHECKPOINT_RECOVERY_MISMATCH',

@@ -254,6 +254,23 @@ describe('CheckpointService', () => {
     )
   })
 
+  it('verifies checkpoint content hash and rejects tampered fields', () => {
+    const h = harness({ repo: true })
+    const worktree = h.worktrees.create({ workId: h.work.id, branchName: 'agentra/chk' })
+    h.createExecution({ workingDirectory: worktree.worktreePath })
+    const created = h.checkpointService.createForExecution('exe-1', 'generic')
+    const record = h.checkpointRepository.get(created.checkpointId as string)
+    if (!record) throw new Error('checkpoint not found')
+    expect(h.checkpointService.verifyContentHash(record)).toBe(true)
+    expect(h.checkpointService.verifyContentHash({ ...record, contentHash: '0'.repeat(64) })).toBe(
+      false,
+    )
+    expect(
+      h.checkpointService.verifyContentHash({ ...record, checkpointJson: '{"tampered":true}' }),
+    ).toBe(false)
+    h.db.close()
+  })
+
   it('returns a read-only eligible recovery plan without creating sessions or agents', () => {
     const h = harness({ repo: true })
     const worktree = h.worktrees.create({ workId: h.work.id, branchName: 'agentra/chk' })

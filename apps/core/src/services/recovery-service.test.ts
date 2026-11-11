@@ -915,4 +915,120 @@ describe('RecoveryService', () => {
       system: { purpose: 'team_leader' },
     })
   })
+
+  function seedWorkflowNodeAttempt(
+    h: ReturnType<typeof harness>,
+    attemptNodeRunId: string,
+  ): { attemptId: string; checkpointId: string } {
+    h.db
+      .prepare(
+        `INSERT INTO workflow_templates (id, name, description, category, created_at, updated_at, archived_at)
+         VALUES ('tpl-wf', 'T', '', '', ?, ?, NULL)`,
+      )
+      .run(NOW, NOW)
+    h.db
+      .prepare(
+        `INSERT INTO workflow_versions (id, template_id, version, schema_version, definition_json,
+           checksum, status, created_at, published_at)
+         VALUES ('wfv-wf', 'tpl-wf', 1, 1, '{}', 'checksum', 'published', ?, ?)`,
+      )
+      .run(NOW, NOW)
+    h.db
+      .prepare(
+        `INSERT INTO workflow_runs (id, work_id, workflow_version_id, status, started_at,
+           ended_at, runtime_state_json, created_at, updated_at)
+         VALUES ('run-wf', ?, 'wfv-wf', 'running', ?, NULL, '{}', ?, ?)`,
+      )
+      .run(h.work.id, NOW, NOW, NOW)
+    for (const [id, key, status] of [
+      ['nrn-wf', 'task_1', 'succeeded'],
+      ['nrn-old', 'task_old', 'failed'],
+    ] as const) {
+      h.db
+        .prepare(
+          `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, branch_run_id, status,
+             attempt, input_snapshot_json, output_snapshot_json, created_at, updated_at)
+           VALUES (?, 'run-wf', ?, NULL, ?, 1, '{}', NULL, ?, ?)`,
+        )
+        .run(id, key, status, NOW, NOW)
+    }
+    h.db
+      .prepare(
+        `INSERT INTO agent_sessions (id, assignment_id, provider_id, external_session_id,
+           context_ref, status, created_at, updated_at, last_active_at)
+         VALUES ('ses-wf', 'asg-1', 'provider-1', 'ext-wf', 'agt-1', 'active', ?, ?, ?)`,
+      )
+      .run(NOW, NOW, NOW)
+    h.db
+      .prepare(
+        `INSERT INTO executions (id, session_id, node_run_id, provider_id, external_execution_id,
+           process_id, status, working_directory, started_at, ended_at, exit_code,
+           capabilities_snapshot_json, recovery_state_json, created_at, updated_at)
+         VALUES ('exe-wf', 'ses-wf', 'nrn-wf', 'provider-1', 'ext-exe-wf', NULL, 'succeeded', ?, ?, ?, 0,
+           ?, NULL, ?, ?)`,
+      )
+      .run(h.worktreePath, NOW, NOW, JSON.stringify(capabilities()), NOW, NOW)
+    const checkpoint = h.checkpointService.createForExecution('exe-wf', 'node')
+    if (!checkpoint.checkpointId)
+      throw new Error(`missing workflow node checkpoint: ${JSON.stringify(checkpoint)}`)
+    const attemptId = `rec-wf-${attemptNodeRunId}`
+    h.attempts.insert({
+      id: attemptId,
+      workId: h.work.id,
+      checkpointId: checkpoint.checkpointId,
+      kind: 'workflow_node',
+      baseDedupeKey: 'workflow_node:nrn-wf',
+      dedupeKey: `workflow_node:nrn-wf:${attemptNodeRunId}`,
+      idempotencyKey: `idem-${attemptNodeRunId}`,
+      attemptNo: 1,
+      status: 'running',
+      riskLevel: 'low',
+      eligibilityStatus: 'eligible',
+      originalWorkStatus: null,
+      reopenReason: null,
+      operatorConfirmationJson: '{}',
+      planHash: 'hash',
+      contextManifestJson: '{}',
+      executionId: 'exe-wf',
+      sessionId: 'ses-wf',
+      teamRunId: null,
+      nodeRunId: attemptNodeRunId,
+      workflowRunId: 'run-wf',
+      branchRunId: null,
+      recoveredNodeRunId: 'nrn-wf',
+      chainAttemptNo: 1,
+      errorJson: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      startedAt: NOW,
+      endedAt: null,
+    })
+    return { attemptId, checkpointId: checkpoint.checkpointId }
+  }
+
+  it('completes a workflow_node recovery only for a checkpoint owned by its Execution/NodeRun', () => {
+    const h = harness()
+    const { attemptId, checkpointId } = seedWorkflowNodeAttempt(h, 'nrn-wf')
+    h.recoveryService.onCheckpointResult({
+      executionId: 'exe-wf',
+      checkpointId,
+      checkpointState: 'valid',
+      outcome: 'created',
+    } as never)
+    expect(h.attempts.get(attemptId)?.status).toBe('succeeded')
+  })
+
+  it('fails a workflow_node recovery when the checkpoint belongs to another NodeRun', () => {
+    const h = harness()
+    const { attemptId, checkpointId } = seedWorkflowNodeAttempt(h, 'nrn-old')
+    h.recoveryService.onCheckpointResult({
+      executionId: 'exe-wf',
+      checkpointId,
+      checkpointState: 'valid',
+      outcome: 'created',
+    } as never)
+    const attempt = h.attempts.get(attemptId)
+    expect(attempt?.status).toBe('failed')
+    expect(attempt?.errorJson).toContain('CHECKPOINT_RECOVERY_MISMATCH')
+  })
 })

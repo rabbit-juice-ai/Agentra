@@ -818,6 +818,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     checkpoints: checkpointService,
     executionRunner: executionService,
     worktrees: new WorkflowRecoveryWorktreeService(worktrees, workRepository),
+    buildRecoveryPrompt: ({ run, node, definition }) => {
+      if (node.type !== 'agent_task') throw new Error('recovery prompt requires AgentTask')
+      return artifactExchange.promptForRecovery({ run, node, definition })
+    },
     audit: auditRepository,
     logger,
     onRunReentered: (runId) => {

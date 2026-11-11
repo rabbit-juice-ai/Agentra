@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { type Execution, RpcMethodError } from '@agentra/protocol'
 import { newId } from '@agentra/shared'
+import type { WorkflowDefinition, WorkflowNode } from '@agentra/workflow-schema'
 import type { Database } from '../db/database'
 import { transaction } from '../db/database'
 import type { AuditRepository } from '../db/repositories/audit-repository'
@@ -20,6 +21,7 @@ import type {
 import { canonicalJson } from '../services/checkpoint-hash'
 import type { CheckpointService } from '../services/checkpoint-service'
 import type { RecoveryTxContext } from '../services/execution-service'
+import { describeOutputContract } from './artifact-exchange'
 import type { WorkflowAssignmentResolver } from './assignment-resolver'
 import type { PublishedDefinitionProvider } from './published-definition-provider'
 import type {
@@ -118,6 +120,15 @@ export type WorkflowNodeRecoveryDeps = {
   checkpoints: Pick<CheckpointService, 'getCheckpoint' | 'getRecoveryPlan' | 'assertCanStart'>
   executionRunner: WorkflowNodeRecoveryExecutionPort
   worktrees: WorkflowRecoveryWorktreeService
+  /**
+   * T2 构建恢复 Prompt：与普通执行一样解析输入 Artifact 并生成输出契约。
+   * 必须在 T3 之前调用；T3 只接收字符串，不做文件系统读取。
+   */
+  buildRecoveryPrompt?: (context: {
+    run: WorkflowRunRecord
+    node: WorkflowNode
+    definition: WorkflowDefinition
+  }) => string
   audit?: Pick<AuditRepository, 'append'>
   logger?: { warn(message: string, meta?: Record<string, unknown>): void }
   /** Run 重入成功后触发 scheduler kick。 */
@@ -285,7 +296,7 @@ export class WorkflowNodeRecoveryService {
       chain: { key: target.chainId, attemptNo: chainAttemptNo, attemptsUsed },
       runReentry,
       contextBudget: {
-        totalChars: 0,
+        totalChars: planResult?.plan?.manifest.totalChars ?? 0,
         trimmed: planResult?.plan?.manifest.trimmed ?? { p1: false, p2: false, p3: false },
       },
       sections: planResult?.plan?.sections ?? null,
@@ -335,6 +346,8 @@ export class WorkflowNodeRecoveryService {
     const checkpoint = this.deps.checkpoints.getCheckpoint(target.run.workId, input.checkpointId)
     if (!checkpoint)
       throw new RpcMethodError('NODE_RECOVERY_CHECKPOINT_NOT_FOUND', 'no valid checkpoint')
+    // T2：在任何 T3 事务之前解析输入 Artifact 并构建完整恢复 Prompt。
+    const recoveryPrompt = this.composeRecoveryPrompt(target, plan)
     const worktreeIntent = await this.prepareIntent(target, checkpoint, plan, input.idempotencyKey)
     try {
       const prepared = this.startTransaction(
@@ -343,6 +356,7 @@ export class WorkflowNodeRecoveryService {
         plan,
         worktreeIntent,
         input.idempotencyKey,
+        recoveryPrompt,
       )
       const execution = await this.deps.executionRunner
         .spawnPreparedRecovery(prepared.executionId)
@@ -652,41 +666,53 @@ export class WorkflowNodeRecoveryService {
         createdAt: this.now(),
       },
     }
-    const attempt = transaction(this.deps.db, () => {
-      const record: RecoveryAttemptRecord = {
-        id: recoveryAttemptId,
-        workId: target.run.workId,
-        checkpointId: checkpoint.id,
-        kind: 'workflow_node',
-        baseDedupeKey: `workflow_node:${target.chainId}`,
-        dedupeKey: `workflow_node:${target.chainId}:${plan.chain.attemptNo}`,
-        idempotencyKey,
-        attemptNo: this.deps.attempts.nextAttemptNo(target.run.workId, checkpoint.id),
-        status: 'starting',
-        riskLevel: plan.eligibility.riskLevel ?? 'medium',
-        eligibilityStatus: plan.eligibility.status,
-        originalWorkStatus: null,
-        reopenReason: null,
-        operatorConfirmationJson: canonicalJson({ confirm: true, acknowledgedAt: this.now() }),
-        planHash: canonicalJson(plan),
-        contextManifestJson: canonicalJson(baseManifest),
-        executionId: null,
-        sessionId: null,
-        teamRunId: null,
-        nodeRunId: null,
-        workflowRunId: target.run.id,
-        branchRunId: target.branch?.id ?? null,
-        recoveredNodeRunId: target.chainId,
-        chainAttemptNo: plan.chain.attemptNo,
-        errorJson: null,
-        createdAt: this.now(),
-        updatedAt: this.now(),
-        startedAt: null,
-        endedAt: null,
+    const attempt = (() => {
+      try {
+        return transaction(this.deps.db, () => {
+          const record: RecoveryAttemptRecord = {
+            id: recoveryAttemptId,
+            workId: target.run.workId,
+            checkpointId: checkpoint.id,
+            kind: 'workflow_node',
+            baseDedupeKey: `workflow_node:${target.chainId}`,
+            dedupeKey: `workflow_node:${target.chainId}:${plan.chain.attemptNo}`,
+            idempotencyKey,
+            attemptNo: this.deps.attempts.nextAttemptNo(target.run.workId, checkpoint.id),
+            status: 'starting',
+            riskLevel: plan.eligibility.riskLevel ?? 'medium',
+            eligibilityStatus: plan.eligibility.status,
+            originalWorkStatus: null,
+            reopenReason: null,
+            operatorConfirmationJson: canonicalJson({ confirm: true, acknowledgedAt: this.now() }),
+            planHash: canonicalJson(plan),
+            contextManifestJson: canonicalJson(baseManifest),
+            executionId: null,
+            sessionId: null,
+            teamRunId: null,
+            nodeRunId: null,
+            workflowRunId: target.run.id,
+            branchRunId: target.branch?.id ?? null,
+            recoveredNodeRunId: target.chainId,
+            chainAttemptNo: plan.chain.attemptNo,
+            errorJson: null,
+            createdAt: this.now(),
+            updatedAt: this.now(),
+            startedAt: null,
+            endedAt: null,
+          }
+          this.deps.attempts.insert(record)
+          return record
+        })
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          throw new RpcMethodError(
+            'NODE_RECOVERY_ACTIVE_EXISTS',
+            'another recovery became active for this target',
+          )
+        }
+        throw error
       }
-      this.deps.attempts.insert(record)
-      return record
-    })
+    })()
     // T2a：意图已随 T1 落库；T2b 创建并验证 Worktree。
     let facts: WorkflowRecoveryWorktreeFacts
     try {
@@ -721,6 +747,67 @@ export class WorkflowNodeRecoveryService {
     return { attempt, facts, newNodeRunId }
   }
 
+  /**
+   * T2 Prompt 组装：优先使用与普通执行一致的 Artifact/输出契约构建器；
+   * 未注入时退回“上下文 + taskPrompt + 输出契约”的保守组合。
+   */
+  private composeRecoveryPrompt(target: LoadedTarget, plan: WorkflowNodeRecoveryPlanView): string {
+    const contextPart = [
+      plan.sections?.p0 ?? '',
+      plan.sections?.p1 ?? '',
+      plan.sections?.p2 ?? '',
+      plan.sections?.p3 ?? '',
+    ]
+      .filter((part) => part.length > 0)
+      .join('\n\n')
+    let nodePart = ''
+    if (target.node.type === 'agent_task') {
+      if (this.deps.buildRecoveryPrompt) {
+        try {
+          nodePart = this.deps.buildRecoveryPrompt({
+            run: target.run,
+            node: target.node,
+            definition: target.definition,
+          })
+        } catch (error) {
+          throw new RpcMethodError(
+            'INVALID_PARAMS',
+            `recovery input is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+            { code: 'RECOVERY_INPUT_UNAVAILABLE' },
+          )
+        }
+      } else {
+        nodePart = [target.node.config.taskPrompt, this.outputInstruction(target.node.config)].join(
+          '\n\n',
+        )
+      }
+    }
+    const prompt = [contextPart, nodePart].filter((part) => part.length > 0).join('\n\n')
+    if (prompt.trim().length === 0) {
+      throw new RpcMethodError('INVALID_PARAMS', 'recovery prompt must not be blank')
+    }
+    return prompt
+  }
+
+  private outputInstruction(
+    config: Extract<WorkflowNode, { type: 'agent_task' }>['config'],
+  ): string {
+    return [
+      'Return a single JSON document (no commentary):',
+      JSON.stringify({
+        agentraOutputVersion: 1,
+        output: {},
+        artifacts: config.artifacts.map((artifact) => ({
+          name: artifact.name,
+          content: '<artifact content>',
+          encoding: artifact.type === 'image' ? 'base64' : 'utf8',
+        })),
+      }),
+      describeOutputContract(config.outputContract),
+      'Artifact names must match the declared names; optional artifacts may be omitted. Do not include credentials.',
+    ].join('\n')
+  }
+
   private startTransaction(
     target: LoadedTarget,
     checkpoint: CheckpointRecord,
@@ -731,6 +818,7 @@ export class WorkflowNodeRecoveryService {
       newNodeRunId: string
     },
     idempotencyKey: string,
+    recoveryPrompt: string,
   ): { recoveryAttemptId: string; newNodeRunId: string; executionId: string; sessionId: string } {
     return transaction<{
       recoveryAttemptId: string
@@ -738,6 +826,53 @@ export class WorkflowNodeRecoveryService {
       executionId: string
       sessionId: string
     }>(this.deps.db, () => {
+      // T3 重新读取目标事实：T2 的 Worktree 创建是 await 窗口，期间 Run/Branch/Work
+      // 或旧执行状态可能变化；不得沿用 plan 时的快照。
+      const freshRun = this.deps.runs.get(target.run.id)
+      if (!freshRun) {
+        throw new RpcMethodError('NODE_RECOVERY_TARGET_CHANGED', 'workflow run changed')
+      }
+      if (freshRun.status !== 'running' && freshRun.status !== 'reconciliation_required') {
+        throw new RpcMethodError(
+          'NODE_RECOVERY_RUN_STATE_INVALID',
+          'workflow run is not recoverable',
+        )
+      }
+      const freshWork = this.deps.works.get(freshRun.workId)
+      if (!freshWork || freshWork.status !== 'active') {
+        throw new RpcMethodError('NODE_RECOVERY_WORK_STATE_INVALID', 'work is not active')
+      }
+      const freshBranch = target.branch ? this.deps.branches.get(target.branch.id) : null
+      if (!freshBranch || freshBranch.status !== 'active') {
+        throw new RpcMethodError('NODE_RECOVERY_BRANCH_NOT_ACTIVE', 'branch is not active')
+      }
+      const freshTarget = this.deps.nodes.get(target.nodeRun.id)
+      if (!freshTarget || freshTarget.workflowRunId !== freshRun.id) {
+        throw new RpcMethodError('NODE_RECOVERY_TARGET_CHANGED', 'recovery target changed')
+      }
+      const freshLatest = latestAttempt(this.deps.nodes, freshRun.id, freshTarget.workflowNodeKey)
+      if (!freshLatest || freshLatest.id !== freshTarget.id) {
+        throw new RpcMethodError(
+          'NODE_RECOVERY_TARGET_NOT_LATEST',
+          'target is not the latest attempt',
+        )
+      }
+      if (
+        freshTarget.status !== 'reconciliation_required' &&
+        !this.isRecoveryFailedAttempt(freshTarget)
+      ) {
+        throw new RpcMethodError(
+          'NODE_RECOVERY_TARGET_NOT_RECOVERABLE',
+          'target is no longer recoverable',
+        )
+      }
+      const freshActive = this.deps.executions.findActiveByNodeRun(freshTarget.id)
+      if (freshActive && freshActive.status !== 'pending') {
+        throw new RpcMethodError(
+          'NODE_RECOVERY_EXECUTION_ACTIVE',
+          'old execution became active during preparation',
+        )
+      }
       const fresh = this.deps.attempts.get(prepared.attempt.id)
       if (!fresh || fresh.status !== 'starting') {
         throw new RpcMethodError('NODE_RECOVERY_TARGET_CHANGED', 'recovery target changed')
@@ -763,9 +898,9 @@ export class WorkflowNodeRecoveryService {
       if (Number(worktree.predictedAttempt) !== expectedAttempt) {
         throw new RpcMethodError('NODE_RECOVERY_ATTEMPT_CONFLICT', 'predicted attempt changed')
       }
-      if (target.nodeRun.status === 'reconciliation_required') {
+      if (freshTarget.status === 'reconciliation_required') {
         const marked = this.deps.nodes.fail(
-          target.nodeRun.id,
+          freshTarget.id,
           ['reconciliation_required'],
           {
             category: 'recovery_superseded',
@@ -788,8 +923,8 @@ export class WorkflowNodeRecoveryService {
           workflowNodeKey: target.nodeKey,
           branchRunId: target.branch?.id ?? null,
           status: 'ready',
-          attempt: Number.isInteger(attemptNo) ? attemptNo : target.nodeRun.attempt + 1,
-          inputSnapshot: target.nodeRun.inputSnapshot,
+          attempt: Number.isInteger(attemptNo) ? attemptNo : freshTarget.attempt + 1,
+          inputSnapshot: freshTarget.inputSnapshot,
         },
         this.now(),
       )
@@ -797,16 +932,6 @@ export class WorkflowNodeRecoveryService {
         throw new RpcMethodError('NODE_RECOVERY_ATTEMPT_CONFLICT', 'node attempt conflict')
       }
       const assignment = this.deps.assignments.resolveForNode(target.run.workId, target.node)
-      const taskPrompt = target.node.type === 'agent_task' ? target.node.config.taskPrompt : ''
-      const prompt = [
-        plan.sections?.p0 ?? '',
-        plan.sections?.p1 ?? '',
-        plan.sections?.p2 ?? '',
-        plan.sections?.p3 ?? '',
-        taskPrompt,
-      ]
-        .filter((part) => part.length > 0)
-        .join('\n\n')
       const tx: RecoveryTxContext = { db: this.deps.db, inTransaction: true }
       const execution = this.deps.executionRunner.prepareRecoveryForNode(
         tx,
@@ -814,7 +939,7 @@ export class WorkflowNodeRecoveryService {
         {
           agentId: assignment.agentId,
           workId: target.run.workId,
-          prompt: prompt.length > 0 ? prompt : taskPrompt,
+          prompt: recoveryPrompt,
           worktreeId: facts.worktreeId,
         },
         { recoveryAttemptId: fresh.id, checkpointId: checkpoint.id },
@@ -840,13 +965,13 @@ export class WorkflowNodeRecoveryService {
         this.deps.executionRunner.discardPreparedRecovery(execution.executionId)
         throw new RpcMethodError('NODE_RECOVERY_ACTIVE_EXISTS', 'active recovery exists')
       }
-      if (target.run.status === 'reconciliation_required' && plan.runReentry.allowed) {
-        this.deps.runs.transition(target.run.id, ['reconciliation_required'], 'running', this.now())
+      if (freshRun.status === 'reconciliation_required' && plan.runReentry.allowed) {
+        this.deps.runs.transition(freshRun.id, ['reconciliation_required'], 'running', this.now())
       }
       this.audit('workflow.node.recovery.started', {
-        workflowRunId: target.run.id,
+        workflowRunId: freshRun.id,
         nodeKey: target.nodeKey,
-        recoveredNodeRunId: target.nodeRun.id,
+        recoveredNodeRunId: freshTarget.id,
         newNodeRunId: nodeRun.id,
         recoveryAttemptId: fresh.id,
         worktreeId: facts.worktreeId,
@@ -989,4 +1114,14 @@ export class WorkflowNodeRecoveryService {
 
 function cryptoRandomToken(): string {
   return randomUUID()
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const code = (error as { code?: unknown }).code
+  return (
+    code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+    code === 'SQLITE_CONSTRAINT_PRIMARYKEY' ||
+    /UNIQUE constraint failed/i.test(error.message)
+  )
 }
