@@ -86,6 +86,9 @@ export function TeamsPage({
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')
   const [memberAgentId, setMemberAgentId] = useState('')
+  const [leaderOpen, setLeaderOpen] = useState(false)
+  const [leaderAgentId, setLeaderAgentId] = useState('')
+  const [leaderSaving, setLeaderSaving] = useState(false)
   const [instructionsDraft, setInstructionsDraft] = useState('')
   const [instructionsEditing, setInstructionsEditing] = useState(false)
   const [instructionsSaving, setInstructionsSaving] = useState(false)
@@ -93,6 +96,15 @@ export function TeamsPage({
 
   const selected = teams.find((team) => team.id === selectedId) ?? null
   const members = selected ? (membersByTeam[selected.id] ?? []) : []
+  const selectedLeader = selected?.leaderAgentId
+    ? (agents.find((agent) => agent.id === selected.leaderAgentId) ?? null)
+    : null
+  const leaderCandidates = members
+    .map((member) => agents.find((agent) => agent.id === member.agentId))
+    .filter(
+      (agent): agent is AgentProfile =>
+        agent !== undefined && agent.status === 'active' && agent.accessMode === 'analyze',
+    )
   const savedInstructions = selected?.instructions ?? ''
   const instructionsDirty = instructionsDraft !== savedInstructions
   const linkedWorks = useMemo(() => {
@@ -131,6 +143,7 @@ export function TeamsPage({
     if (selectedId === null) return
     setInstructionsEditing(false)
     setInstructionsError(null)
+    setLeaderOpen(false)
   }, [selectedId])
 
   useEffect(() => {
@@ -165,6 +178,26 @@ export function TeamsPage({
       description: editDescription.trim(),
     })
     if (ok) setEditOpen(false)
+  }
+
+  const openLeader = (): void => {
+    if (!selected) return
+    setLeaderAgentId(selected.leaderAgentId ?? '')
+    setLeaderOpen(true)
+  }
+
+  const submitLeader = async (): Promise<void> => {
+    if (!selected || leaderSaving) return
+    setLeaderSaving(true)
+    const ok = await onUpdate({
+      id: selected.id,
+      leaderAgentId: leaderAgentId === '' ? null : leaderAgentId,
+    })
+    setLeaderSaving(false)
+    if (ok) {
+      await onRefreshMembers(selected.id)
+      setLeaderOpen(false)
+    }
   }
 
   const saveInstructions = async (): Promise<void> => {
@@ -214,6 +247,10 @@ export function TeamsPage({
 
       <div className="team-layout">
         <aside className="team-list">
+          <div className="team-list-head">
+            <span>小队</span>
+            <span className="count">{teams.length}</span>
+          </div>
           {teams.length === 0 ? (
             <div className="card">
               <div className="empty-state">还没有团队。点击“新建团队”创建第一个。</div>
@@ -221,7 +258,9 @@ export function TeamsPage({
           ) : (
             teams.map((team) => {
               const isSelected = team.id === selectedId
-              const teamMembers = membersByTeam[team.id] ?? []
+              const leader = team.leaderAgentId
+                ? (agents.find((agent) => agent.id === team.leaderAgentId) ?? null)
+                : null
               return (
                 <button
                   type="button"
@@ -235,9 +274,9 @@ export function TeamsPage({
                   <span className="team-list-main">
                     <span className="team-list-name">{team.name}</span>
                     <span className="team-list-meta">
-                      {teamMembers.length} 名成员
-                      {team.instructions.trim().length > 0 ? ' · 有指引' : ''}
+                      {leader ? `队长 ${leader.name}` : '未设置队长'}
                     </span>
+                    {team.description && <span className="team-list-desc">{team.description}</span>}
                   </span>
                   <Icon name="chevron-right" size={14} />
                 </button>
@@ -261,6 +300,10 @@ export function TeamsPage({
                   <div className="team-detail-desc">{selected.description || '暂无描述'}</div>
                 </div>
                 <div className="team-detail-actions">
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={openLeader}>
+                    <Icon name="users" size={13} />
+                    {selectedLeader ? '更换队长' : '设置队长'}
+                  </button>
                   <button type="button" className="btn btn-secondary btn-sm" onClick={openEdit}>
                     <Icon name="settings" size={13} />
                     编辑
@@ -277,6 +320,9 @@ export function TeamsPage({
               </div>
 
               <div className="team-detail-meta">
+                <span>
+                  <strong>{selectedLeader?.name ?? '未设置'}</strong> 队长
+                </span>
                 <span>
                   <strong>{members.length}</strong> 名成员
                 </span>
@@ -349,6 +395,9 @@ export function TeamsPage({
                             <div className="team-member-copy">
                               <div className="team-member-name">
                                 {agent?.name ?? member.agentId}
+                                {selected.leaderAgentId === member.agentId && (
+                                  <span className="pill accent">队长</span>
+                                )}
                               </div>
                               <div className="team-member-sub">
                                 {agent
@@ -363,7 +412,12 @@ export function TeamsPage({
                               type="button"
                               className="btn btn-ghost btn-sm danger"
                               onClick={() => void onRemoveMember(selected.id, member.agentId)}
-                              disabled={busy}
+                              disabled={busy || selected.leaderAgentId === member.agentId}
+                              title={
+                                selected.leaderAgentId === member.agentId
+                                  ? '请先更换队长再移除'
+                                  : undefined
+                              }
                             >
                               移除
                             </button>
@@ -575,6 +629,55 @@ export function TeamsPage({
               onChange={(event) => setEditDescription(event.target.value)}
             />
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={leaderOpen}
+        title={selected ? `设置队长 · ${selected.name}` : '设置队长'}
+        onClose={() => setLeaderOpen(false)}
+        footer={
+          <>
+            <button type="button" className="btn btn-ghost" onClick={() => setLeaderOpen(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={leaderSaving}
+              onClick={() => void submitLeader()}
+            >
+              {leaderSaving ? '保存中…' : '保存队长'}
+            </button>
+          </>
+        }
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div className="field">
+            <label htmlFor="team-leader-agent">队长</label>
+            <select
+              id="team-leader-agent"
+              className="select"
+              value={leaderAgentId}
+              onChange={(event) => setLeaderAgentId(event.target.value)}
+            >
+              <option value="">不设置队长</option>
+              {leaderCandidates.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+            </select>
+            <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>
+              队长必须是团队中工作权限为「只读分析」的 active 成员。设置后会自动加入团队。
+              队长只负责派工，不执行任务，也不会被分配团队任务。
+            </div>
+          </div>
+          {leaderCandidates.length === 0 && (
+            <div className="banner warn" style={{ margin: 0 }}>
+              当前团队没有可担任队长的只读分析成员。请先添加一个 analyze 权限的 Agent。
+            </div>
+          )}
         </div>
       </Modal>
 

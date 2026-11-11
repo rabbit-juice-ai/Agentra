@@ -56,6 +56,7 @@ export class ArtifactExchange {
   extract(executionId: string): Record<string, unknown> {
     let cursor = 0
     let bytes = 0
+    let stdoutTruncated = false
     const stdout: string[] = []
     let result: string | undefined
     let direct: unknown
@@ -64,11 +65,7 @@ export class ArtifactExchange {
       if (!page.length) break
       for (const log of page) {
         cursor = log.sequenceNo
-        if (log.stream !== 'stdout' && log.stream !== 'structured') continue
-        bytes += Buffer.byteLength(log.content)
-        if (bytes > 8_000_000) throw new Error('Execution output exceeds extraction budget')
-        if (log.stream === 'stdout') stdout.push(log.content)
-        else {
+        if (log.stream === 'structured') {
           let parsed: unknown
           try {
             parsed = JSON.parse(log.content)
@@ -78,11 +75,23 @@ export class ArtifactExchange {
           const frame = ResultFrame.safeParse(parsed)
           if (frame.success) result = frame.data.result
           if (OutputDocument.safeParse(parsed).success) direct = parsed
+          continue
         }
+        if (log.stream !== 'stdout' || stdoutTruncated) continue
+        bytes += Buffer.byteLength(log.content)
+        if (bytes > 8_000_000) {
+          stdoutTruncated = true
+          stdout.length = 0
+          continue
+        }
+        stdout.push(log.content)
       }
     }
     const text = (result ?? stdout.join('\n')).trim()
-    if (!text && !direct) throw new Error('Execution produced no transferable output')
+    if (!text && !direct) {
+      if (stdoutTruncated) throw new Error('Execution output exceeds extraction budget')
+      throw new Error('Execution produced no transferable output')
+    }
     let parsed: unknown = direct
     if (!parsed) {
       const body = text.replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/u, '$1')

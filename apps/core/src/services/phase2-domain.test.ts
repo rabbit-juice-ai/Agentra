@@ -312,6 +312,22 @@ describe('WorkService 状态机', () => {
       expect.objectContaining({ code: 'INVALID_PARAMS' }),
     )
   })
+
+  it('keeps a team-collaboration work on its single owner team', () => {
+    const h = harness()
+    const alpha = h.teams.create({ name: 'Alpha' })
+    const beta = h.teams.create({ name: 'Beta' })
+    const work = h.works.create({
+      name: 'Team W',
+      rootPath: '/tmp/team-w',
+      collaborationMode: 'team',
+      ownerTeamId: alpha.id,
+    })
+    h.works.linkTeam(work.id, alpha.id)
+    expect(() => h.works.linkTeam(work.id, beta.id)).toThrow(
+      expect.objectContaining({ code: 'INVALID_PARAMS' }),
+    )
+  })
 })
 
 describe('AssignmentService 状态机', () => {

@@ -11,6 +11,7 @@ export const NODE_FAILURE_CATEGORIES = [
   'output_contract_violation',
   'condition_evaluation',
   'join_failed',
+  'recovery_superseded',
   'internal',
 ] as const
 export type NodeFailureCategory = (typeof NODE_FAILURE_CATEGORIES)[number]

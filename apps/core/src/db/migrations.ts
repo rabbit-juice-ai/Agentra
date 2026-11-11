@@ -933,6 +933,492 @@ const TEAM_INSTRUCTIONS = `
 ALTER TABLE teams ADD COLUMN instructions TEXT NOT NULL DEFAULT '';
 `
 
+/** 阶段 1：团队队长。旧团队保持 NULL，不自动推断。 */
+const TEAM_LEADER = `
+ALTER TABLE teams ADD COLUMN leader_agent_id TEXT
+  REFERENCES agent_profiles(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_teams_leader ON teams(leader_agent_id);
+`
+
+/** 阶段 2：计划任务的权威成员、队长派工与 StartRun 并发占用。 */
+const PLAN_DISPATCH = `
+CREATE TABLE IF NOT EXISTS plan_task_assignments (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+  plan_version_id TEXT NOT NULL REFERENCES plan_versions(id) ON DELETE CASCADE,
+  task_key TEXT NOT NULL,
+  team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
+  agent_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE RESTRICT,
+  source TEXT NOT NULL CHECK (source IN ('planner', 'leader', 'user', 'legacy')),
+  assigned_by TEXT NOT NULL,
+  reason TEXT,
+  status TEXT NOT NULL CHECK (status IN ('active', 'superseded')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_task_assignments_active
+  ON plan_task_assignments(plan_version_id, task_key)
+  WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_plan_task_assignments_plan
+  ON plan_task_assignments(plan_id, plan_version_id);
+CREATE INDEX IF NOT EXISTS idx_plan_task_assignments_agent
+  ON plan_task_assignments(agent_id);
+
+CREATE TABLE IF NOT EXISTS plan_dispatches (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+  plan_version_id TEXT NOT NULL REFERENCES plan_versions(id) ON DELETE CASCADE,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE RESTRICT,
+  leader_agent_id TEXT REFERENCES agent_profiles(id) ON DELETE SET NULL,
+  status TEXT NOT NULL CHECK (
+    status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')
+  ),
+  attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
+  execution_id TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  started_at TEXT,
+  ended_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (plan_version_id, team_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_dispatches_plan_status
+  ON plan_dispatches(plan_id, status);
+
+CREATE TABLE IF NOT EXISTS plan_start_attempts (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+  plan_version_id TEXT NOT NULL REFERENCES plan_versions(id) ON DELETE CASCADE,
+  request_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (
+    status IN ('preparing', 'starting', 'running', 'failed', 'cancelled')
+  ),
+  assignment_snapshot_json TEXT NOT NULL,
+  plan_checksum TEXT NOT NULL,
+  workflow_version_id TEXT,
+  workflow_run_id TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_start_attempts_active
+  ON plan_start_attempts(plan_version_id)
+  WHERE status IN ('preparing', 'starting');
+CREATE INDEX IF NOT EXISTS idx_plan_start_attempts_plan
+  ON plan_start_attempts(plan_id, created_at);
+`
+
+export /** 阶段 3：团队任务协作（Planner 聊天室 + 队长/成员线程运行）。 */
+const TEAM_COLLABORATION = `
+ALTER TABLE works ADD COLUMN collaboration_mode TEXT NOT NULL DEFAULT 'workflow'
+  CHECK (collaboration_mode IN ('workflow', 'team'));
+ALTER TABLE works ADD COLUMN owner_team_id TEXT REFERENCES teams(id) ON DELETE SET NULL;
+ALTER TABLE works ADD COLUMN issue_status TEXT NOT NULL DEFAULT 'backlog'
+  CHECK (issue_status IN ('triage', 'backlog', 'in_progress', 'review', 'done'));
+ALTER TABLE works ADD COLUMN assignee_agent_id TEXT
+  REFERENCES agent_profiles(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_works_owner_team ON works(owner_team_id);
+CREATE INDEX IF NOT EXISTS idx_works_issue_status ON works(issue_status);
+
+CREATE TABLE IF NOT EXISTS planner_messages (
+  id TEXT PRIMARY KEY,
+  author_type TEXT NOT NULL CHECK (author_type IN ('user', 'planner', 'system')),
+  author_id TEXT NOT NULL,
+  content TEXT NOT NULL,
+  action_json TEXT,
+  action_status TEXT CHECK (action_status IN ('proposed', 'applied', 'rejected')),
+  execution_id TEXT,
+  related_work_id TEXT REFERENCES works(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_planner_messages_created
+  ON planner_messages(created_at);
+
+CREATE TABLE IF NOT EXISTS team_task_messages (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  author_type TEXT NOT NULL CHECK (author_type IN ('user', 'leader', 'member', 'planner', 'system')),
+  author_id TEXT NOT NULL,
+  content TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'message' CHECK (
+    kind IN ('message', 'decision', 'escalation', 'run', 'status')
+  ),
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  execution_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_task_messages_work
+  ON team_task_messages(work_id, created_at);
+
+CREATE TABLE IF NOT EXISTS team_task_subtasks (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  assignee_agent_id TEXT REFERENCES agent_profiles(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (
+    status IN ('pending', 'running', 'review', 'done', 'blocked')
+  ),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_task_subtasks_work
+  ON team_task_subtasks(work_id, created_at);
+
+CREATE TABLE IF NOT EXISTS team_task_runs (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  agent_id TEXT REFERENCES agent_profiles(id) ON DELETE SET NULL,
+  role TEXT NOT NULL CHECK (role IN ('leader', 'member')),
+  trigger_message_id TEXT REFERENCES team_task_messages(id) ON DELETE SET NULL,
+  subtask_id TEXT REFERENCES team_task_subtasks(id) ON DELETE SET NULL,
+  status TEXT NOT NULL CHECK (
+    status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')
+  ),
+  execution_id TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_task_runs_running
+  ON team_task_runs(work_id)
+  WHERE status = 'running';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_task_runs_queued
+  ON team_task_runs(work_id)
+  WHERE status = 'queued';
+CREATE INDEX IF NOT EXISTS idx_team_task_runs_work
+  ON team_task_runs(work_id, created_at);
+`
+
+/** 阶段 3.1：把成员执行中的 Bash/工具步骤持久化为可回看的执行记录。 */
+const TEAM_TASK_RUN_STEPS = `
+CREATE TABLE IF NOT EXISTS team_task_run_steps (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES team_task_runs(id) ON DELETE CASCADE,
+  step_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (run_id, step_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_task_run_steps_work
+  ON team_task_run_steps(work_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_team_task_run_steps_run
+  ON team_task_run_steps(run_id, created_at);
+`
+
+/** Phase 1A：Work 正式验收标准 + Task Memory 当前快照。 */
+const WORK_ACCEPTANCE_AND_TASK_MEMORY = `
+ALTER TABLE works ADD COLUMN acceptance_criteria_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE works ADD COLUMN acceptance_criteria_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE works ADD COLUMN acceptance_criteria_updated_at TEXT;
+
+CREATE TABLE IF NOT EXISTS task_memories (
+  work_id TEXT PRIMARY KEY REFERENCES works(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+  memory_json TEXT NOT NULL,
+  acceptance_criteria_snapshot_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_criteria_work_version INTEGER NOT NULL DEFAULT 1
+    CHECK (acceptance_criteria_work_version >= 1),
+  acceptance_criteria_work_updated_at TEXT,
+  summary TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_memories_updated
+  ON task_memories(updated_at);
+`
+
+/**
+ * Phase 1B-1：不可变 Checkpoint。
+ *
+ * 外键策略：所有来源引用使用 ON DELETE RESTRICT。Checkpoint 禁止 UPDATE/DELETE，
+ * 因此不能使用 ON DELETE SET NULL/CASCADE —— 外键动作本身会改写/删除 Checkpoint 行，
+ * 与不可变触发器冲突。Work/Execution/Session/NodeRun/TeamRun 只归档或保留。
+ */
+const TASK_CHECKPOINTS = `
+CREATE TABLE IF NOT EXISTS task_checkpoints (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE RESTRICT,
+  seq INTEGER NOT NULL CHECK (seq >= 1),
+  base_dedupe_key TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  attempt_no INTEGER NOT NULL CHECK (attempt_no >= 1),
+  state TEXT NOT NULL CHECK (state IN ('valid', 'failed')),
+  kind TEXT NOT NULL CHECK (kind IN (
+    'stage_complete',
+    'execution_failed',
+    'user_cancelled',
+    'rework_started',
+    'rework_completed',
+    'final_delivery',
+    'session_switch',
+    'compression'
+  )),
+  stage TEXT NOT NULL DEFAULT '',
+  execution_id TEXT REFERENCES executions(id) ON DELETE RESTRICT,
+  session_id TEXT REFERENCES agent_sessions(id) ON DELETE RESTRICT,
+  node_run_id TEXT REFERENCES node_runs(id) ON DELETE RESTRICT,
+  team_run_id TEXT REFERENCES team_task_runs(id) ON DELETE RESTRICT,
+  parent_checkpoint_id TEXT REFERENCES task_checkpoints(id) ON DELETE RESTRICT,
+  acceptance_criteria_work_version INTEGER NOT NULL
+    CHECK (acceptance_criteria_work_version >= 1),
+  task_memory_version INTEGER CHECK (task_memory_version IS NULL OR task_memory_version >= 1),
+  risk_level TEXT NOT NULL CHECK (risk_level IN ('low', 'medium', 'high')),
+  evidence_status TEXT NOT NULL CHECK (
+    evidence_status IN ('verified', 'partial', 'invalid', 'missing', 'not_required')
+  ),
+  side_effect_completeness TEXT NOT NULL CHECK (
+    side_effect_completeness IN ('complete', 'partial', 'not_tracked')
+  ),
+  checkpoint_json TEXT NOT NULL,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  verification_json TEXT NOT NULL DEFAULT '{}',
+  error_json TEXT,
+  content_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (work_id, seq),
+  UNIQUE (work_id, dedupe_key),
+  UNIQUE (work_id, base_dedupe_key, attempt_no)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_checkpoints_valid_business_key
+  ON task_checkpoints(work_id, base_dedupe_key)
+  WHERE state = 'valid';
+
+CREATE INDEX IF NOT EXISTS idx_task_checkpoints_work_created
+  ON task_checkpoints(work_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_task_checkpoints_work_state
+  ON task_checkpoints(work_id, state, created_at);
+CREATE INDEX IF NOT EXISTS idx_task_checkpoints_execution
+  ON task_checkpoints(execution_id);
+CREATE INDEX IF NOT EXISTS idx_task_checkpoints_team_run
+  ON task_checkpoints(team_run_id);
+CREATE INDEX IF NOT EXISTS idx_task_checkpoints_node_run
+  ON task_checkpoints(node_run_id);
+
+CREATE TRIGGER IF NOT EXISTS trg_task_checkpoints_immutable_update
+BEFORE UPDATE ON task_checkpoints
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'task checkpoint is immutable; append a new attempt instead');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_task_checkpoints_immutable_delete
+BEFORE DELETE ON task_checkpoints
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(ABORT, 'task checkpoint is immutable; deletion is not allowed');
+END;
+`
+
+/** Phase 1B-2A：显式恢复尝试。 */
+const TASK_RECOVERY_ATTEMPTS = `
+CREATE TABLE IF NOT EXISTS task_recovery_attempts (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE RESTRICT,
+  checkpoint_id TEXT NOT NULL REFERENCES task_checkpoints(id) ON DELETE RESTRICT,
+  kind TEXT NOT NULL CHECK (kind IN ('team', 'work', 'generic')),
+  base_dedupe_key TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  attempt_no INTEGER NOT NULL CHECK (attempt_no >= 1),
+  status TEXT NOT NULL CHECK (
+    status IN ('starting', 'running', 'succeeded', 'failed', 'cancelled', 'blocked')
+  ),
+  risk_level TEXT NOT NULL CHECK (risk_level IN ('low', 'medium', 'high')),
+  eligibility_status TEXT NOT NULL CHECK (
+    eligibility_status IN ('eligible', 'conditional', 'blocked')
+  ),
+  original_work_status TEXT CHECK (
+    original_work_status IS NULL OR
+    original_work_status IN ('active', 'paused', 'completed')
+  ),
+  reopen_reason TEXT,
+  operator_confirmation_json TEXT NOT NULL DEFAULT '{}',
+  plan_hash TEXT NOT NULL,
+  context_manifest_json TEXT NOT NULL DEFAULT '{}',
+  execution_id TEXT REFERENCES executions(id) ON DELETE RESTRICT,
+  session_id TEXT REFERENCES agent_sessions(id) ON DELETE RESTRICT,
+  team_run_id TEXT REFERENCES team_task_runs(id) ON DELETE RESTRICT,
+  node_run_id TEXT REFERENCES node_runs(id) ON DELETE RESTRICT,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT,
+  UNIQUE (work_id, checkpoint_id, attempt_no),
+  UNIQUE (work_id, idempotency_key),
+  UNIQUE (work_id, dedupe_key)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_recovery_attempts_active
+  ON task_recovery_attempts(work_id)
+  WHERE status IN ('starting', 'running');
+
+CREATE INDEX IF NOT EXISTS idx_task_recovery_attempts_work
+  ON task_recovery_attempts(work_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_task_recovery_attempts_checkpoint
+  ON task_recovery_attempts(checkpoint_id, attempt_no);
+CREATE INDEX IF NOT EXISTS idx_task_recovery_attempts_execution
+  ON task_recovery_attempts(execution_id);
+CREATE INDEX IF NOT EXISTS idx_task_recovery_attempts_team_run
+  ON task_recovery_attempts(team_run_id);
+CREATE INDEX IF NOT EXISTS idx_task_recovery_attempts_node_run
+  ON task_recovery_attempts(node_run_id);
+`
+
+/** Phase 1B-2B：Workflow NodeRun 恢复扩展（保留数据重建）。 */
+const WORKFLOW_NODE_RECOVERY = `
+ALTER TABLE task_recovery_attempts RENAME TO task_recovery_attempts_v33_backup;
+
+DROP INDEX IF EXISTS idx_task_recovery_attempts_active;
+DROP INDEX IF EXISTS idx_task_recovery_attempts_work;
+DROP INDEX IF EXISTS idx_task_recovery_attempts_checkpoint;
+DROP INDEX IF EXISTS idx_task_recovery_attempts_execution;
+DROP INDEX IF EXISTS idx_task_recovery_attempts_team_run;
+DROP INDEX IF EXISTS idx_task_recovery_attempts_node_run;
+
+CREATE TABLE task_recovery_attempts (
+  id TEXT PRIMARY KEY,
+  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE RESTRICT,
+  checkpoint_id TEXT NOT NULL REFERENCES task_checkpoints(id) ON DELETE RESTRICT,
+  kind TEXT NOT NULL CHECK (
+    kind IN ('team', 'work', 'generic', 'workflow_node')
+  ),
+  base_dedupe_key TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  attempt_no INTEGER NOT NULL CHECK (attempt_no >= 1),
+  status TEXT NOT NULL CHECK (
+    status IN ('starting', 'running', 'succeeded', 'failed', 'cancelled', 'blocked')
+  ),
+  risk_level TEXT NOT NULL CHECK (risk_level IN ('low', 'medium', 'high')),
+  eligibility_status TEXT NOT NULL CHECK (
+    eligibility_status IN ('eligible', 'conditional', 'blocked')
+  ),
+  original_work_status TEXT CHECK (
+    original_work_status IS NULL OR
+    original_work_status IN ('active', 'paused', 'completed')
+  ),
+  reopen_reason TEXT,
+  operator_confirmation_json TEXT NOT NULL DEFAULT '{}',
+  plan_hash TEXT NOT NULL,
+  context_manifest_json TEXT NOT NULL DEFAULT '{}',
+  execution_id TEXT REFERENCES executions(id) ON DELETE RESTRICT,
+  session_id TEXT REFERENCES agent_sessions(id) ON DELETE RESTRICT,
+  team_run_id TEXT REFERENCES team_task_runs(id) ON DELETE RESTRICT,
+  node_run_id TEXT REFERENCES node_runs(id) ON DELETE RESTRICT,
+  workflow_run_id TEXT REFERENCES workflow_runs(id) ON DELETE RESTRICT,
+  branch_run_id TEXT REFERENCES branch_runs(id) ON DELETE RESTRICT,
+  recovered_node_run_id TEXT REFERENCES node_runs(id) ON DELETE RESTRICT,
+  chain_attempt_no INTEGER CHECK (
+    chain_attempt_no IS NULL OR chain_attempt_no BETWEEN 1 AND 3
+  ),
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT,
+  CHECK (
+    kind <> 'workflow_node' OR (
+      workflow_run_id IS NOT NULL AND
+      recovered_node_run_id IS NOT NULL AND
+      chain_attempt_no IS NOT NULL
+    )
+  ),
+  CHECK (
+    kind = 'workflow_node' OR (
+      workflow_run_id IS NULL AND
+      branch_run_id IS NULL AND
+      recovered_node_run_id IS NULL AND
+      chain_attempt_no IS NULL AND
+      node_run_id IS NULL
+    )
+  )
+);
+
+INSERT INTO task_recovery_attempts (
+  id, work_id, checkpoint_id, kind, base_dedupe_key, dedupe_key, idempotency_key,
+  attempt_no, status, risk_level, eligibility_status, original_work_status,
+  reopen_reason, operator_confirmation_json, plan_hash, context_manifest_json,
+  execution_id, session_id, team_run_id, node_run_id,
+  workflow_run_id, branch_run_id, recovered_node_run_id, chain_attempt_no,
+  error_json, created_at, updated_at, started_at, ended_at
+)
+SELECT
+  id, work_id, checkpoint_id, kind, base_dedupe_key, dedupe_key, idempotency_key,
+  attempt_no, status, risk_level, eligibility_status, original_work_status,
+  reopen_reason, operator_confirmation_json, plan_hash, context_manifest_json,
+  execution_id, session_id, team_run_id, node_run_id,
+  NULL, NULL, NULL, NULL,
+  error_json, created_at, updated_at, started_at, ended_at
+FROM task_recovery_attempts_v33_backup;
+
+DROP TABLE task_recovery_attempts_v33_backup;
+
+CREATE UNIQUE INDEX idx_task_recovery_attempts_non_workflow_checkpoint_attempt
+  ON task_recovery_attempts(work_id, checkpoint_id, attempt_no)
+  WHERE kind <> 'workflow_node';
+CREATE UNIQUE INDEX idx_task_recovery_attempts_non_workflow_base_attempt
+  ON task_recovery_attempts(work_id, base_dedupe_key, attempt_no)
+  WHERE kind <> 'workflow_node';
+CREATE UNIQUE INDEX idx_task_recovery_attempts_idempotency
+  ON task_recovery_attempts(work_id, idempotency_key);
+CREATE UNIQUE INDEX idx_task_recovery_attempts_dedupe
+  ON task_recovery_attempts(work_id, dedupe_key);
+CREATE UNIQUE INDEX idx_task_recovery_attempts_chain_attempt
+  ON task_recovery_attempts(recovered_node_run_id, chain_attempt_no)
+  WHERE kind = 'workflow_node';
+CREATE UNIQUE INDEX idx_task_recovery_attempts_active_chain
+  ON task_recovery_attempts(recovered_node_run_id)
+  WHERE kind = 'workflow_node' AND status IN ('starting', 'running');
+CREATE UNIQUE INDEX idx_task_recovery_attempts_active
+  ON task_recovery_attempts(work_id)
+  WHERE status IN ('starting', 'running');
+CREATE INDEX idx_task_recovery_attempts_work
+  ON task_recovery_attempts(work_id, created_at);
+CREATE INDEX idx_task_recovery_attempts_checkpoint
+  ON task_recovery_attempts(checkpoint_id, attempt_no);
+CREATE INDEX idx_task_recovery_attempts_execution
+  ON task_recovery_attempts(execution_id);
+CREATE INDEX idx_task_recovery_attempts_team_run
+  ON task_recovery_attempts(team_run_id);
+CREATE INDEX idx_task_recovery_attempts_node_run
+  ON task_recovery_attempts(node_run_id);
+CREATE INDEX idx_task_recovery_attempts_recovered_node_run
+  ON task_recovery_attempts(recovered_node_run_id);
+CREATE INDEX idx_task_recovery_attempts_workflow_run
+  ON task_recovery_attempts(workflow_run_id, status);
+
+DROP INDEX IF EXISTS idx_node_runs_run_key_attempt;
+CREATE UNIQUE INDEX idx_node_runs_run_key_attempt
+  ON node_runs(workflow_run_id, workflow_node_key, attempt);
+
+CREATE UNIQUE INDEX idx_worktrees_work_branch_active
+  ON worktrees(work_id, branch_name)
+  WHERE status = 'active';
+
+ALTER TABLE workdir_locks ADD COLUMN holder_started_at TEXT;
+ALTER TABLE workdir_locks ADD COLUMN holder_kind TEXT;
+`
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -1120,6 +1606,63 @@ export const MIGRATIONS: Migration[] = [
     name: 'team_instructions',
     up: (db) => {
       db.exec(TEAM_INSTRUCTIONS)
+    },
+  },
+  {
+    version: 27,
+    name: 'team_leader',
+    up: (db) => {
+      db.exec(TEAM_LEADER)
+    },
+  },
+  {
+    version: 28,
+    name: 'plan_dispatch',
+    up: (db) => {
+      db.exec(PLAN_DISPATCH)
+    },
+  },
+  {
+    version: 29,
+    name: 'team_collaboration',
+    up: (db) => {
+      db.exec(TEAM_COLLABORATION)
+    },
+  },
+  {
+    version: 30,
+    name: 'team_task_run_steps',
+    up: (db) => {
+      db.exec(TEAM_TASK_RUN_STEPS)
+    },
+  },
+  {
+    version: 31,
+    name: 'work_acceptance_and_task_memory',
+    up: (db) => {
+      db.exec(WORK_ACCEPTANCE_AND_TASK_MEMORY)
+    },
+  },
+  {
+    version: 32,
+    name: 'task_checkpoints',
+    up: (db) => {
+      db.exec(TASK_CHECKPOINTS)
+    },
+  },
+  {
+    version: 33,
+    name: 'task_recovery_attempts',
+    up: (db) => {
+      db.exec(TASK_RECOVERY_ATTEMPTS)
+    },
+  },
+  {
+    version: 34,
+    name: 'workflow_node_recovery',
+    rebuildsTables: true,
+    up: (db) => {
+      db.exec(WORKFLOW_NODE_RECOVERY)
     },
   },
 ]

@@ -12,6 +12,8 @@ import type {
   ExecutionLog,
   ExecutionSendMessageParams,
   PlanApproveParams,
+  PlanAssignTaskParams,
+  PlanAssignTaskResult,
   PlanCommentParams,
   PlanCommentResult,
   PlanConvertToProjectParams,
@@ -19,6 +21,8 @@ import type {
   PlanConvertToTaskParams,
   PlanConvertToTaskResult,
   PlanDecisionResult,
+  PlanDispatchParams,
+  PlanDispatchResult,
   PlanGenerateParams,
   PlanGenerateResult,
   PlanGetParams,
@@ -27,6 +31,13 @@ import type {
   PlanListByWorkResult,
   PlanListRecentParams,
   PlanListRecentResult,
+  PlannerActionParams,
+  PlannerActionRejectParams,
+  PlannerActionResult,
+  PlannerChatGetResult,
+  PlannerChatSendParams,
+  PlannerChatSendResult,
+  PlannerEnsureResult,
   PlanReassignTaskParams,
   PlanReassignTaskResult,
   PlanRejectParams,
@@ -46,6 +57,12 @@ import type {
   SkillUpdateParams,
   TeamCreateParams,
   TeamMemberAddParams,
+  TeamTaskCommentParams,
+  TeamTaskCommentResult,
+  TeamTaskGetParams,
+  TeamTaskGetResult,
+  TeamTaskSetStatusParams,
+  TeamTaskSetStatusResult,
   TeamUpdateParams,
   WorkCreateParams,
   WorkStatus,
@@ -121,6 +138,27 @@ export const api = {
     unwrap(window.agentra.rejectPlan(params)),
   startPlanRun: async (params: PlanStartRunParams): Promise<PlanStartRunResult> =>
     unwrap(window.agentra.startPlanRun(params)),
+  dispatchPlan: async (params: PlanDispatchParams): Promise<PlanDispatchResult> =>
+    unwrap(window.agentra.dispatchPlan(params)),
+  assignPlanTask: async (params: PlanAssignTaskParams): Promise<PlanAssignTaskResult> =>
+    unwrap(window.agentra.assignPlanTask(params)),
+
+  getPlannerChat: async (): Promise<PlannerChatGetResult> =>
+    unwrap(window.agentra.getPlannerChat()),
+  ensurePlannerAgent: async (): Promise<PlannerEnsureResult> =>
+    unwrap(window.agentra.ensurePlannerAgent()),
+  sendPlannerChat: async (params: PlannerChatSendParams): Promise<PlannerChatSendResult> =>
+    unwrap(window.agentra.sendPlannerChat(params)),
+  applyPlannerAction: async (params: PlannerActionParams): Promise<PlannerActionResult> =>
+    unwrap(window.agentra.applyPlannerAction(params)),
+  rejectPlannerAction: async (params: PlannerActionRejectParams): Promise<PlannerActionResult> =>
+    unwrap(window.agentra.rejectPlannerAction(params)),
+  getTeamTask: async (params: TeamTaskGetParams): Promise<TeamTaskGetResult> =>
+    unwrap(window.agentra.getTeamTask(params)),
+  commentTeamTask: async (params: TeamTaskCommentParams): Promise<TeamTaskCommentResult> =>
+    unwrap(window.agentra.commentTeamTask(params)),
+  setTeamTaskStatus: async (params: TeamTaskSetStatusParams): Promise<TeamTaskSetStatusResult> =>
+    unwrap(window.agentra.setTeamTaskStatus(params)),
   listPlanThreads: async (params: PlanThreadListParams): Promise<PlanThreadListResult> =>
     unwrap(window.agentra.listPlanThreads(params)),
   commentOnPlan: async (params: PlanCommentParams): Promise<PlanCommentResult> =>
@@ -188,6 +226,7 @@ export const api = {
     }[action]
     return (await unwrap(call({ id }))).work
   },
+  listWorkFiles: async (workId: string) => await unwrap(window.agentra.listWorkFiles({ workId })),
 
   listWorktrees: async (workId: string) =>
     (await unwrap(window.agentra.listWorktrees({ workId }))).worktrees,

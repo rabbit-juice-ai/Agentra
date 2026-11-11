@@ -13,10 +13,23 @@ import { AssignmentRepository } from './db/repositories/assignment-repository'
 import { AuditRepository } from './db/repositories/audit-repository'
 import { BackupRepository } from './db/repositories/backup-repository'
 import { BranchRunRepository } from './db/repositories/branch-run-repository'
+import { CheckpointRepository } from './db/repositories/checkpoint-repository'
+import {
+  PlannerMessageRepository,
+  TeamTaskMessageRepository,
+  TeamTaskRunRepository,
+  TeamTaskRunStepRepository,
+  TeamTaskSubtaskRepository,
+} from './db/repositories/collaboration-repository'
 import { ExecutionLogRepository } from './db/repositories/execution-log-repository'
 import { ExecutionRepository } from './db/repositories/execution-repository'
 import { NodeAssignmentOverrideRepository } from './db/repositories/node-assignment-override-repository'
 import { NodeRunRepository } from './db/repositories/node-run-repository'
+import {
+  PlanDispatchRepository,
+  PlanStartAttemptRepository,
+  PlanTaskAssignmentRepository,
+} from './db/repositories/plan-dispatch-repository'
 import {
   PlanCommentRepository,
   PlanRepository,
@@ -25,9 +38,11 @@ import {
 } from './db/repositories/plan-repository'
 import { ProjectRepository } from './db/repositories/project-repository'
 import { ProviderRepository } from './db/repositories/provider-repository'
+import { RecoveryAttemptRepository } from './db/repositories/recovery-attempt-repository'
 import { ReworkRequestRepository } from './db/repositories/rework-request-repository'
 import { SessionRepository } from './db/repositories/session-repository'
 import { SkillRepository } from './db/repositories/skill-repository'
+import { TaskMemoryRepository } from './db/repositories/task-memory-repository'
 import { TeamRepository } from './db/repositories/team-repository'
 import { WorkRepository } from './db/repositories/work-repository'
 import { WorkflowEventRepository } from './db/repositories/workflow-event-repository'
@@ -50,22 +65,31 @@ import { AssignmentService } from './services/assignment-service'
 import { BackupRestorePrecheckService } from './services/backup-restore-precheck-service'
 import { BackupRpcService } from './services/backup-rpc-service'
 import { BackupService } from './services/backup-service'
+import { CheckpointService } from './services/checkpoint-service'
 import { CoreEventHub } from './services/event-hub'
 import { ExecutionService } from './services/execution-service'
 import { proxyDaemonHealth } from './services/health'
+import { PlanAssignmentService } from './services/plan-assignment-service'
 import { PlanService } from './services/plan-service'
+import { PlanStartService } from './services/plan-start-service'
+import { PlannerChatService } from './services/planner-chat-service'
 import { PlannerService } from './services/planner-service'
 import { ProjectService } from './services/project-service'
 import { ProviderRegistry } from './services/provider-registry'
+import { RecoveryService } from './services/recovery-service'
 import { RestoreArchiveService } from './services/restore-archive-service'
 import { RestoreBootService } from './services/restore-boot-service'
 import { RestoreCoordinator } from './services/restore-coordinator'
 import { RestoreExecutor } from './services/restore-executor'
 import { SkillService } from './services/skill-service'
+import { TaskMemoryService } from './services/task-memory-service'
+import { TeamCollaborationService } from './services/team-collaboration-service'
+import { TeamDispatchService } from './services/team-dispatch-service'
 import { TeamService } from './services/team-service'
 import { WorkService } from './services/work-service'
 import { currentBootUuid, WorkdirLockService } from './services/workdir-lock-service'
 import { WorkflowDefinitionService } from './services/workflow-definition-service'
+import { WorkspaceFilesService } from './services/workspace-files-service'
 import { WorktreeService } from './services/worktree-service'
 import { createApprovalGateChecker } from './workflow/approval-gate'
 import { ApprovalService } from './workflow/approval-service'
@@ -76,6 +100,7 @@ import { WorkflowEngine } from './workflow/engine'
 import { WorkflowEventRecorder } from './workflow/event-recorder'
 import { WorkflowExecutionBridge } from './workflow/execution-bridge'
 import { WorkflowFairDispatcher } from './workflow/fair-dispatcher'
+import { WorkflowNodeRecoveryService } from './workflow/node-recovery-service'
 import {
   createAgentCapacityPort,
   createProviderAvailabilityPort,
@@ -83,6 +108,7 @@ import {
 } from './workflow/ports'
 import { PublishedDefinitionProvider } from './workflow/published-definition-provider'
 import { WorkflowRecoveryService } from './workflow/recovery-service'
+import { WorkflowRecoveryWorktreeService } from './workflow/recovery-worktree'
 import { ReworkService } from './workflow/rework-service'
 import { WorkflowRunQueryService } from './workflow/run-query-service'
 import { WorkflowRunService } from './workflow/run-service'
@@ -418,9 +444,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const skillRepository = new SkillRepository(db)
   const teamRepository = new TeamRepository(db)
   const workRepository = new WorkRepository(db)
+  const taskMemoryRepository = new TaskMemoryRepository(db)
+  const recoveryAttemptRepository = new RecoveryAttemptRepository(db)
   const projectRepository = new ProjectRepository(db)
   const assignmentRepository = new AssignmentRepository(db)
   const auditRepository = new AuditRepository(db)
+  const artifactRepository = new ArtifactRepository(db)
   const providerRepository = new ProviderRepository(db)
   const sessionRepository = new SessionRepository(db)
   const executionRepository = new ExecutionRepository(db)
@@ -434,6 +463,14 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const planVersionRepository = new PlanVersionRepository(db)
   const planThreadRepository = new PlanThreadRepository(db)
   const planCommentRepository = new PlanCommentRepository(db)
+  const planTaskAssignmentRepository = new PlanTaskAssignmentRepository(db)
+  const planDispatchRepository = new PlanDispatchRepository(db)
+  const planStartAttemptRepository = new PlanStartAttemptRepository(db)
+  const plannerMessageRepository = new PlannerMessageRepository(db)
+  const teamTaskMessageRepository = new TeamTaskMessageRepository(db)
+  const teamTaskSubtaskRepository = new TeamTaskSubtaskRepository(db)
+  const teamTaskRunRepository = new TeamTaskRunRepository(db)
+  const teamTaskRunStepRepository = new TeamTaskRunStepRepository(db)
   const nodeAssignmentOverrideRepository = new NodeAssignmentOverrideRepository(db)
   const approvalRepository = new ApprovalRepository(db)
   const workflowEventRepository = new WorkflowEventRepository(db)
@@ -445,7 +482,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
 
   const agentService = new AgentService(db, agentRepository, providerRepository, skillRepository)
   const skillService = new SkillService(db, skillRepository, agentRepository)
-  const locks = new WorkdirLockService(db)
+  const locks = new WorkdirLockService(db, undefined, undefined, undefined, auditRepository)
   // Core 启动即回收陈旧锁（上一次 Core 被 kill -9 之后留下的）。
   // 身份不可读时只按 holder_pid 死亡回收，并在日志里标明 degraded。
   const purged = locks.purgeStale()
@@ -467,6 +504,40 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     paths.worktrees,
   )
   const teamService = new TeamService(db, teamRepository, agentRepository)
+  const taskMemoryService = new TaskMemoryService({
+    db,
+    memories: taskMemoryRepository,
+    audit: auditRepository,
+  })
+  const recoveryResultSink: { target: RecoveryService | null } = { target: null }
+  const checkpointService = new CheckpointService({
+    db,
+    checkpoints: new CheckpointRepository(db),
+    works: workRepository,
+    executions: executionRepository,
+    sessions: sessionRepository,
+    assignments: assignmentRepository,
+    nodes: nodeRunRepository,
+    teamRuns: teamTaskRunRepository,
+    workflowRuns: workflowRunRepository,
+    artifacts: artifactRepository,
+    logs: executionLogRepository,
+    audit: auditRepository,
+    agents: agentRepository,
+    taskMemories: taskMemoryService,
+    worktrees,
+    teamMessages: teamTaskMessageRepository,
+    artifactsRoot: paths.artifacts,
+    onCheckpointResult: (event) => recoveryResultSink.target?.onCheckpointResult(event),
+    logger,
+  })
+  try {
+    checkpointService.retryPending(20)
+  } catch (error) {
+    logger.warn('checkpoint startup retry failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
   const workService = new WorkService(
     db,
     workRepository,
@@ -484,6 +555,18 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
         }
     },
     projectRepository,
+    taskMemoryService,
+    (id, to, now) => {
+      if (to !== 'completed') return
+      try {
+        checkpointService.createFinalDelivery(id, now)
+      } catch (error) {
+        logger.warn('final delivery checkpoint failed', {
+          workId: id,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    },
   )
   const projectService = new ProjectService(projectRepository, auditRepository)
   const assignmentService = new AssignmentService(
@@ -494,6 +577,20 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     teamRepository,
     sessionRepository,
   )
+  const planAssignmentService = new PlanAssignmentService({
+    db,
+    assignments: planTaskAssignmentRepository,
+    dispatches: planDispatchRepository,
+    startAttempts: planStartAttemptRepository,
+    teams: teamRepository,
+    agents: agentRepository,
+    threads: planThreadRepository,
+    comments: planCommentRepository,
+    audit: auditRepository,
+  })
+  const planStartEventSink: {
+    target: PlanService | null
+  } = { target: null }
   const workflowService = new WorkflowDefinitionService(db, workflowRepository)
   const workflowRunQuery = new WorkflowRunQueryService(
     workflowRunRepository,
@@ -513,6 +610,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     agents: agentRepository,
     skills: skillRepository,
     teams: teamRepository,
+    taskMemories: taskMemoryService,
+    checkpoints: checkpointService,
+    recoveries: recoveryAttemptRepository,
     sessions: sessionRepository,
     executions: executionRepository,
     logs: executionLogRepository,
@@ -636,9 +736,119 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     works: workService,
     providers: registry,
     skills: skillRepository,
+    teams: teamRepository,
     extractOutput: (executionId) => artifactExchange.extract(executionId),
     logger,
   })
+  // Planner 是产品级系统 Agent：默认在 Core 启动时就创建/校正，不要求老板先去设置页手动创建。
+  try {
+    const plannerAgent = plannerService.ensureAgent()
+    logger.info('planner agent ready', {
+      id: plannerAgent.id,
+      providerId: plannerAgent.defaultProviderId,
+      model: plannerAgent.model,
+    })
+  } catch (error) {
+    logger.warn('planner agent bootstrap failed; settings/chat will retry on demand', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+  const plannerEscalationSink: { target: PlannerChatService | null } = { target: null }
+  const teamTaskCreationSink: { target: TeamCollaborationService | null } = { target: null }
+  const teamCollaborationService = new TeamCollaborationService({
+    db,
+    works: workService,
+    workRepository,
+    taskMemories: taskMemoryService,
+    checkpoints: checkpointService,
+    teams: teamRepository,
+    agents: agentRepository,
+    assignments: assignmentService,
+    executions: executionService,
+    providers: registry,
+    extractOutput: (executionId) => artifactExchange.extract(executionId),
+    executionLogs: executionLogRepository,
+    messages: teamTaskMessageRepository,
+    subtasks: teamTaskSubtaskRepository,
+    runs: teamTaskRunRepository,
+    steps: teamTaskRunStepRepository,
+    planner: {
+      escalateFromTeam: (input) =>
+        plannerEscalationSink.target?.escalateFromTeam(input) ?? Promise.resolve(),
+    },
+    hub,
+    audit: auditRepository,
+    logger,
+  })
+  const workflowRecoverySink: { target: WorkflowNodeRecoveryService | null } = { target: null }
+  const recoveryService = new RecoveryService({
+    db,
+    attempts: recoveryAttemptRepository,
+    works: workRepository,
+    workService,
+    checkpoints: checkpointService,
+    executions: executionService,
+    executionRepository,
+    assignments: assignmentService,
+    assignmentRepository,
+    agents: agentRepository,
+    teams: teamRepository,
+    teamRuns: teamTaskRunRepository,
+    teamSubtasks: teamTaskSubtaskRepository,
+    teamMessages: teamTaskMessageRepository,
+    taskMemories: taskMemoryService,
+    audit: auditRepository,
+    logger,
+    onWorkflowAttemptSettled: ({ workflowRunId }) => {
+      workflowRecoverySink.target?.reconcileRun(workflowRunId)
+    },
+  })
+  recoveryResultSink.target = recoveryService
+  recoveryService.subscribe(hub)
+  const workflowNodeRecovery = new WorkflowNodeRecoveryService({
+    db,
+    runs: workflowRunRepository,
+    branches: branchRunRepository,
+    nodes: nodeRunRepository,
+    works: workRepository,
+    attempts: recoveryAttemptRepository,
+    executions: executionRepository,
+    definitions: publishedDefinitions,
+    assignments: workflowAssignmentResolver,
+    checkpoints: checkpointService,
+    executionRunner: executionService,
+    worktrees: new WorkflowRecoveryWorktreeService(worktrees, workRepository),
+    audit: auditRepository,
+    logger,
+    onRunReentered: (runId) => {
+      void workflowEngine?.kick(runId)
+    },
+  })
+  workflowRecoverySink.target = workflowNodeRecovery
+  const plannerChatService = new PlannerChatService({
+    db,
+    messages: plannerMessageRepository,
+    agents: agentRepository,
+    teams: teamRepository,
+    projects: projectRepository,
+    teamService,
+    agentService,
+    planner: plannerService,
+    executions: executionService,
+    providers: registry,
+    extractOutput: (executionId) => artifactExchange.extract(executionId),
+    teamTasks: {
+      createFromPlanner: (input) =>
+        teamTaskCreationSink.target?.createFromPlanner(input) ??
+        Promise.reject(new Error('team collaboration service is not ready')),
+    },
+    onTeamDecision: async ({ workId, content }) => {
+      teamCollaborationService.onPlannerDecision(workId, content)
+    },
+    logger,
+  })
+  plannerEscalationSink.target = plannerChatService
+  teamTaskCreationSink.target = teamCollaborationService
   const agentDesignerService = new AgentDesignerService({
     agents: agentService,
     executions: executionService,
@@ -664,12 +874,18 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     commitOutput: (execution, node, output, save) =>
       artifactExchange.commit(execution, node, output, save),
     rework: reworkService,
+    checkpoints: checkpointService,
     taskEvents: {
       onTaskStarted: (event) => planThreadSink.target?.recordTaskEvent(event),
       onTaskSucceeded: (event) => planThreadSink.target?.recordTaskEvent(event),
       onTaskFailed: (event) => planThreadSink.target?.recordTaskEvent(event),
       onTaskCancelled: (event) => planThreadSink.target?.recordTaskEvent(event),
       onVerificationReport: (event) => planThreadSink.target?.recordTaskEvent(event),
+    },
+    recoveryExecution: {
+      isRecoveryExecution: (executionId) =>
+        recoveryAttemptRepository.getByExecutionId(executionId)?.kind === 'workflow_node',
+      onWorkflowNodeTerminal: (input) => recoveryService.onWorkflowNodeTerminal(input),
     },
     logger,
   })
@@ -763,6 +979,44 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     maintenance,
     drain,
   })
+  const teamDispatchService = new TeamDispatchService({
+    db,
+    plans: planRepository,
+    versions: planVersionRepository,
+    teams: teamRepository,
+    agents: agentRepository,
+    dispatches: planDispatchRepository,
+    startAttempts: planStartAttemptRepository,
+    assignments: planAssignmentService,
+    executions: executionService,
+    providers: registry,
+    extractOutput: (executionId) => artifactExchange.extract(executionId),
+    audit: auditRepository,
+    logger,
+  })
+  const planStartService = new PlanStartService({
+    db,
+    plans: planRepository,
+    versions: planVersionRepository,
+    assignments: planAssignmentService,
+    startAttempts: planStartAttemptRepository,
+    dispatches: planDispatchRepository,
+    workAssignments: assignmentService,
+    works: workRepository,
+    workflows: workflowService,
+    runs: workflowRunRepository,
+    runService: workflowRunService,
+    engine: workflowEngine,
+    threads: planThreadRepository,
+    comments: planCommentRepository,
+    audit: auditRepository,
+    logger,
+    eventWindow: {
+      beforeKick: (planId, versionId) =>
+        planStartEventSink.target?.beginVersionEventWindow(planId, versionId),
+      afterKick: (versionId) => planStartEventSink.target?.finishVersionEventWindow(versionId),
+    },
+  })
   const planService = new PlanService({
     db,
     plans: planRepository,
@@ -781,13 +1035,19 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     planner: plannerService,
     agents: agentService,
     assignments: assignmentService,
+    planAssignments: planAssignmentService,
+    dispatches: planDispatchRepository,
+    startAttempts: planStartAttemptRepository,
+    startService: planStartService,
+    dispatchService: teamDispatchService,
+    teams: teamRepository,
     works: workRepository,
     runs: workflowRunRepository,
-    workflows: workflowService,
     engine: workflowEngine,
     audit: auditRepository,
   })
   planThreadSink.target = planService
+  planStartEventSink.target = planService
   const workflowRecovery = new WorkflowRecoveryService(
     workflowRunRepository,
     branchRunRepository,
@@ -920,9 +1180,30 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     logger.info('discarded queued executions on startup', { count: discardedQueued })
   }
 
+  // 阶段 2：回收上次进程遗留的队长派工/启动占用。失败行不自动重试，由老板显式重试。
+  try {
+    await teamDispatchService.recoverRunningDispatches()
+  } catch (error) {
+    logger.warn('team dispatch recovery failed (non-fatal)', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+  try {
+    await planStartService.recoverStaleAttempts()
+  } catch (error) {
+    logger.warn('plan start attempt recovery failed (non-fatal)', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
   if (daemonConnected) {
     try {
       const report = await executionService.reconcile()
+      const latePurge = locks.purgeStale()
+      logger.info('workdir locks purged after execution reconcile', {
+        reclaimed: latePurge.reclaimed,
+        retained: latePurge.retained,
+      })
       if (report.conflicts.length > 0) {
         logger.error('reconciliation conflicts detected; entering recovery_locked', {
           conflicts: report.conflicts,
@@ -942,6 +1223,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
         reconciliationRequired: recoveryReport.nodesMarkedReconciliationRequired.length,
         runsKicked: recoveryReport.runsKicked.length,
       })
+      for (const attempt of recoveryAttemptRepository.listUnfinished()) {
+        await workflowNodeRecovery.reconcileStartup(attempt)
+      }
+      recoveryService.recoverOnStartup()
+      await recoveryService.reconcileInterruptedStarts(true)
+      workflowNodeRecovery.reconcileAll()
     } catch (error) {
       logger.error('startup recovery failed; entering recovery_locked', {
         error: error instanceof Error ? error.message : String(error),
@@ -961,6 +1248,11 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     }
     try {
       const recoveryReport = await workflowRecovery.recover({ daemonAvailable: false })
+      for (const attempt of recoveryAttemptRepository.listUnfinished()) {
+        await workflowNodeRecovery.reconcileStartup(attempt)
+      }
+      recoveryService.recoverOnStartup()
+      workflowNodeRecovery.reconcileAll()
       logger.warn('daemon unavailable; marked unconfirmed work as reconciliation_required', {
         nodes: recoveryReport.nodesMarkedReconciliationRequired.length,
         runs: recoveryReport.runsMarkedReconciliationRequired.length,
@@ -970,6 +1262,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
         error: error instanceof Error ? error.message : String(error),
       })
     }
+    await recoveryService.reconcileInterruptedStarts(false)
     maintenance.enterRecoveryLocked('daemon_unavailable')
     return
   }
@@ -1012,6 +1305,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
           skills: skillService,
           agentDesigner: agentDesignerService,
           planner: plannerService,
+          plannerChat: plannerChatService,
+          teamCollaboration: teamCollaborationService,
           plans: planService,
           projects: projectService,
           registry,
@@ -1019,6 +1314,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
           hub,
           teams: teamService,
           works: workService,
+          recoveries: recoveryService,
+          workflowNodeRecovery,
+          workspaceFiles: new WorkspaceFilesService(),
           workEffects: async (id, action) => {
             if (action === 'terminate') await executionService.terminateWork(id)
             if (action === 'pause') await executionService.pauseWork(id)
@@ -1095,6 +1393,15 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   if (daemonHealthy && !restoredJournal) {
     try {
       await workflowFairDispatcher.tickAll()
+      await teamCollaborationService.recover()
+      const repairedMemberReports = teamCollaborationService.backfillMemberReports()
+      if (repairedMemberReports > 0) {
+        logger.info('team task member reports backfilled', { repaired: repairedMemberReports })
+      }
+      const repairedRunSteps = teamCollaborationService.backfillRunSteps()
+      if (repairedRunSteps > 0) {
+        logger.info('team task run steps backfilled', { inserted: repairedRunSteps })
+      }
       logger.info('boot convergence pass completed')
     } catch (error) {
       logger.warn('boot convergence pass failed', {

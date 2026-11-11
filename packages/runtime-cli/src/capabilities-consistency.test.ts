@@ -90,6 +90,7 @@ describe('capability declarations match the adapter', () => {
       sessionId: 'ses-1',
     }
     expect(buildClaudeArgs(base)).toContain('--session-id')
+    expect(buildClaudeArgs(base)).toContain('--include-partial-messages')
     const withTools = buildClaudeArgs({
       ...base,
       allowedTools: ['Read'],

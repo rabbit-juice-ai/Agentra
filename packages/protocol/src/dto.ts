@@ -238,6 +238,8 @@ export const Team = z.object({
   description: z.string(),
   /** 团队指引：成员执行关联任务时注入工作指令；不授予权限。 */
   instructions: z.string().max(20_000),
+  /** 团队队长：必须由老板显式设置；旧团队保持 null，不自动推断。 */
+  leaderAgentId: z.string().min(1).nullable().default(null),
   status: TeamStatus,
   createdAt: IsoTimestamp,
   updatedAt: IsoTimestamp,
@@ -263,6 +265,12 @@ export const WorkStatus = z.enum([
 ])
 export type WorkStatus = z.infer<typeof WorkStatus>
 
+export const WorkCollaborationMode = z.enum(['workflow', 'team'])
+export type WorkCollaborationMode = z.infer<typeof WorkCollaborationMode>
+
+export const WorkIssueStatus = z.enum(['triage', 'backlog', 'in_progress', 'review', 'done'])
+export type WorkIssueStatus = z.infer<typeof WorkIssueStatus>
+
 export const Work = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -274,6 +282,18 @@ export const Work = z.object({
   repositoryPath: z.string().min(1).nullable(),
   /** 所属项目；项目是任务的合集。 */
   projectId: z.string().min(1).nullable().default(null),
+  /** workflow = Plan/DAG；team = Multica 式队长/成员线程协作。 */
+  collaborationMode: WorkCollaborationMode.default('workflow'),
+  /** 团队协作任务的唯一归属团队。 */
+  ownerTeamId: z.string().min(1).nullable().default(null),
+  /** 任务看板状态（与 Work 生命周期 status 分开）。 */
+  issueStatus: WorkIssueStatus.default('backlog'),
+  /** 当前负责人；团队任务默认为队长。 */
+  assigneeAgentId: z.string().min(1).nullable().default(null),
+  /** 正式验收标准；版本在 Work 更新时递增。 */
+  acceptanceCriteria: z.array(z.string().min(1).max(500)).max(20).default([]),
+  acceptanceCriteriaVersion: z.number().int().min(1).default(1),
+  acceptanceCriteriaUpdatedAt: IsoTimestamp.nullable().default(null),
   /** 关联的 Team（来自 work_teams），只读派生字段。 */
   teamIds: z.array(z.string().min(1)),
   createdAt: IsoTimestamp,

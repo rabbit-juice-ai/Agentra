@@ -13,6 +13,8 @@ import {
   WORK_CREATE_METHOD,
   WORK_LINK_TEAM_METHOD,
   WORK_PAUSE_METHOD,
+  WORK_RECOVERY_PLAN_METHOD,
+  WORK_RECOVERY_START_METHOD,
 } from '@agentra/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { RuntimeClient } from '../daemon/daemon-client'
@@ -42,6 +44,7 @@ import { SkillService } from '../services/skill-service'
 import { TeamService } from '../services/team-service'
 import { WorkService } from '../services/work-service'
 import { WorkdirLockService } from '../services/workdir-lock-service'
+import { WorkspaceFilesService } from '../services/workspace-files-service'
 import { WorktreeService } from '../services/worktree-service'
 import { ApprovalService } from '../workflow/approval-service'
 import { WorkflowRunQueryService } from '../workflow/run-query-service'
@@ -73,6 +76,7 @@ const unusedRuntime: RuntimeClient = {
 function harness(): {
   db: Database
   dispatch: (method: string, params: unknown) => Promise<unknown>
+  recoveryCalls: unknown[]
 } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentra-rpc-'))
   dirs.push(dir)
@@ -118,6 +122,41 @@ function harness(): {
   })
 
   const skillRepository = new SkillRepository(db)
+  const recoveryCalls: unknown[] = []
+  const recoveryPlan = {
+    workId: 'work-1',
+    checkpointId: 'chk-1',
+    checkpointSeq: 1,
+    checkpointKind: 'stage_complete',
+    isLatest: true,
+    workStatus: 'active',
+    workIssueStatus: 'in_progress',
+    eligibility: {
+      status: 'eligible' as const,
+      planOnly: true as const,
+      reasonCodes: [],
+      riskLevel: 'low' as const,
+      evidenceStatus: 'verified',
+      sideEffectCompleteness: 'not_tracked',
+    },
+    limits: {
+      maxAttempts: 3,
+      attemptsUsed: 0,
+      remainingAttempts: 3,
+      activeAttemptId: null,
+    },
+    contextBudget: {
+      totalChars: 0,
+      p0Chars: 30_000,
+      p0Bytes: 0,
+      p1Bytes: 0,
+      p2Bytes: 0,
+      p3Bytes: 0,
+      trimmed: { p1: false, p2: false, p3: false },
+    },
+    reopen: { required: false, originalWorkStatus: null, reasonRequired: false },
+    sections: null,
+  }
   const methods: MethodTable = coreMethods('0.1.0', '/tmp/none.sock', {
     agents: new AgentService(db, agentRepository, providerRepository, skillRepository, () => NOW),
     skills: new SkillService(db, skillRepository, agentRepository, () => NOW),
@@ -126,6 +165,24 @@ function harness(): {
     hub: new CoreEventHub(),
     teams: new TeamService(db, teamRepository, agentRepository, () => NOW),
     works: new WorkService(db, workRepository, teamRepository, auditRepository, () => NOW),
+    recoveries: {
+      plan: (workId: string, checkpointId: string) => {
+        recoveryCalls.push({ method: 'plan', workId, checkpointId })
+        return { ...recoveryPlan, workId, checkpointId }
+      },
+      start: async (input: unknown) => {
+        recoveryCalls.push({ method: 'start', input })
+        return {
+          recoveryAttemptId: 'rec-1',
+          status: 'running' as const,
+          executionId: 'exe-1',
+          sessionId: 'ses-1',
+          teamRunId: null,
+          idempotentReplay: false,
+        }
+      },
+    } as never,
+    workspaceFiles: new WorkspaceFilesService(),
     assignments: new AssignmentService(
       db,
       assignmentRepository,
@@ -185,7 +242,7 @@ function harness(): {
     })
     return createDispatcher(methods)(frame)
   }
-  return { db, dispatch }
+  return { db, dispatch, recoveryCalls }
 }
 
 afterEach(() => {
@@ -304,5 +361,39 @@ describe('阶段 2 RPC 方法表', () => {
     })) as { result?: { assignments: { id: string; status: string }[] } }
     // 状态没有被静默改回去
     expect(list.result?.assignments[0]).toMatchObject({ id: assignmentId, status: 'completed' })
+  })
+
+  it('exposes read-only recovery plan and explicit recovery start RPCs', async () => {
+    const h = harness()
+    const plan = (await h.dispatch(WORK_RECOVERY_PLAN_METHOD, {
+      workId: 'work-1',
+      checkpointId: 'chk-1',
+    })) as {
+      ok: boolean
+      result?: { plan: { workId: string; checkpointId: string; eligibility: { status: string } } }
+    }
+    expect(plan.ok).toBe(true)
+    expect(plan.result?.plan).toMatchObject({
+      workId: 'work-1',
+      checkpointId: 'chk-1',
+      eligibility: { status: 'eligible' },
+    })
+
+    const start = (await h.dispatch(WORK_RECOVERY_START_METHOD, {
+      workId: 'work-1',
+      checkpointId: 'chk-1',
+      confirm: true,
+      idempotencyKey: 'idem-rpc',
+    })) as {
+      ok: boolean
+      result?: { recoveryAttemptId: string; status: string; executionId: string }
+    }
+    expect(start.ok).toBe(true)
+    expect(start.result).toMatchObject({
+      recoveryAttemptId: 'rec-1',
+      status: 'running',
+      executionId: 'exe-1',
+    })
+    expect(h.recoveryCalls).toHaveLength(2)
   })
 })

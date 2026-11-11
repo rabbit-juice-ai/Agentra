@@ -4,6 +4,7 @@ import { BackupsPage } from './components/BackupsPage'
 import { ConsolePage } from './components/ConsolePage'
 import { Icon, type IconName } from './components/Icon'
 import { OverviewPage } from './components/OverviewPage'
+import { PlannerPage } from './components/PlannerPage'
 import { PlanPage } from './components/PlanPage'
 import { ProjectsPage } from './components/ProjectsPage'
 import { providerMark, providerMarkClass } from './components/ProviderBadge'
@@ -19,6 +20,7 @@ import { api } from './services/api'
 
 type Tab =
   | 'console'
+  | 'planner'
   | 'overview'
   | 'plan'
   | 'projects'
@@ -39,6 +41,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   {
     label: '工作台',
     items: [
+      { tab: 'planner', label: 'Planner', icon: 'zap' },
       { tab: 'overview', label: '总览', icon: 'grid' },
       { tab: 'plan', label: '规划', icon: 'zap' },
       { tab: 'projects', label: '项目', icon: 'archive' },
@@ -186,6 +189,17 @@ export function App() {
               onInterrupt={store.actions.interruptExecution}
               onSendMessage={store.actions.sendMessage}
             />
+          ) : tab === 'planner' ? (
+            <PlannerPage
+              teams={store.teams}
+              agents={store.agents}
+              onOpenTasks={() => {
+                void store.actions.refreshWorks()
+                setTab('works')
+              }}
+              onRefreshTeams={store.actions.refreshTeams}
+              onRefreshTeamMembers={store.actions.refreshTeamMembers}
+            />
           ) : tab === 'overview' ? (
             <OverviewPage
               works={store.works}
@@ -205,6 +219,9 @@ export function App() {
               projects={store.projects}
               agents={store.agents}
               providers={store.providers}
+              teams={store.teams}
+              membersByTeam={store.teamMembers}
+              onRefreshTeamMembers={store.actions.refreshTeamMembers}
               onWorksChanged={() => void store.actions.refreshWorks()}
               onProjectsChanged={() => void store.actions.refreshProjects()}
             />
@@ -261,6 +278,7 @@ export function App() {
               onCreateAssignment={store.actions.createAssignment}
               onAssignmentAction={store.actions.assignmentAction}
               onRefreshAssignments={store.actions.refreshAssignments}
+              onRefreshWorks={store.actions.refreshWorks}
               onRefreshWorktrees={store.actions.refreshWorktrees}
               onCreateWorktree={store.actions.createWorktree}
               onRemoveWorktree={store.actions.removeWorktree}
@@ -274,6 +292,7 @@ export function App() {
               projectsCount={store.projects.length}
               agentsCount={store.agents.length}
               onRefreshProviders={store.actions.refreshProviderDiscovery}
+              onRefreshAgents={store.actions.refreshAgents}
               onOpenBackups={() => setTab('backups')}
             />
           ) : tab === 'skills' ? (
@@ -295,7 +314,6 @@ export function App() {
               onUpdate={store.actions.updateAgent}
               onArchive={store.actions.archiveAgent}
               onSetStatus={store.actions.setAgentStatus}
-              onRefreshProviders={store.actions.refreshProviderDiscovery}
             />
           )}
         </main>

@@ -45,6 +45,21 @@ export type PlannerSkillPort = {
   list(): Skill[]
 }
 
+export type PlannerTeam = {
+  id: string
+  name: string
+  description: string
+  instructions: string
+  leaderAgentId: string | null
+  status: string
+}
+
+export type PlannerTeamPort = {
+  get(id: string): PlannerTeam | null
+  list(): PlannerTeam[]
+  listMembers(teamId: string): { agentId: string }[]
+}
+
 export type PlannerLogger = {
   info(message: string, meta?: Record<string, unknown>): void
   warn(message: string, meta?: Record<string, unknown>): void
@@ -58,6 +73,8 @@ export type PlannerServiceDeps = {
   providers: PlannerProviderPort
   /** 可选：把技能名称放进 Planner Registry，便于理解每个 Agent 的专长。 */
   skills?: PlannerSkillPort
+  /** 可选：团队 Registry；团队任务只校验归属，不在此决定最终成员。 */
+  teams?: PlannerTeamPort
   /** 只接受 Agent 的结构化输出；不把聊天文本猜成计划。 */
   extractOutput: (executionId: string) => Record<string, unknown>
   logger?: PlannerLogger
@@ -233,6 +250,7 @@ export class PlannerService {
         description: '把目标转成可实现的需求、边界和验收标准。',
         responsibilityRole: 'product',
         requiredAccessMode: 'analyze',
+        teamId: null,
         suggestedAgentId: product.id,
         inputs: ['goal'],
         outputs: ['spec'],
@@ -258,6 +276,7 @@ export class PlannerService {
         description: '按需求实现界面、交互和前端状态。',
         responsibilityRole: 'frontend',
         requiredAccessMode: 'edit',
+        teamId: null,
         suggestedAgentId: frontend.id,
         inputs: product ? ['spec'] : ['goal'],
         outputs: ['ui'],
@@ -281,6 +300,7 @@ export class PlannerService {
         description: '按需求实现 API、数据流和持久化。',
         responsibilityRole: 'backend',
         requiredAccessMode: 'edit',
+        teamId: null,
         suggestedAgentId: backend.id,
         inputs: product ? ['spec'] : ['goal'],
         outputs: ['api'],
@@ -309,6 +329,7 @@ export class PlannerService {
         description: '验证实现是否满足需求；失败时输出结构化测试报告和相关任务。',
         responsibilityRole: 'testing',
         requiredAccessMode: 'analyze',
+        teamId: null,
         suggestedAgentId: qa.id,
         inputs: [frontend ? 'ui' : '', backend ? 'api' : ''].filter(Boolean),
         outputs: ['test-report'],
@@ -333,6 +354,7 @@ export class PlannerService {
         description: '没有匹配的 Agent；需要先配置 Agent 工作权限或补充成员。',
         responsibilityRole: 'delivery',
         requiredAccessMode: 'edit',
+        teamId: null,
         suggestedAgentId: null,
         inputs: [],
         outputs: [],
@@ -412,6 +434,57 @@ export class PlannerService {
 
     const assignments = plan.tasks.map((task) => {
       const requiredAccessMode: AgentAccessMode = task.requiredAccessMode
+      if (task.teamId !== null) {
+        const team = this.deps.teams?.get(task.teamId) ?? null
+        if (!team) {
+          violations.push({
+            code: 'unknown_team',
+            taskKey: task.key,
+            message: `团队 "${task.teamId}" 不存在`,
+          })
+          return { taskKey: task.key, agentId: null, agentName: null }
+        }
+        if (team.status !== 'active') {
+          violations.push({
+            code: 'team_inactive',
+            taskKey: task.key,
+            message: `团队 "${team.name}" 当前状态为 ${team.status}，不能承接任务`,
+          })
+          return { taskKey: task.key, agentId: null, agentName: null }
+        }
+        // 团队任务的最终成员由队长在批准后派工；Planner 只能给非权威建议。
+        if (task.suggestedAgentId) {
+          const suggested = active.find((candidate) => candidate.id === task.suggestedAgentId)
+          if (!suggested) {
+            violations.push({
+              code: 'unknown_agent',
+              taskKey: task.key,
+              message: `建议负责人 "${task.suggestedAgentId}" 不存在或未启用`,
+            })
+          } else {
+            const member = this.deps.teams
+              ?.listMembers(team.id)
+              .some((item) => item.agentId === suggested.id)
+            if (!member) {
+              violations.push({
+                code: 'agent_not_team_member',
+                taskKey: task.key,
+                message: `Agent "${suggested.name}" 不是团队 "${team.name}" 的成员`,
+              })
+            } else if (!matchesAgentAccess(suggested, requiredAccessMode)) {
+              violations.push({
+                code: 'access_mode_mismatch',
+                taskKey: task.key,
+                message: `Agent "${suggested.name}" 的工作权限是「${
+                  AGENT_ACCESS_MODE_LABEL[suggested.accessMode]
+                }」，但任务需要「${AGENT_ACCESS_MODE_LABEL[requiredAccessMode]}」`,
+              })
+            }
+          }
+        }
+        return { taskKey: task.key, agentId: null, agentName: null }
+      }
+
       let agent: AgentProfile | null = null
       if (task.suggestedAgentId) {
         agent = active.find((candidate) => candidate.id === task.suggestedAgentId) ?? null
@@ -459,6 +532,11 @@ export class PlannerService {
     })
 
     return { valid: violations.length === 0, violations, assignments }
+  }
+
+  /** 系统 Planner 的稳定入口；聊天室与规划共用同一个 Agent。 */
+  ensureAgent(): AgentProfile {
+    return this.ensurePlannerAgent()
   }
 
   private ensurePlannerAgent(): AgentProfile {
@@ -578,27 +656,40 @@ export class PlannerService {
       maxConcurrency: agent.maxConcurrency,
       activeExecutions: agent.activeExecutions,
     }))
+    const compactTeams = (this.deps.teams?.list() ?? [])
+      .filter((team) => team.status === 'active')
+      .map((team) => ({
+        id: team.id,
+        name: team.name,
+        description: team.description.slice(0, 160),
+        leaderAgentId: team.leaderAgentId,
+        members: (this.deps.teams?.listMembers(team.id) ?? []).map((member) => member.agentId),
+      }))
     return `You are Agentra Planner. Return one JSON object, no commentary.
 
 Goal: ${goal}
 Constraints: ${constraints.length > 0 ? constraints.join('; ') : '(none)'}
 Work: ${work ? `${work.name} (${work.status})` : '(none)'}
 Agents: ${JSON.stringify(compactRegistry)}
+Teams: ${JSON.stringify(compactTeams)}
 
 Rules:
 - Do not run tools or inspect the filesystem; produce the JSON plan directly.
 - Your entire final message must be the JSON object, with no markdown fences or commentary.
 - Use only the agent ids above, or null. Never invent an agent.
+- Use only the team ids above, or null. Never invent a team.
 - Every task must set requiredAccessMode to exactly "analyze" or "edit".
 - "analyze" tasks are read-only: requirements/PRD analysis, research, review, verification, test reports.
 - "edit" tasks change files: implementation, bug fixes, refactors, UI/API work.
-- suggestedAgentId must be an agent whose accessMode matches requiredAccessMode. Never assign an edit task to an analyze agent, and never assign an analyze task to an edit agent.
+- For a team task (teamId is not null): set suggestedAgentId to null. The team leader will assign team members after boss approval. Do not decide the final team member.
+- If you do give a suggestedAgentId for a team task, it must be a member of that team and its accessMode must match; it is only a suggestion.
+- For a personal task (teamId is null): suggestedAgentId must be an active agent whose accessMode matches requiredAccessMode.
 - Task keys are unique; dependsOn must be acyclic.
 - capabilityGaps must be [] unless a required role truly has no matching agent. If non-empty, each item is {"role":"frontend","missingCapabilities":["edit"],"reason":"..."}; never use bare strings.
 - For multi-step delivery include one verification task with requiredAccessMode "analyze" and verification.verifies.
 
 Shape:
-{"agentraPlanVersion":1,"goal":"...","constraints":[],"tasks":[{"key":"kebab-key","title":"...","description":"...","responsibilityRole":"frontend","requiredAccessMode":"edit","suggestedAgentId":"id-or-null","inputs":[],"outputs":[],"acceptanceCriteria":[],"dependsOn":[],"parallelGroup":null,"approvalRequired":false,"verification":null}],"risks":[],"capabilityGaps":[],"approvalsRequired":[]}`
+{"agentraPlanVersion":1,"goal":"...","constraints":[],"tasks":[{"key":"kebab-key","title":"...","description":"...","responsibilityRole":"frontend","requiredAccessMode":"edit","teamId":null,"suggestedAgentId":"id-or-null","inputs":[],"outputs":[],"acceptanceCriteria":[],"dependsOn":[],"parallelGroup":null,"approvalRequired":false,"verification":null}],"risks":[],"capabilityGaps":[],"approvalsRequired":[]}`
   }
 
   private async waitForTerminal(executionId: string): Promise<Execution> {

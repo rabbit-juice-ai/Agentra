@@ -30,6 +30,7 @@ import { SkillService } from '../services/skill-service'
 import { TeamService } from '../services/team-service'
 import { WorkService } from '../services/work-service'
 import { WorkdirLockService } from '../services/workdir-lock-service'
+import { WorkspaceFilesService } from '../services/workspace-files-service'
 import { WorktreeService } from '../services/worktree-service'
 import { ApprovalService } from '../workflow/approval-service'
 import { WorkflowRunQueryService } from '../workflow/run-query-service'
@@ -118,6 +119,7 @@ function harness(): {
     hub: new CoreEventHub(),
     teams: new TeamService(db, teamRepository, agentRepository, () => NOW),
     works: new WorkService(db, workRepository, teamRepository, auditRepository, () => NOW),
+    workspaceFiles: new WorkspaceFilesService(),
     assignments: new AssignmentService(
       db,
       assignmentRepository,

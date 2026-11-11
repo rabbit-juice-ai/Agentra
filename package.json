@@ -14,7 +14,8 @@
     "typecheck": "tsc -b && tsc -p apps/desktop/src/renderer/tsconfig.json --noEmit",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:migrate:v34": "tsx scripts/migrate-v34.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",

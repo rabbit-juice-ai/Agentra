@@ -15,7 +15,6 @@ import { AgentForm } from './AgentForm'
 import { Icon } from './Icon'
 import { PageHeader } from './PageHeader'
 import { ProviderBadge, providerMark, providerMarkClass } from './ProviderBadge'
-import { ProvidersPanel } from './ProvidersPanel'
 import { StatusBadge } from './StatusBadge'
 
 type Props = {
@@ -30,7 +29,6 @@ type Props = {
   onArchive: (id: string) => Promise<void>
   /** 停用只阻止新 Execution，不中断已运行任务（用户 U4）。 */
   onSetStatus: (id: string, status: 'active' | 'disabled') => Promise<void>
-  onRefreshProviders: () => Promise<void>
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -51,7 +49,6 @@ export function AgentsPage({
   onUpdate,
   onArchive,
   onSetStatus,
-  onRefreshProviders,
 }: Props) {
   const [formMode, setFormMode] = useState<'none' | 'create' | 'edit'>('none')
   const [editing, setEditing] = useState<AgentProfile | null>(null)
@@ -141,7 +138,7 @@ export function AgentsPage({
         title="Agents"
         subtitle={
           <>
-            {agents.length} 个 Agent · {providers.length} 个 Provider · {runningCount} 个执行中
+            {agents.length} 个 Agent · {runningCount} 个执行中
           </>
         }
         actions={
@@ -387,12 +384,6 @@ export function AgentsPage({
               </table>
             )}
           </div>
-
-          <ProvidersPanel
-            providers={providers}
-            busy={busy}
-            onRefresh={() => void onRefreshProviders()}
-          />
         </div>
       </div>
 

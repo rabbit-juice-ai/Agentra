@@ -5,7 +5,8 @@ import {
   ExecutionExitedPayload,
   type ExecutionStartParams,
   ExecutionStatePayload,
-  type PlanAssignment,
+  type PlanAssignTaskParams,
+  type PlanAssignTaskResult,
   type PlanComment,
   type PlanCommentParams,
   type PlanCommentResult,
@@ -15,31 +16,41 @@ import {
   type PlanConvertToTaskResult,
   type PlanCreateDraftParams,
   type PlanDecisionResult,
+  type PlanDispatch,
+  type PlanDispatchResult,
   type PlanGenerateParams,
   type PlanGenerateResult,
   type PlanGetResult,
   type PlannerDraftResult,
+  type PlanReadiness,
   type PlanReassignTaskParams,
   type PlanReassignTaskResult,
   type PlanRecord,
   type PlanReworkActionParams,
   type PlanReworkActionResult,
+  type PlanStartAttempt,
   type PlanStartRunResult,
+  type PlanTaskAssignment,
   type PlanThread,
   type PlanThreadListResult,
   type PlanThreadView,
   type PlanVersion,
-  RpcMethodError,
   type RuntimeEvent,
   type WorkflowRun,
 } from '@agentra/protocol'
 import { newId } from '@agentra/shared'
-import type { WorkflowDefinition } from '@agentra/workflow-schema'
 import type { Database } from '../db/database'
 import { transaction } from '../db/database'
 import type { AuditRepository } from '../db/repositories/audit-repository'
 import type { NodeAssignmentOverrideRepository } from '../db/repositories/node-assignment-override-repository'
 import type { NodeRunRepository } from '../db/repositories/node-run-repository'
+import type {
+  PlanDispatchRecord,
+  PlanDispatchRepository,
+  PlanStartAttemptRecord,
+  PlanStartAttemptRepository,
+  PlanTaskAssignmentRecord,
+} from '../db/repositories/plan-dispatch-repository'
 import type {
   PlanCommentRepository,
   PlanRepository,
@@ -50,17 +61,20 @@ import type {
   ReworkRequestRecord,
   ReworkRequestRepository,
 } from '../db/repositories/rework-request-repository'
+import type { TeamRepository } from '../db/repositories/team-repository'
 import type { WorkRepository } from '../db/repositories/work-repository'
 import type { WorkflowEngine } from '../workflow/engine'
 import type { TaskEvent } from '../workflow/execution-bridge'
 import type { ReworkEvent, ReworkService } from '../workflow/rework-service'
+import { matchesAgentAccess } from './agent-access-matcher'
 import type { AssignmentService } from './assignment-service'
-import { assignmentsToTaskMap, compilePlanDefinition, PlanCompileError } from './plan-compiler'
+import type { PlanAssignmentService } from './plan-assignment-service'
+import type { PlanStartService } from './plan-start-service'
 import type { PlannerService } from './planner-service'
 import type { ProjectService } from './project-service'
 import { redactOutput } from './redact-output'
+import type { TeamDispatchService } from './team-dispatch-service'
 import type { WorkService } from './work-service'
-import type { WorkflowDefinitionService } from './workflow-definition-service'
 
 export type PlanServiceDeps = {
   db: Database
@@ -80,10 +94,15 @@ export type PlanServiceDeps = {
   planner: PlannerService
   agents: { list(): AgentProfile[] }
   assignments: AssignmentService
+  planAssignments: PlanAssignmentService
+  dispatches: PlanDispatchRepository
+  startAttempts: PlanStartAttemptRepository
+  startService: PlanStartService
+  dispatchService: TeamDispatchService
+  teams: TeamRepository
   works: WorkRepository
   runs: { get(id: string): WorkflowRun | null }
-  workflows: WorkflowDefinitionService
-  engine: Pick<WorkflowEngine, 'startRun' | 'kick'>
+  engine: Pick<WorkflowEngine, 'kick'>
   audit?: AuditRepository
   now?: () => string
 }
@@ -223,12 +242,15 @@ export class PlanService {
 
   get(planId: string): PlanGetResult {
     const plan = this.syncRunStatus(this.requirePlan(planId))
-    const version = this.deps.versions.latestByPlan(planId)
-    if (!version) throw new PlanServiceError(`plan ${planId} has no version`)
+    const version = this.requireLatestVersion(planId)
     return {
       plan,
       version,
       threads: this.threadsFor(planId),
+      taskAssignments: this.deps.planAssignments
+        .listByVersion(version.id)
+        .map((assignment) => this.assignmentDto(assignment)),
+      readiness: this.readinessFor(plan, version),
     }
   }
 
@@ -267,6 +289,14 @@ export class PlanService {
       ) {
         throw new PlanServiceError(`plan version ${version.id} changed concurrently`)
       }
+      // 个人任务在批准时固化成员；团队任务只建 pending dispatch，等老板显式触发队长。
+      this.deps.planAssignments.seedPersonalAssignmentsInTransaction(
+        { ...plan, status: 'approved' },
+        version,
+        'planner',
+        now,
+      )
+      this.deps.dispatchService.ensureDispatches({ ...plan, status: 'approved' }, version)
       this.systemComment(planId, `计划已由 ${decidedBy} 批准。`, now)
     })
     this.audit('plan.approved', planId, 'user', decidedBy, { versionId: version.id })
@@ -298,86 +328,56 @@ export class PlanService {
   }
 
   async startRun(planId: string, requestId?: string): Promise<PlanStartRunResult> {
-    const plan = this.requirePlan(planId)
-    // 重复点击/重试：已启动的计划直接返回现有 Run，不再创建第二个 Workflow 版本或 Run。
-    if (plan.status === 'running' && plan.workflowRunId) {
-      const existing = this.deps.runs.get(plan.workflowRunId)
-      if (existing) return { plan: this.requirePlan(planId), run: existing }
+    const started = await this.deps.startService.startRun(planId, requestId)
+    return {
+      plan: started.plan,
+      run: started.run,
+      schedulingError: started.schedulingError,
     }
-    if (plan.status !== 'approved') {
-      throw new PlanServiceError(`plan ${planId} is ${plan.status}, cannot start run`)
-    }
-    if (!plan.workId) {
-      throw new PlanServiceError(`plan ${planId} is standalone; convert it to a task first`)
-    }
-    const version = this.requireLatestVersion(planId)
-    const work = this.deps.works.get(plan.workId)
-    if (!work) throw new PlanServiceError(`work ${plan.workId} not found`)
-    if (work.status !== 'active') {
-      throw new PlanServiceError(`work ${plan.workId} is ${work.status}, cannot start run`)
-    }
+  }
 
-    const rolesByAgent = this.ensureAssignments(plan.workId, version.assignments)
-    let definition: WorkflowDefinition
-    try {
-      definition = compilePlanDefinition({
-        plan: version.plan,
-        taskAssignments: assignmentsToTaskMap(version.assignments, rolesByAgent),
-      })
-    } catch (error) {
-      if (error instanceof PlanCompileError) {
-        throw new RpcMethodError('INVALID_PARAMS', error.message, {
-          violations: error.violations,
-        })
-      }
-      throw error
+  /** 队长派工入口：批准后显式触发；失败团队保留 failed，可重复调用重试。 */
+  async dispatch(planId: string): Promise<PlanDispatchResult> {
+    this.requirePlan(planId)
+    await this.deps.dispatchService.dispatch(planId)
+    const view = this.get(planId)
+    return {
+      plan: view.plan,
+      dispatches: this.dispatchDtos(view.version.id),
+      readiness: view.readiness,
     }
+  }
 
-    const template = this.deps.workflows.createTemplate({
-      name: `Plan ${planId.slice(-8)}`,
-      description: plan.goal.slice(0, 200),
-      category: 'plan',
+  /** 老板启动前改派；运行中改派仍走 reassignTask。 */
+  assignTask(params: PlanAssignTaskParams): PlanAssignTaskResult {
+    const plan = this.requirePlan(params.planId)
+    const version = this.requireLatestVersion(params.planId)
+    const assignment = this.deps.planAssignments.assignTask({
+      plan,
+      version,
+      taskKey: params.taskKey,
+      agentId: params.agentId,
+      reason: params.reason,
+      decidedBy: params.decidedBy,
     })
-    const draft = this.deps.workflows.createDraft(template.id, definition)
-    const published = this.deps.workflows.publish(draft.id)
-    this.pendingVersionPlans.set(published.id, { planId, events: [] })
-    let started: Awaited<ReturnType<typeof this.deps.engine.startRun>>
-    try {
-      started = await this.deps.engine.startRun({
-        workId: plan.workId,
-        workflowVersionId: published.id,
-        requestId: requestId ?? crypto.randomUUID(),
-      })
-    } catch (error) {
-      this.pendingVersionPlans.delete(published.id)
-      throw error
+    return {
+      plan: this.requirePlan(params.planId),
+      assignment: this.assignmentDto(assignment),
     }
+  }
 
-    const now = this.now()
-    let pending: { planId: string; events: TaskEvent[] } | undefined
-    try {
-      transaction(this.deps.db, () => {
-        if (!this.deps.plans.setRun(planId, published.id, started.run.id, now)) {
-          throw new PlanServiceError(`plan ${planId} changed concurrently; run was started anyway`)
-        }
-        this.deps.versions.updateStatus(version.id, ['approved'], 'running', now)
-        this.systemComment(planId, `执行已启动：${started.run.id}。`, now, started.run.id)
-      })
-    } finally {
-      pending = this.pendingVersionPlans.get(published.id)
-      this.pendingVersionPlans.delete(published.id)
-    }
-    // 「执行已启动」已落库，再按事件到达顺序补写窗口期内的任务事件。
-    if (pending) {
-      const startedPlan = this.requirePlan(planId)
-      for (const event of pending.events) this.writeTaskEvent(startedPlan, event)
-    }
-    this.audit('plan.run_started', planId, 'user', 'local-user', {
-      versionId: version.id,
-      workflowVersionId: published.id,
-      runId: started.run.id,
-    })
-    return { plan: this.requirePlan(planId), run: started.run }
+  /** PlanService 与 PlanStartService 的线程事件窗口桥接。 */
+  beginVersionEventWindow(planId: string, workflowVersionId: string): void {
+    this.pendingVersionPlans.set(workflowVersionId, { planId, events: [] })
+  }
+
+  finishVersionEventWindow(workflowVersionId: string): void {
+    const pending = this.pendingVersionPlans.get(workflowVersionId)
+    this.pendingVersionPlans.delete(workflowVersionId)
+    if (!pending) return
+    const plan = this.deps.plans.get(pending.planId)
+    if (!plan) return
+    for (const event of pending.events) this.writeTaskEvent(plan, event)
   }
 
   listThreads(planId: string): PlanThreadListResult {
@@ -635,35 +635,18 @@ export class PlanService {
     const task = version.plan.tasks.find((candidate) => candidate.key === params.taskKey)
     if (!task)
       throw new PlanServiceError(`task ${params.taskKey} not found in plan ${params.planId}`)
-    const planAssignment = version.assignments.find(
+    const activePlanAssignment = this.deps.planAssignments
+      .listActiveByVersion(version.id)
+      .find((assignment) => assignment.taskKey === params.taskKey)
+    const plannerAssignment = version.assignments.find(
       (assignment) => assignment.taskKey === params.taskKey,
     )
-    if (!planAssignment?.agentId) {
+    const currentAgentId = activePlanAssignment?.agentId ?? plannerAssignment?.agentId ?? null
+    if (!currentAgentId) {
       throw new PlanServiceError(`task ${params.taskKey} has no assigned agent`)
     }
-    if (planAssignment.agentId === params.agentId) {
+    if (currentAgentId === params.agentId) {
       throw new PlanServiceError(`agent ${params.agentId} is already assigned to ${params.taskKey}`)
-    }
-    const workAssignments = this.deps.assignments.listByWork(workId)
-    const current = workAssignments.find(
-      (assignment) => assignment.agentId === planAssignment.agentId,
-    )
-    if (!current) {
-      throw new PlanServiceError(
-        `current agent ${planAssignment.agentId} has no assignment on work ${workId}`,
-      )
-    }
-    const next = workAssignments.find(
-      (assignment) =>
-        assignment.agentId === params.agentId && assignment.workRole === current.workRole,
-    )
-    if (!next) {
-      throw new PlanServiceError(
-        `agent ${params.agentId} has no "${current.workRole}" assignment on work ${workId}`,
-      )
-    }
-    if (next.status !== 'active') {
-      throw new PlanServiceError(`agent ${params.agentId} assignment is ${next.status}, not active`)
     }
     const agent = this.deps.agents.list().find((profile) => profile.id === params.agentId)
     if (!agent) throw new PlanServiceError(`agent ${params.agentId} not found`)
@@ -673,33 +656,83 @@ export class PlanService {
     if (agent.toolPermissions.allow.length === 0) {
       throw new PlanServiceError(`agent ${params.agentId} has no allowed tools configured`)
     }
+    if (!matchesAgentAccess(agent, task.requiredAccessMode)) {
+      throw new PlanServiceError(
+        `agent ${params.agentId} accessMode ${agent.accessMode} does not match ${task.requiredAccessMode}`,
+      )
+    }
+    if (task.teamId) {
+      const team = this.deps.teams.get(task.teamId)
+      if (team?.status !== 'active') {
+        throw new PlanServiceError(`team ${task.teamId} is not active`)
+      }
+      if (team.leaderAgentId === agent.id) {
+        throw new PlanServiceError(`team leader ${agent.id} cannot execute team tasks`)
+      }
+      if (!this.deps.teams.getMember(team.id, agent.id)) {
+        throw new PlanServiceError(`agent ${params.agentId} is not a member of team ${team.name}`)
+      }
+    }
+    const workAssignments = this.deps.assignments.listByWork(workId)
+    const current = workAssignments.find((assignment) => assignment.agentId === currentAgentId)
+    if (!current) {
+      throw new PlanServiceError(
+        `current agent ${currentAgentId} has no assignment on work ${workId}`,
+      )
+    }
+    let next = workAssignments.find(
+      (assignment) =>
+        assignment.agentId === params.agentId && assignment.workRole === current.workRole,
+    )
+    if (next && next.status !== 'active' && !task.teamId) {
+      throw new PlanServiceError(`agent ${params.agentId} assignment is ${next.status}, not active`)
+    }
+    if (!next && !task.teamId) {
+      throw new PlanServiceError(
+        `agent ${params.agentId} has no "${current.workRole}" assignment on work ${workId}`,
+      )
+    }
 
     const now = this.now()
-    this.deps.overrides.upsert({
-      id: newId('nao'),
-      workflowRunId: plan.workflowRunId,
-      workflowNodeKey: params.taskKey,
-      agentId: params.agentId,
-      assignedBy: params.decidedBy,
-      createdAt: now,
-      updatedAt: now,
-    })
-    const thread = this.deps.threads.getByPlanTask(plan.id, params.taskKey)
-    if (thread) {
-      this.deps.comments.create({
-        id: newId('pcm'),
-        threadId: thread.id,
-        authorType: 'system',
-        authorId: 'agentra',
-        content: `老板将任务「${task.title}」改派给 Agent「${agent.name}」，从下一次 attempt 生效。`,
+    const reason = params.reason?.trim() || '老板运行中改派'
+    transaction(this.deps.db, () => {
+      // 团队任务允许目标成员尚无 Assignment：按当前 workRole 在事务内建/恢复岗位。
+      if (task.teamId && next?.status !== 'active') {
+        next = this.deps.assignments.ensureWithRoleInTransaction({
+          workId,
+          agentId: params.agentId,
+          workRole: current.workRole,
+          teamId: task.teamId,
+          now,
+        })
+      }
+      this.deps.overrides.upsert({
+        id: newId('nao'),
+        workflowRunId: plan.workflowRunId as string,
+        workflowNodeKey: params.taskKey,
+        agentId: params.agentId,
+        assignedBy: params.decidedBy,
         createdAt: now,
-        runId: plan.workflowRunId,
+        updatedAt: now,
       })
-    }
+      const thread = this.deps.threads.getByPlanTask(plan.id, params.taskKey)
+      if (thread) {
+        this.deps.comments.create({
+          id: newId('pcm'),
+          threadId: thread.id,
+          authorType: 'system',
+          authorId: 'agentra',
+          content: `老板将任务「${task.title}」改派给 Agent「${agent.name}」，从下一次 attempt 生效。原因：${reason}`,
+          createdAt: now,
+          runId: plan.workflowRunId,
+        })
+      }
+    })
     this.audit('plan.task_reassigned', params.planId, 'user', params.decidedBy, {
       taskKey: params.taskKey,
-      fromAgentId: planAssignment.agentId,
+      fromAgentId: currentAgentId,
       toAgentId: params.agentId,
+      reason,
       runId: plan.workflowRunId,
     })
     return {
@@ -886,38 +919,162 @@ export class PlanService {
     })
   }
 
-  private ensureAssignments(
-    workId: string,
-    planAssignments: PlanAssignment[],
-  ): Map<string, string> {
-    const roles = new Map<string, string>()
-    const existing = this.deps.assignments.listByWork(workId)
-    for (const agentId of new Set(
-      planAssignments.map((assignment) => assignment.agentId).filter((id): id is string => !!id),
-    )) {
-      const current = existing.find((assignment) => assignment.agentId === agentId)
-      if (current) {
-        if (current.status === 'active') {
-          roles.set(agentId, current.workRole)
-          continue
-        }
-        if (current.status === 'paused') {
-          const resumed = this.deps.assignments.resume(current.id)
-          roles.set(agentId, resumed.workRole)
-          continue
-        }
-        throw new PlanServiceError(
-          `agent ${agentId} has a ${current.status} assignment in work ${workId}; cannot reuse`,
-        )
-      }
-      const created = this.deps.assignments.create({
-        workId,
-        agentId,
-        workRole: `plan-${agentId.slice(-8)}`,
-      })
-      roles.set(agentId, created.workRole)
+  private assignmentDto(record: PlanTaskAssignmentRecord): PlanTaskAssignment {
+    return {
+      id: record.id,
+      planId: record.planId,
+      planVersionId: record.planVersionId,
+      taskKey: record.taskKey,
+      teamId: record.teamId,
+      agentId: record.agentId,
+      agentName: this.deps.agents.list().find((agent) => agent.id === record.agentId)?.name ?? null,
+      source: record.source,
+      assignedBy: record.assignedBy,
+      reason: record.reason,
+      status: record.status,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
     }
-    return roles
+  }
+
+  private dispatchDto(record: PlanDispatchRecord): PlanDispatch {
+    const team = this.deps.teams.get(record.teamId)
+    return {
+      id: record.id,
+      planId: record.planId,
+      planVersionId: record.planVersionId,
+      teamId: record.teamId,
+      teamName: team?.name ?? null,
+      leaderAgentId: record.leaderAgentId,
+      leaderAgentName:
+        record.leaderAgentId === null
+          ? null
+          : (this.deps.agents.list().find((agent) => agent.id === record.leaderAgentId)?.name ??
+            null),
+      status: record.status,
+      attempt: record.attempt,
+      executionId: record.executionId,
+      errorCode: record.errorCode,
+      errorMessage: record.errorMessage,
+      startedAt: record.startedAt,
+      endedAt: record.endedAt,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    }
+  }
+
+  private dispatchDtos(versionId: string): PlanDispatch[] {
+    return this.deps.dispatches.listByVersion(versionId).map((record) => this.dispatchDto(record))
+  }
+
+  private startAttemptDto(record: PlanStartAttemptRecord): PlanStartAttempt {
+    return {
+      id: record.id,
+      planId: record.planId,
+      planVersionId: record.planVersionId,
+      requestId: record.requestId,
+      status: record.status,
+      workflowVersionId: record.workflowVersionId,
+      workflowRunId: record.workflowRunId,
+      errorCode: record.errorCode,
+      errorMessage: record.errorMessage,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    }
+  }
+
+  private readinessFor(plan: PlanRecord, version: PlanVersion): PlanReadiness {
+    const active = this.deps.planAssignments.listActiveByVersion(version.id)
+    const activeByTask = new Map(active.map((assignment) => [assignment.taskKey, assignment]))
+    const tasks = version.plan.tasks
+    const teamTasks = tasks.filter((task) => task.teamId !== null)
+    const assignedTeamTasks = teamTasks.filter((task) => activeByTask.has(task.key)).length
+    const legacy =
+      active.length === 0 &&
+      teamTasks.length === 0 &&
+      tasks.every((task) =>
+        version.assignments.some(
+          (assignment) => assignment.taskKey === task.key && assignment.agentId !== null,
+        ),
+      )
+    const legacyAssigned = legacy
+      ? tasks.filter((task) =>
+          version.assignments.some(
+            (assignment) => assignment.taskKey === task.key && assignment.agentId !== null,
+          ),
+        ).length
+      : 0
+    const assignedTasks = legacy ? legacyAssigned : activeByTask.size
+    const dispatches = this.dispatchDtos(version.id)
+    const latestAttempt = this.deps.startAttempts.listByPlan(plan.id)[0] ?? null
+    const activeAttempt =
+      latestAttempt?.status === 'preparing' || latestAttempt?.status === 'starting'
+        ? latestAttempt
+        : null
+    const runningDispatch = dispatches.find((dispatch) => dispatch.status === 'running') ?? null
+    const failedDispatch = dispatches.find((dispatch) => dispatch.status === 'failed') ?? null
+    const missing = tasks.filter((task) => !activeByTask.has(task.key)).map((task) => task.key)
+
+    let state: PlanReadiness['state']
+    if (
+      plan.status === 'pending_approval' ||
+      plan.status === 'rejected' ||
+      plan.status === 'completed' ||
+      plan.status === 'failed' ||
+      plan.status === 'cancelled'
+    ) {
+      state = plan.status
+    } else if (plan.status === 'running') {
+      state = 'running'
+    } else if (activeAttempt) {
+      state = 'starting'
+    } else if (runningDispatch) {
+      state = 'dispatching'
+    } else if (assignedTasks === tasks.length && plan.workId !== null) {
+      state = 'ready'
+    } else if (failedDispatch) {
+      state = 'dispatch_failed'
+    } else {
+      state = 'pending_dispatch'
+    }
+
+    let reason: string | null = null
+    if (state === 'ready') reason = null
+    else if (state === 'starting') reason = '正在启动执行…'
+    else if (state === 'dispatching')
+      reason = `队长正在为「${runningDispatch?.teamName ?? '团队'}」派工`
+    else if (state === 'dispatch_failed') {
+      reason = `派工失败：${failedDispatch?.teamName ?? failedDispatch?.teamId ?? '团队'}${
+        failedDispatch?.errorMessage ? `（${failedDispatch.errorMessage}）` : ''
+      }`
+    } else if (state === 'pending_dispatch' && plan.status === 'approved') {
+      reason =
+        missing.length > 0
+          ? `还有 ${missing.length} 个任务未派工：${missing.join('、')}`
+          : plan.workId === null
+            ? '独立规划需要先转为任务'
+            : '等待队长派工'
+    } else if (state === 'running') {
+      reason = null
+    }
+
+    return {
+      state,
+      canStart:
+        plan.status === 'approved' &&
+        plan.workId !== null &&
+        assignedTasks === tasks.length &&
+        activeAttempt === null &&
+        runningDispatch === null,
+      reason,
+      totalTasks: tasks.length,
+      assignedTasks,
+      teamTasks: teamTasks.length,
+      assignedTeamTasks,
+      legacy,
+      dispatches,
+      startAttempt: latestAttempt ? this.startAttemptDto(latestAttempt) : null,
+    }
   }
 
   private threadsFor(planId: string): PlanThreadView[] {

@@ -46,6 +46,16 @@ export class WorkflowRunService {
   ) {}
 
   createRun(input: CreateWorkflowRunInput): WorkflowRunRecord {
+    const now = this.now()
+    return transaction(this.db, () => this.createRunInTransaction(input, now))
+  }
+
+  /**
+   * 调用方事务内的 Run 创建：供 PlanStartService 把 workflow version、Run、Plan 状态
+   * 放在同一个 BEGIN IMMEDIATE 中。所有预检仍在写任何行之前完成。
+   * 不自己开事务，调用方负责 COMMIT/ROLLBACK。
+   */
+  createRunInTransaction(input: CreateWorkflowRunInput, now: string): WorkflowRunRecord {
     const id = input.requestId ? `run-${z.string().uuid().parse(input.requestId)}` : newId('run')
     const existing = this.runs.get(id)
     if (existing) {
@@ -71,35 +81,31 @@ export class WorkflowRunService {
     this.assertWorkingDirectoriesAvailable(work.repositoryPath, definition)
     this.resolver.precheck(input.workId, definition)
 
-    const now = this.now()
-    return transaction(this.db, () => {
-      const run = this.runs.create(
-        { id, workId: input.workId, workflowVersionId: input.workflowVersionId },
+    const run = this.runs.create(
+      { id, workId: input.workId, workflowVersionId: input.workflowVersionId },
+      now,
+    )
+    const branchRuns = ensureBranchRuns(this.branches, run.id, definition, now)
+    const branchByKey = new Map(branchRuns.map((branch) => [branch.branchKey, branch]))
+    const branchKeys = resolveBranchKeys(definition)
+    for (const node of definition.nodes) {
+      const branchKey = branchKeys.get(node.key) ?? ROOT_BRANCH_KEY
+      this.nodes.create(
+        {
+          id: newId('nrn'),
+          workflowRunId: run.id,
+          workflowNodeKey: node.key,
+          branchRunId: branchByKey.get(branchKey)?.id ?? null,
+        },
         now,
       )
-      const branchRuns = ensureBranchRuns(this.branches, run.id, definition, now)
-      const branchByKey = new Map(branchRuns.map((branch) => [branch.branchKey, branch]))
-      const branchKeys = resolveBranchKeys(definition)
-      for (const node of definition.nodes) {
-        const branchKey = branchKeys.get(node.key) ?? ROOT_BRANCH_KEY
-        this.nodes.create(
-          {
-            id: newId('nrn'),
-            workflowRunId: run.id,
-            workflowNodeKey: node.key,
-            branchRunId: branchByKey.get(branchKey)?.id ?? null,
-          },
-          now,
-        )
-      }
-      if (!this.runs.transition(run.id, ['pending'], 'running', now)) {
-        throw new WorkflowRunCreationError(`failed to start workflow run ${run.id}`)
-      }
-      const created = this.runs.get(run.id)
-      if (!created)
-        throw new WorkflowRunCreationError(`workflow run ${run.id} missing after insert`)
-      return created
-    })
+    }
+    if (!this.runs.transition(run.id, ['pending'], 'running', now)) {
+      throw new WorkflowRunCreationError(`failed to start workflow run ${run.id}`)
+    }
+    const created = this.runs.get(run.id)
+    if (!created) throw new WorkflowRunCreationError(`workflow run ${run.id} missing after insert`)
+    return created
   }
 
   /** worktree 策略要求 Work 配置 repository_path；缺配置在 Run 创建阶段就拒绝。 */

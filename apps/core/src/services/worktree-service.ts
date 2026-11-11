@@ -55,6 +55,8 @@ function toRecord(row: WorktreeRow): WorktreeRecord {
 
 export type CreateWorktreeInput = {
   workId: string
+  /** 恢复路径可预生成 ID，保证 T2a 意图与 T2b 实际记录一致。 */
+  id?: string
   assignmentId?: string | null
   branchName: string
   /** 起始引用，缺省是仓库当前 HEAD。 */
@@ -172,7 +174,7 @@ export class WorktreeService {
     }
 
     const record: WorktreeRecord = {
-      id: newId('wt'),
+      id: input.id ?? newId('wt'),
       workId: work.id,
       assignmentId: input.assignmentId ?? null,
       repositoryPath,

@@ -11,6 +11,7 @@ import {
   type BootIdentity,
   currentBootUuid,
   isProcessAlive,
+  processStartedAt,
   WorkdirLockService,
 } from './workdir-lock-service'
 import { WorktreeService } from './worktree-service'
@@ -70,15 +71,76 @@ const BOOT_B: BootIdentity = {
 }
 const BOOT_UNKNOWN: BootIdentity = { status: 'unknown', reason: 'sysctl failed (ENOENT)' }
 
+function insertExecution(
+  db: Database,
+  executionId: string,
+  status = 'running',
+  processId: number | null = process.pid,
+): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO runtime_providers (
+       id, provider_type, provider_name, executable_path, version, capabilities_json,
+       health_status, last_discovered_at, created_at, updated_at
+     ) VALUES ('prov-test', 'cli', 'test', NULL, NULL, '{}', 'healthy', NULL, ?, ?)`,
+  ).run(NOW, NOW)
+  const sessionId = `ses-${executionId}`
+  db.prepare(
+    `INSERT OR IGNORE INTO agent_sessions (
+       id, assignment_id, provider_id, external_session_id, context_ref, status,
+       created_at, updated_at, last_active_at
+     ) VALUES (?, NULL, 'prov-test', NULL, NULL, 'active', ?, ?, ?)`,
+  ).run(sessionId, NOW, NOW, NOW)
+  db.prepare(
+    `INSERT OR IGNORE INTO executions (
+       id, session_id, node_run_id, provider_id, external_execution_id, process_id, status,
+       working_directory, started_at, ended_at, exit_code, capabilities_snapshot_json,
+       recovery_state_json, created_at, updated_at
+     ) VALUES (?, ?, NULL, 'prov-test', NULL, ?, ?, ?, ?, NULL, NULL, '{}', NULL, ?, ?)`,
+  ).run(
+    executionId,
+    sessionId,
+    processId,
+    status,
+    path.resolve('/tmp/agentra-lock-test'),
+    status === 'running' ? NOW : null,
+    NOW,
+    NOW,
+  )
+}
+
 function insertLock(
   db: Database,
   workdir: string,
-  input: { executionId: string; holderPid: number; bootUuid: string | null },
+  input: {
+    executionId: string
+    holderPid: number
+    bootUuid: string | null
+    executionStatus?: string
+    executionProcessId?: number | null
+    holderStartedAt?: string | null
+    holderKind?: 'core' | 'cli' | null
+  },
 ): void {
+  insertExecution(
+    db,
+    input.executionId,
+    input.executionStatus ?? 'running',
+    input.executionProcessId === undefined ? input.holderPid : input.executionProcessId,
+  )
   db.prepare(
-    `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_uuid, acquired_at)
-     VALUES (?, ?, 'work-1', ?, ?, ?)`,
-  ).run(path.resolve(workdir), input.executionId, input.holderPid, input.bootUuid, NOW)
+    `INSERT INTO workdir_locks (
+       workdir, execution_id, work_id, holder_pid, holder_started_at, holder_kind,
+       boot_uuid, acquired_at
+     ) VALUES (?, ?, 'work-1', ?, ?, ?, ?, ?)`,
+  ).run(
+    fs.realpathSync.native(workdir),
+    input.executionId,
+    input.holderPid,
+    input.holderStartedAt ?? null,
+    input.holderKind ?? null,
+    input.bootUuid,
+    NOW,
+  )
 }
 
 describe('WorkdirLockService（键 = 实际工作目录绝对路径）', () => {
@@ -88,13 +150,13 @@ describe('WorkdirLockService（键 = 实际工作目录绝对路径）', () => {
     const dir = tempDir()
 
     const first = locks.acquire(dir, 'exe-1', 'work-1')
-    expect(first.workdir).toBe(path.resolve(dir))
+    expect(first.workdir).toBe(fs.realpathSync.native(dir))
     expect(first.bootUuid).toBe(BOOT_A.status === 'known' ? BOOT_A.uuid : null)
     // 运行期断言：新行只写 boot_uuid，boot_id 保持 NULL（新代码不读不写旧列）
     expect(
       db
         .prepare('SELECT boot_id, boot_uuid FROM workdir_locks WHERE workdir = ?')
-        .get(path.resolve(dir)),
+        .get(fs.realpathSync.native(dir)),
     ).toEqual({ boot_id: null, boot_uuid: BOOT_A.status === 'known' ? BOOT_A.uuid : null })
 
     expect(() => locks.acquire(dir, 'exe-2', 'work-2')).toThrow(
@@ -112,7 +174,14 @@ describe('WorkdirLockService（键 = 实际工作目录绝对路径）', () => {
   it('treats the lock as stale when the holder pid is dead and reclaims it', () => {
     const db = openDb()
     const dir = tempDir()
-    insertLock(db, dir, { executionId: 'exe-dead', holderPid: 999999, bootUuid: null })
+    insertLock(db, dir, {
+      executionId: 'exe-dead',
+      holderPid: 999999,
+      bootUuid: null,
+      executionStatus: 'failed',
+      holderStartedAt: 'legacy-start',
+      holderKind: 'cli',
+    })
 
     const locks = new WorkdirLockService(db, () => NOW, process.pid, BOOT_A)
     const record = locks.acquire(dir, 'exe-new', 'work-1')
@@ -132,9 +201,10 @@ describe('WorkdirLockService（键 = 实际工作目录绝对路径）', () => {
     })
 
     const locks = new WorkdirLockService(db, () => NOW, process.pid, BOOT_A)
-    const record = locks.acquire(dir, 'exe-new', 'work-1')
-    expect(record.executionId).toBe('exe-new')
-    expect(locks.get(dir)?.bootUuid).toBe(BOOT_A.status === 'known' ? BOOT_A.uuid : null)
+    expect(() => locks.acquire(dir, 'exe-new', 'work-1')).toThrow(
+      expect.objectContaining({ code: 'WORKDIR_LOCKED' }),
+    )
+    expect(locks.get(dir)?.executionId).toBe('exe-previous-boot')
     db.close()
   })
 
@@ -151,6 +221,9 @@ describe('WorkdirLockService（键 = 实际工作目录绝对路径）', () => {
       executionId: 'exe-dead',
       holderPid: 999999,
       bootUuid: BOOT_A.status === 'known' ? BOOT_A.uuid : null,
+      executionStatus: 'failed',
+      holderStartedAt: 'legacy-start',
+      holderKind: 'cli',
     })
 
     const locks = new WorkdirLockService(db, () => NOW, process.pid, BOOT_A)
@@ -238,13 +311,19 @@ describe('锁回收的 fail-closed 规则（真实 SQLite）', () => {
       holderPid: process.pid,
       bootUuid: null,
     })
-    insertLock(db, dead, { executionId: 'exe-legacy-dead', holderPid: 999999, bootUuid: null })
+    insertLock(db, dead, {
+      executionId: 'exe-legacy-dead',
+      holderPid: 999999,
+      bootUuid: null,
+      executionStatus: 'failed',
+    })
 
     const locks = new WorkdirLockService(db, () => NOW, process.pid, BOOT_A)
     const purged = locks.purgeStale()
-    expect(purged.reclaimed).toBe(1)
+    expect(purged.reclaimed).toBe(0)
+    expect(purged.retained).toBe(2)
     expect(locks.get(alive)?.executionId).toBe('exe-legacy-alive')
-    expect(locks.get(dead)).toBeNull()
+    expect(locks.get(dead)?.executionId).toBe('exe-legacy-dead')
     db.close()
   })
 
@@ -254,7 +333,14 @@ describe('锁回收的 fail-closed 规则（真实 SQLite）', () => {
     const dead = tempDir()
     // 即使行里带着「另一个」UUID，身份未知时也不能据此回收
     insertLock(db, alive, { executionId: 'exe-alive', holderPid: process.pid, bootUuid: 'OTHER' })
-    insertLock(db, dead, { executionId: 'exe-dead', holderPid: 999999, bootUuid: 'OTHER' })
+    insertLock(db, dead, {
+      executionId: 'exe-dead',
+      holderPid: 999999,
+      bootUuid: 'OTHER',
+      executionStatus: 'failed',
+      holderStartedAt: 'legacy-start',
+      holderKind: 'cli',
+    })
 
     const locks = new WorkdirLockService(db, () => NOW, process.pid, BOOT_UNKNOWN)
     const purged = locks.purgeStale()
@@ -276,13 +362,68 @@ describe('锁回收的 fail-closed 规则（真实 SQLite）', () => {
     const alive = tempDir()
     const dead = tempDir()
     insertLock(db, alive, { executionId: 'exe-alive', holderPid: process.pid, bootUuid: 'OTHER' })
-    insertLock(db, dead, { executionId: 'exe-dead', holderPid: 999999, bootUuid: 'OTHER' })
+    insertLock(db, dead, {
+      executionId: 'exe-dead',
+      holderPid: 999999,
+      bootUuid: 'OTHER',
+      executionStatus: 'failed',
+      holderStartedAt: 'legacy-start',
+      holderKind: 'cli',
+    })
 
     const locks = new WorkdirLockService(db, () => NOW, process.pid, BOOT_UNKNOWN)
     expect(() => locks.acquire(alive, 'exe-new', null)).toThrow(
       expect.objectContaining({ code: 'WORKDIR_LOCKED' }),
     )
     expect(locks.acquire(dead, 'exe-new-2', null).executionId).toBe('exe-new-2')
+    db.close()
+  })
+})
+
+describe('WorkdirLockService · Phase 1B-2B 回收规则', () => {
+  it('keeps a live CLI lock even when Boot UUID changed', () => {
+    const db = openDb()
+    const dir = tempDir()
+    const started = processStartedAt(process.pid)
+    insertLock(db, dir, {
+      executionId: 'exe-cli-live',
+      holderPid: process.pid,
+      bootUuid: BOOT_B.status === 'known' ? BOOT_B.uuid : null,
+      executionStatus: 'running',
+      holderStartedAt: started,
+      holderKind: 'cli',
+    })
+    const locks = new WorkdirLockService(db, () => NOW, process.pid, BOOT_A)
+    expect(locks.purgeStale().reclaimed).toBe(0)
+    expect(locks.get(dir)?.executionId).toBe('exe-cli-live')
+    db.close()
+  })
+
+  it('keeps a lock whose Execution record is missing (manual review)', () => {
+    const db = openDb()
+    const dir = tempDir()
+    db.prepare(
+      `INSERT INTO workdir_locks (workdir, execution_id, work_id, holder_pid, boot_uuid, acquired_at)
+       VALUES (?, 'exe-missing', 'work-1', ?, ?, ?)`,
+    ).run(fs.realpathSync.native(dir), process.pid, BOOT_A.uuid, NOW)
+    const locks = new WorkdirLockService(db, () => NOW, process.pid, BOOT_A)
+    expect(locks.purgeStale().reclaimed).toBe(0)
+    expect(locks.get(dir)?.executionId).toBe('exe-missing')
+    db.close()
+  })
+
+  it('moves holder from core pid to CLI pid after spawn', () => {
+    const db = openDb()
+    const dir = tempDir()
+    const locks = new WorkdirLockService(db, () => NOW, process.pid, BOOT_A)
+    locks.acquire(dir, 'exe-1', 'work-1')
+    expect(locks.updateHolderPid(dir, 'exe-1', process.pid, 'cli-start')).toBe(true)
+    expect(locks.get(dir)).toMatchObject({
+      holderPid: process.pid,
+      holderStartedAt: 'cli-start',
+      holderKind: 'cli',
+    })
+    expect(locks.updateHolderPid(dir, 'exe-other', process.pid, 'x')).toBe(false)
     db.close()
   })
 })

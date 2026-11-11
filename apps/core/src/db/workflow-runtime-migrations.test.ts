@@ -50,7 +50,7 @@ describe('migration v9 · workflow runtime tables', () => {
   it('creates workflow_runs / branch_runs / node_runs with indexes', () => {
     const db = openMigrated()
     try {
-      expect(currentUserVersion(db)).toBe(26)
+      expect(currentUserVersion(db)).toBe(34)
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
           name: string
@@ -141,7 +141,7 @@ describe('migration v9 · workflow runtime tables', () => {
     const db = openMigrated()
     try {
       const second = migrate(db)
-      expect(second).toEqual({ from: 26, to: 26, applied: [] })
+      expect(second).toEqual({ from: 34, to: 34, applied: [] })
 
       // v9 自身的 SQL 也必须幂等（CREATE … IF NOT EXISTS），重放一次再回滚
       const v9 = MIGRATIONS.find((migration) => migration.version === 9)
@@ -251,7 +251,7 @@ describe('migration v12/v13 · rework_requests + workflow_events', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 11,
-        to: 26,
+        to: 34,
         applied: [
           'phase4_rework_requests',
           'phase4_workflow_events',
@@ -268,6 +268,14 @@ describe('migration v12/v13 · rework_requests + workflow_events', () => {
           'agent_system_agents',
           'team_members_drop_role',
           'team_instructions',
+          'team_leader',
+          'plan_dispatch',
+          'team_collaboration',
+          'team_task_run_steps',
+          'work_acceptance_and_task_memory',
+          'task_checkpoints',
+          'task_recovery_attempts',
+          'workflow_node_recovery',
         ],
       })
 

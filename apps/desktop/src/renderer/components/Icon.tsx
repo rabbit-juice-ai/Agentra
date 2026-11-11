@@ -28,6 +28,19 @@ const PATHS: Record<string, React.ReactNode> = {
       <path d="m10 8 6 4-6 4V8Z" />
     </>
   ),
+  stop: <rect x="6" y="6" width="12" height="12" rx="2" />,
+  panel: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+    </>
+  ),
+  'panel-off': (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16M4 4l16 16" />
+    </>
+  ),
   check: (
     <>
       <circle cx="12" cy="12" r="9" />

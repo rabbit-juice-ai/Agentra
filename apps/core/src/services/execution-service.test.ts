@@ -8,6 +8,7 @@ import {
   type DaemonExecutionStartParams,
   type DaemonExecutionStartResult,
   type DaemonExecutionStatusResult,
+  type Execution,
   type ExecutionState,
   PROTOCOL_VERSION,
   RpcMethodError,
@@ -35,6 +36,7 @@ import { NodeRunRepository } from '../db/repositories/node-run-repository'
 import { ProviderRepository } from '../db/repositories/provider-repository'
 import { SessionRepository } from '../db/repositories/session-repository'
 import { SkillRepository } from '../db/repositories/skill-repository'
+import { TaskMemoryRepository } from '../db/repositories/task-memory-repository'
 import { TeamRepository } from '../db/repositories/team-repository'
 import { WorkRepository } from '../db/repositories/work-repository'
 import { WorkflowRepository } from '../db/repositories/workflow-repository'
@@ -46,9 +48,11 @@ import { WorkflowExecutionBridge } from '../workflow/execution-bridge'
 import { PublishedDefinitionProvider } from '../workflow/published-definition-provider'
 import { AgentService } from './agent-service'
 import { AssignmentService } from './assignment-service'
+import type { CheckpointService } from './checkpoint-service'
 import { CoreEventHub } from './event-hub'
 import { ExecutionService } from './execution-service'
 import { ProviderRegistry } from './provider-registry'
+import { TaskMemoryService } from './task-memory-service'
 import { WorkService } from './work-service'
 import { WorkdirLockService } from './workdir-lock-service'
 import { WorktreeService } from './worktree-service'
@@ -215,6 +219,8 @@ type Harness = {
   repository: ExecutionRepository
   agentId: string
   works: WorkService
+  workRepository: WorkRepository
+  taskMemoryService: TaskMemoryService
   assignments: AssignmentService
   sessions: SessionRepository
   worktrees: WorktreeService
@@ -240,6 +246,14 @@ async function harness(
     maxAttempts?: number
     maintenance?: { isExecutionStartAllowed(): boolean }
     drain?: DrainCoordinator
+    checkpoints?: Pick<CheckpointService, 'createForExecution' | 'assertCanStart'>
+    recoveries?: {
+      markRunning: (
+        id: string,
+        link: { executionId: string; sessionId: string; teamRunId: string | null },
+        now: string,
+      ) => boolean
+    }
   } = {},
 ): Promise<Harness> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentra-exec-'))
@@ -252,6 +266,12 @@ async function harness(
   const assignmentRepository = new AssignmentRepository(db)
   const teamRepository = new TeamRepository(db)
   const auditRepository = new AuditRepository(db)
+  const taskMemoryService = new TaskMemoryService({
+    db,
+    memories: new TaskMemoryRepository(db),
+    audit: auditRepository,
+    now: () => NOW,
+  })
   const agentRepository = new AgentRepository(db)
   const sessionRepository = new SessionRepository(db)
   const executionRepository = new ExecutionRepository(db)
@@ -282,7 +302,16 @@ async function harness(
     () => NOW,
   )
   const locks = new WorkdirLockService(db, () => NOW, undefined, TEST_BOOT)
-  const works = new WorkService(db, workRepository, teamRepository, auditRepository, () => NOW)
+  const works = new WorkService(
+    db,
+    workRepository,
+    teamRepository,
+    auditRepository,
+    () => NOW,
+    undefined,
+    undefined,
+    taskMemoryService,
+  )
   const assignments = new AssignmentService(
     db,
     assignmentRepository,
@@ -319,6 +348,9 @@ async function harness(
     agents: agentRepository,
     skills: skillRepository,
     teams: teamRepository,
+    taskMemories: taskMemoryService,
+    checkpoints: options.checkpoints,
+    recoveries: options.recoveries,
     sessions: sessionRepository,
     executions: executionRepository,
     logs: logRepository,
@@ -416,6 +448,8 @@ async function harness(
     skills: skillRepository,
     teams: teamRepository,
     works,
+    workRepository,
+    taskMemoryService,
     assignments,
     sessions: sessionRepository,
     worktrees,
@@ -617,6 +651,108 @@ describe('ExecutionService event handling', () => {
     )
     expect(h.executions.get(execution.id).status).toBe('cancelled')
   })
+
+  it('refuses to start when checkpoint policy reports an unresolved high-risk failure', async () => {
+    const calls: string[] = []
+    const h = await harness({
+      checkpoints: {
+        assertCanStart: (workId) => {
+          calls.push(workId)
+          throw new RpcMethodError('INVALID_PARAMS', 'RECOVERY_REQUIRED: blocked', {
+            code: 'RECOVERY_REQUIRED',
+          })
+        },
+        createForExecution: () => ({
+          outcome: 'skipped',
+          checkpointId: null,
+          blocked: false,
+          riskLevel: 'low',
+          evidenceStatus: 'not_required',
+          sideEffectCompleteness: 'not_tracked',
+          reasons: [],
+        }),
+      },
+    })
+    const work = h.works.create({
+      name: 'checkpoint gate',
+      rootPath: path.join(h.dir, 'checkpoint-gate'),
+    })
+    h.works.activate(work.id)
+    h.assignments.create({ workId: work.id, agentId: h.agentId, workRole: 'engineer' })
+    await expect(
+      h.executions.start({ agentId: h.agentId, workId: work.id, prompt: 'hello' }),
+    ).rejects.toThrow(/RECOVERY_REQUIRED/)
+    expect(calls).toEqual([work.id])
+  })
+
+  it('creates a new Session for recovery and links the attempt in the same start path', async () => {
+    const links: Array<{
+      attemptId: string
+      executionId: string
+      sessionId: string
+      teamRunId: string | null
+    }> = []
+    const h = await harness({
+      recoveries: {
+        markRunning: (attemptId, link) => {
+          links.push({ attemptId, ...link })
+          return true
+        },
+      },
+    })
+    const work = h.works.create({
+      name: 'recovery execution',
+      rootPath: path.join(h.dir, 'recovery-execution'),
+    })
+    h.works.activate(work.id)
+    h.assignments.create({ workId: work.id, agentId: h.agentId, workRole: 'engineer' })
+    const execution = await h.executions.startRecovery(
+      { agentId: h.agentId, workId: work.id, prompt: 'recover' },
+      { recovery: { attemptId: 'rec-1', checkpointId: 'chk-1' } },
+    )
+    expect(links).toEqual([
+      {
+        attemptId: 'rec-1',
+        executionId: execution.id,
+        sessionId: execution.sessionId,
+        teamRunId: null,
+      },
+    ])
+    expect(h.sessions.get(execution.sessionId)?.status).toBe('active')
+  })
+
+  it('rolls back the new Session when recovery attempt linking fails', async () => {
+    const h = await harness({ recoveries: { markRunning: () => false } })
+    const work = h.works.create({
+      name: 'recovery linking failure',
+      rootPath: path.join(h.dir, 'recovery-link-failure'),
+    })
+    h.works.activate(work.id)
+    h.assignments.create({ workId: work.id, agentId: h.agentId, workRole: 'engineer' })
+    await expect(
+      h.executions.startRecovery(
+        { agentId: h.agentId, workId: work.id, prompt: 'recover' },
+        { recovery: { attemptId: 'rec-1', checkpointId: 'chk-1' } },
+      ),
+    ).rejects.toThrow(/RECOVERY_ACTIVE_EXISTS/)
+    expect(h.db.prepare('SELECT count(*) AS c FROM executions').get()).toEqual({ c: 0 })
+    expect(h.db.prepare('SELECT count(*) AS c FROM agent_sessions').get()).toEqual({ c: 0 })
+  })
+
+  it('refreshes Task Memory to the current Work criteria before starting an execution', async () => {
+    const h = await harness()
+    const work = h.works.create({
+      name: 'Task memory refresh',
+      rootPath: path.join(h.dir, 'task-memory-refresh'),
+      acceptanceCriteria: ['v1'],
+    })
+    h.works.activate(work.id)
+    h.assignments.create({ workId: work.id, agentId: h.agentId, workRole: 'engineer' })
+    expect(h.workRepository.updateAcceptanceCriteria(work.id, 1, ['v2'], 2, NOW, NOW)).toBe(true)
+    await h.executions.start({ agentId: h.agentId, workId: work.id, prompt: 'hello' })
+    expect(h.taskMemoryService.get(work.id)?.acceptanceCriteria.workVersion).toBe(2)
+    expect(h.taskMemoryService.get(work.id)?.acceptanceCriteria.items[0]?.statement).toBe('v2')
+  })
 })
 
 describe('Work lifecycle execution races (injected RuntimeClient, real SQLite)', () => {
@@ -774,6 +910,18 @@ describe('Work lifecycle execution races (injected RuntimeClient, real SQLite)',
     expect(h.repository.get(execution.id)?.status).toBe('succeeded')
     expect(h.runtime.starts).toHaveLength(1)
   })
+
+  it('allows explicit team-collaboration starts on a paused work', async () => {
+    const h = await harness()
+    const workId = work(h)
+    h.works.pause(workId)
+    const execution = await h.executions.start(
+      { agentId: h.agentId, workId, prompt: 'team reply' },
+      { allowInactiveWork: true },
+    )
+    expect(execution.status).toBe('running')
+    expect(h.runtime.starts).toHaveLength(1)
+  })
 })
 
 describe('ExecutionService lifecycle RPCs', () => {
@@ -922,6 +1070,81 @@ describe('ExecutionService lifecycle RPCs', () => {
 })
 
 describe('ExecutionService.reconcile', () => {
+  it('classifies a pending execution with no daemon evidence and fails it as unstarted', async () => {
+    const h = await harness()
+    const sessionId = newId('ses')
+    h.sessions.create({
+      id: sessionId,
+      assignmentId: null,
+      providerId: 'claude-code',
+      externalSessionId: newId('ext'),
+      contextRef: h.agentId,
+      status: 'active',
+      createdAt: NOW,
+      updatedAt: NOW,
+      lastActiveAt: NOW,
+    })
+    const execution: Execution = {
+      id: newId('exe'),
+      sessionId,
+      providerId: 'claude-code',
+      agentId: h.agentId,
+      externalExecutionId: newId('ext'),
+      processId: null,
+      status: 'pending',
+      workingDirectory: path.join(h.dir, 'pending-recovery'),
+      startedAt: null,
+      endedAt: null,
+      exitCode: null,
+      capabilities: CAPABILITIES,
+      createdAt: NOW,
+      updatedAt: NOW,
+    }
+    h.repository.create(execution)
+    h.runtime.active = []
+    h.runtime.statusError = new RpcMethodError('EXECUTION_NOT_FOUND', 'not known')
+    await expect(h.executions.classifyPendingStart(execution.id)).resolves.toBe('not_started')
+    expect(h.executions.failUnstartedExecution(execution.id, 'START_INTERRUPTED')).toBe(true)
+    expect(h.executions.get(execution.id).status).toBe('failed')
+    expect(h.sessions.get(sessionId)?.status).toBe('ended')
+  })
+
+  it('does not misclassify a pending execution with start evidence as unstarted', async () => {
+    const h = await harness()
+    const sessionId = newId('ses')
+    h.sessions.create({
+      id: sessionId,
+      assignmentId: null,
+      providerId: 'claude-code',
+      externalSessionId: newId('ext'),
+      contextRef: h.agentId,
+      status: 'active',
+      createdAt: NOW,
+      updatedAt: NOW,
+      lastActiveAt: NOW,
+    })
+    const execution: Execution = {
+      id: newId('exe'),
+      sessionId,
+      providerId: 'claude-code',
+      agentId: h.agentId,
+      externalExecutionId: newId('ext'),
+      processId: 4242,
+      status: 'pending',
+      workingDirectory: path.join(h.dir, 'pending-started'),
+      startedAt: NOW,
+      endedAt: null,
+      exitCode: null,
+      capabilities: CAPABILITIES,
+      createdAt: NOW,
+      updatedAt: NOW,
+    }
+    h.repository.create(execution)
+    await expect(h.executions.classifyPendingStart(execution.id)).resolves.toBe('spawned')
+    expect(h.executions.failUnstartedExecution(execution.id, 'START_INTERRUPTED')).toBe(false)
+    expect(h.executions.get(execution.id).status).toBe('pending')
+  })
+
   it('does not mark an execution crashed when the daemon no longer knows it (A3)', async () => {
     const h = await harness()
     const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
@@ -1543,19 +1766,21 @@ function seedExecution(
   let nodeRunId: string | null = null
   if (options.nodeStatus) {
     nodeRunId = options.nodeRunId ?? `nrn-${randomUUID()}`
-    h.db
-      .prepare(
-        `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, branch_run_id, status,
+    const exists = h.db.prepare('SELECT 1 FROM node_runs WHERE id = ?').get(nodeRunId)
+    if (!exists)
+      h.db
+        .prepare(
+          `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, branch_run_id, status,
            attempt, input_snapshot_json, created_at, updated_at)
          VALUES (?, 'run-1', ?, NULL, ?, 1, '{}', ?, ?)`,
-      )
-      .run(
-        nodeRunId,
-        options.nodeKey ?? `node_${randomUUID().slice(0, 8)}`,
-        options.nodeStatus,
-        now,
-        now,
-      )
+        )
+        .run(
+          nodeRunId,
+          options.nodeKey ?? `node_${randomUUID().slice(0, 8)}`,
+          options.nodeStatus,
+          now,
+          now,
+        )
   }
   const recovery =
     options.corrupt === true
@@ -1796,6 +2021,7 @@ describe('S55-2B-1B terminal compensation', () => {
         executionStatus: 'failed',
         nodeStatus: 'running',
         nodeKey: 'task_1',
+        nodeRunId: 'nrn-task-1',
         recoveryState: {
           terminalProcessing: { state: 'pending', source: 'event_observed' },
         },
@@ -1815,6 +2041,7 @@ describe('S55-2B-1B terminal compensation', () => {
         executionStatus: 'failed',
         nodeStatus: 'running',
         nodeKey,
+        nodeRunId: 'nrn-task-1',
         recoveryState: {
           terminalProcessing: { state: 'pending', source: 'event_observed' },
         },

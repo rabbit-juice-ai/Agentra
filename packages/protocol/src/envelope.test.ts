@@ -19,9 +19,9 @@ describe('protocol version', () => {
   })
 })
 
-describe('RpcError 与 26 个错误码', () => {
-  it('exposes exactly 26 codes including maintenance, recovery, restore and skill codes', () => {
-    expect(RpcErrorCode.options).toHaveLength(26)
+describe('RpcError 与 62 个错误码', () => {
+  it('exposes exactly 62 codes including maintenance, recovery, restore, skill and 1B-2B codes', () => {
+    expect(RpcErrorCode.options).toHaveLength(62)
     expect(RpcErrorCode.options).toContain('SKILL_NOT_FOUND')
     expect(RpcErrorCode.options).toContain('UNKNOWN_NODE_TYPE')
     expect(RpcErrorCode.options).toContain('MAINTENANCE_ACTIVE')
@@ -34,6 +34,13 @@ describe('RpcError 与 26 个错误码', () => {
     expect(RpcErrorCode.options).toContain('RESTORE_JOURNAL_INVALID')
     expect(RpcErrorCode.options).toContain('RESTORE_FILESYSTEM_CONFLICT')
     expect(RpcErrorCode.options).toContain('RESTORE_INSUFFICIENT_SPACE')
+    expect(RpcErrorCode.options).toContain('RECOVERY_CONFIRMATION_REQUIRED')
+    expect(RpcErrorCode.options).toContain('RECOVERY_PLAN_BLOCKED')
+    expect(RpcErrorCode.options).toContain('RECOVERY_ACTIVE_EXISTS')
+    expect(RpcErrorCode.options).toContain('RECOVERY_RETRY_LIMIT_REACHED')
+    expect(RpcErrorCode.options).toContain('NODE_RECOVERY_TARGET_NOT_RECOVERABLE')
+    expect(RpcErrorCode.options).toContain('NODE_RECOVERY_WORKTREE_INVALID')
+    expect(RpcErrorCode.options).toContain('NODE_RECOVERY_CHAIN_MISMATCH')
   })
 
   it('keeps the envelope without detail backward compatible', () => {

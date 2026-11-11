@@ -6,12 +6,21 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { openDatabase } from '../db/database'
 import { migrate } from '../db/migrations'
 import {
+  PlanDispatchRepository,
+  PlanStartAttemptRepository,
+  PlanTaskAssignmentRepository,
+} from '../db/repositories/plan-dispatch-repository'
+import {
   PlanCommentRepository,
   PlanRepository,
   PlanThreadRepository,
   PlanVersionRepository,
 } from '../db/repositories/plan-repository'
+import { TeamRepository } from '../db/repositories/team-repository'
+import { PlanAssignmentService } from './plan-assignment-service'
 import { PlanService } from './plan-service'
+import { PlanStartService } from './plan-start-service'
+import type { TeamDispatchService } from './team-dispatch-service'
 
 const NOW = '2026-11-06T00:00:00.000Z'
 const dirs: string[] = []
@@ -30,6 +39,14 @@ function harness() {
       id, name, description, objective, status, priority, root_path, repository_path,
       settings_json, created_at, updated_at, completed_at
     ) VALUES ('work-1', 'Work', '', '', 'active', 'normal', '/tmp', NULL, '{}', ?, ?, NULL)`,
+  ).run(NOW, NOW)
+  db.prepare(
+    `INSERT INTO agent_profiles (
+      id, name, avatar, description, system_prompt, skill_ids_json, access_mode, system_kind,
+      model, tool_permissions_json, default_provider_id, max_concurrency, status,
+      created_at, updated_at, archived_at
+    ) VALUES ('agt-fe', 'FE Agent', '🤖', '', '', '[]', 'edit', NULL, NULL,
+      '{"version":1,"allow":["Read"],"deny":[]}', NULL, 1, 'active', ?, ?, NULL)`,
   ).run(NOW, NOW)
 
   const plan = PlanDraft.parse({
@@ -54,7 +71,15 @@ function harness() {
   }
   let definition: unknown = null
   let duringStart: (() => void) | null = null
-  let agentProfiles: unknown[] = []
+  let agentProfiles: unknown[] = [
+    {
+      id: 'agt-fe',
+      name: 'FE Agent',
+      status: 'active',
+      accessMode: 'edit',
+      toolPermissions: { version: 1, allow: ['Read'], deny: [] },
+    },
+  ]
   let workAssignments: unknown[] = []
   const overrides: unknown[] = []
   let exhaustedRequests: unknown[] = []
@@ -63,12 +88,119 @@ function harness() {
   const chatStarts: unknown[] = []
   let chatOutput: Record<string, unknown> = { text: 'agent reply' }
 
+  const planRepository = new PlanRepository(db)
+  const planVersionRepository = new PlanVersionRepository(db)
+  const planThreadRepository = new PlanThreadRepository(db)
+  const planCommentRepository = new PlanCommentRepository(db)
+  const planTaskAssignmentRepository = new PlanTaskAssignmentRepository(db)
+  const planDispatchRepository = new PlanDispatchRepository(db)
+  const planStartAttemptRepository = new PlanStartAttemptRepository(db)
+  const teamRepository = new TeamRepository(db)
+  const agentPort = {
+    list: () => agentProfiles as never[],
+    get: (id: string) =>
+      (agentProfiles as { id: string }[]).find((agent) => agent.id === id) ?? null,
+  }
+  const planAssignmentService = new PlanAssignmentService({
+    db,
+    assignments: planTaskAssignmentRepository,
+    dispatches: planDispatchRepository,
+    startAttempts: planStartAttemptRepository,
+    teams: teamRepository,
+    agents: agentPort as never,
+    threads: planThreadRepository,
+    comments: planCommentRepository,
+    now: () => NOW,
+  })
+  const planStartEventSink: { target: PlanService | null } = { target: null }
+  const planStartService = new PlanStartService({
+    db,
+    plans: planRepository,
+    versions: planVersionRepository,
+    assignments: planAssignmentService,
+    startAttempts: planStartAttemptRepository,
+    dispatches: planDispatchRepository,
+    workAssignments: {
+      previewPlanRoles: (_workId: string, agentIds: string[]) =>
+        new Map(agentIds.map((agentId) => [agentId, `plan-${agentId.slice(-8)}`])),
+      ensureForPlanInTransaction: (_workId: string, agentIds: string[]) =>
+        new Map(agentIds.map((agentId) => [agentId, `plan-${agentId.slice(-8)}`])),
+    } as never,
+    works: {
+      get: () => ({
+        id: 'work-1',
+        name: 'Work',
+        description: '',
+        objective: '',
+        status: 'active',
+        priority: 'normal',
+        rootPath: '/tmp',
+        repositoryPath: null,
+        projectId: null,
+        settings: {},
+        createdAt: NOW,
+        updatedAt: NOW,
+        completedAt: null,
+      }),
+    } as never,
+    workflows: {
+      createPublishedVersionInTransaction: (input: { definition: unknown }) => {
+        definition = input.definition
+        return { id: 'wfv-1' }
+      },
+    } as never,
+    runs: {
+      get: (id: string) =>
+        id === 'run-race'
+          ? {
+              id: 'run-race',
+              workId: 'work-1',
+              workflowVersionId: 'wfv-1',
+              status: 'running',
+              startedAt: NOW,
+              endedAt: null,
+              createdAt: NOW,
+              updatedAt: NOW,
+            }
+          : null,
+    } as never,
+    runService: {
+      createRunInTransaction: () => ({
+        id: 'run-1',
+        workId: 'work-1',
+        workflowVersionId: 'wfv-1',
+        status: 'running',
+        startedAt: NOW,
+        endedAt: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    } as never,
+    engine: {
+      kick: async () => {
+        duringStart?.()
+      },
+    } as never,
+    threads: planThreadRepository,
+    comments: planCommentRepository,
+    eventWindow: {
+      beforeKick: (planId, versionId) =>
+        planStartEventSink.target?.beginVersionEventWindow(planId, versionId),
+      afterKick: (versionId) => planStartEventSink.target?.finishVersionEventWindow(versionId),
+    },
+    now: () => NOW,
+  })
+  const dispatchService = {
+    ensureDispatches: () => [],
+    dispatch: async () => [],
+  } as unknown as TeamDispatchService
+
   const service = new PlanService({
     db,
-    plans: new PlanRepository(db),
-    versions: new PlanVersionRepository(db),
-    threads: new PlanThreadRepository(db),
-    comments: new PlanCommentRepository(db),
+    plans: planRepository,
+    versions: planVersionRepository,
+    threads: planThreadRepository,
+    comments: planCommentRepository,
     overrides: {
       upsert: (record: unknown) => overrides.push(record),
       get: () => null,
@@ -162,6 +294,12 @@ function harness() {
       }),
       resume: (id: string) => ({ id, workRole: 'plan-agt-fe' }),
     } as never,
+    planAssignments: planAssignmentService,
+    dispatches: planDispatchRepository,
+    startAttempts: planStartAttemptRepository,
+    startService: planStartService,
+    dispatchService,
+    teams: teamRepository,
     works: {
       get: () => ({
         id: 'work-1',
@@ -195,35 +333,12 @@ function harness() {
             }
           : null,
     },
-    workflows: {
-      createTemplate: () => ({ id: 'wft-1' }),
-      createDraft: (_templateId: string, input: unknown) => {
-        definition = input
-        return { id: 'wfv-1' }
-      },
-      publish: () => ({ id: 'wfv-1' }),
-    } as never,
     engine: {
-      startRun: async () => {
-        duringStart?.()
-        return {
-          run: {
-            id: 'run-1',
-            workId: 'work-1',
-            workflowVersionId: 'wfv-1',
-            status: 'running',
-            startedAt: NOW,
-            endedAt: null,
-            createdAt: NOW,
-            updatedAt: NOW,
-          },
-          schedulingError: null,
-        }
-      },
       kick: async () => {},
-    } as never,
+    },
     now: () => NOW,
   })
+  planStartEventSink.target = service
   return {
     service,
     db,
@@ -367,12 +482,14 @@ describe('PlanService', () => {
         id: 'agt-fe',
         name: 'FE Agent',
         status: 'active',
+        accessMode: 'edit',
         toolPermissions: { version: 1, allow: ['Read'], deny: [] },
       },
       {
         id: 'agt-fe2',
         name: 'FE Agent 2',
         status: 'active',
+        accessMode: 'edit',
         toolPermissions: { version: 1, allow: ['Read'], deny: [] },
       },
     ])
@@ -417,6 +534,7 @@ describe('PlanService', () => {
         id: 'agt-fe2',
         name: 'FE Agent 2',
         status: 'active',
+        accessMode: 'edit',
         toolPermissions: { version: 1, allow: ['Read'], deny: [] },
       },
     ])
@@ -482,6 +600,7 @@ describe('PlanService', () => {
         id: 'agt-fe',
         name: 'FE Agent',
         status: 'active',
+        accessMode: 'edit',
         toolPermissions: { version: 1, allow: ['Read'], deny: [] },
       },
     ])

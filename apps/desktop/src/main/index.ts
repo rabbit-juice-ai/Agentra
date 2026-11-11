@@ -53,10 +53,12 @@ import {
   ExecutionSendMessageResult,
   HealthResult,
   PLAN_APPROVE_METHOD,
+  PLAN_ASSIGN_TASK_METHOD,
   PLAN_COMMENT_METHOD,
   PLAN_CONTINUE_REWORK_METHOD,
   PLAN_CONVERT_TO_PROJECT_METHOD,
   PLAN_CONVERT_TO_TASK_METHOD,
+  PLAN_DISPATCH_METHOD,
   PLAN_GENERATE_METHOD,
   PLAN_GET_METHOD,
   PLAN_LIST_BY_WORK_METHOD,
@@ -66,14 +68,25 @@ import {
   PLAN_START_RUN_METHOD,
   PLAN_TAKE_OVER_REWORK_METHOD,
   PLAN_THREAD_LIST_METHOD,
+  PLANNER_ACTION_APPLY_METHOD,
+  PLANNER_ACTION_REJECT_METHOD,
+  PLANNER_CHAT_GET_METHOD,
+  PLANNER_CHAT_SEND_METHOD,
+  PLANNER_ENSURE_METHOD,
+  PlanAssignTaskResult,
   PlanCommentResult,
   PlanConvertToProjectResult,
   PlanConvertToTaskResult,
   PlanDecisionResult,
+  PlanDispatchResult,
   PlanGenerateResult,
   PlanGetResult,
   PlanListByWorkResult,
   PlanListRecentResult,
+  PlannerActionResult,
+  PlannerChatGetResult,
+  PlannerChatSendResult,
+  PlannerEnsureResult,
   PlanReassignTaskResult,
   PlanReworkActionResult,
   PlanStartRunResult,
@@ -105,15 +118,22 @@ import {
   TEAM_MEMBER_ADD_METHOD,
   TEAM_MEMBER_LIST_METHOD,
   TEAM_MEMBER_REMOVE_METHOD,
+  TEAM_TASK_COMMENT_METHOD,
+  TEAM_TASK_GET_METHOD,
+  TEAM_TASK_SET_STATUS_METHOD,
   TEAM_UPDATE_METHOD,
   TeamListResult,
   TeamMemberListResult,
   TeamMemberRemoveResult,
   TeamMemberResult,
   TeamResult,
+  TeamTaskCommentResult,
+  TeamTaskGetResult,
+  TeamTaskSetStatusResult,
   WORK_ACTIVATE_METHOD,
   WORK_COMPLETE_METHOD,
   WORK_CREATE_METHOD,
+  WORK_FILES_LIST_METHOD,
   WORK_LINK_TEAM_METHOD,
   WORK_LIST_METHOD,
   WORK_PAUSE_METHOD,
@@ -122,6 +142,7 @@ import {
   WORKTREE_CREATE_METHOD,
   WORKTREE_LIST_METHOD,
   WORKTREE_REMOVE_METHOD,
+  WorkFilesListResult,
   WorkflowRunGetResult,
   WorkListResult,
   WorkResult,
@@ -135,11 +156,14 @@ import {
   AGENT_GENERATE_DRAFT_TIMEOUT_MS,
   BACKUP_LIST_DEFAULT_LIMIT,
   backupRpcTimeoutMs,
+  PLAN_DISPATCH_TIMEOUT_MS,
   PLAN_GENERATE_TIMEOUT_MS,
   PLAN_REASSIGN_TIMEOUT_MS,
   PLAN_START_RUN_TIMEOUT_MS,
+  PLANNER_CHAT_TIMEOUT_MS,
   PROVIDER_MODELS_TIMEOUT_MS,
   type RpcResult,
+  TEAM_TASK_COMMENT_TIMEOUT_MS,
 } from '../shared/api'
 import { ensureCore } from './core-launcher'
 import { waitForCoreNormal } from './core-status'
@@ -278,6 +302,36 @@ function registerIpc(): void {
   ipcMain.handle('agentra:plan-start-run', (_event, params: unknown) =>
     callCore(PLAN_START_RUN_METHOD, params, PlanStartRunResult, PLAN_START_RUN_TIMEOUT_MS),
   )
+  ipcMain.handle('agentra:plan-dispatch', (_event, params: unknown) =>
+    callCore(PLAN_DISPATCH_METHOD, params, PlanDispatchResult, PLAN_DISPATCH_TIMEOUT_MS),
+  )
+  ipcMain.handle('agentra:plan-assign-task', (_event, params: unknown) =>
+    callCore(PLAN_ASSIGN_TASK_METHOD, params, PlanAssignTaskResult, PLAN_REASSIGN_TIMEOUT_MS),
+  )
+  ipcMain.handle('agentra:planner-chat-get', () =>
+    callCore(PLANNER_CHAT_GET_METHOD, {}, PlannerChatGetResult),
+  )
+  ipcMain.handle('agentra:planner-ensure', () =>
+    callCore(PLANNER_ENSURE_METHOD, {}, PlannerEnsureResult),
+  )
+  ipcMain.handle('agentra:planner-chat-send', (_event, params: unknown) =>
+    callCore(PLANNER_CHAT_SEND_METHOD, params, PlannerChatSendResult, PLANNER_CHAT_TIMEOUT_MS),
+  )
+  ipcMain.handle('agentra:planner-action-apply', (_event, params: unknown) =>
+    callCore(PLANNER_ACTION_APPLY_METHOD, params, PlannerActionResult),
+  )
+  ipcMain.handle('agentra:planner-action-reject', (_event, params: unknown) =>
+    callCore(PLANNER_ACTION_REJECT_METHOD, params, PlannerActionResult),
+  )
+  ipcMain.handle('agentra:team-task-get', (_event, params: unknown) =>
+    callCore(TEAM_TASK_GET_METHOD, params, TeamTaskGetResult),
+  )
+  ipcMain.handle('agentra:team-task-comment', (_event, params: unknown) =>
+    callCore(TEAM_TASK_COMMENT_METHOD, params, TeamTaskCommentResult, TEAM_TASK_COMMENT_TIMEOUT_MS),
+  )
+  ipcMain.handle('agentra:team-task-set-status', (_event, params: unknown) =>
+    callCore(TEAM_TASK_SET_STATUS_METHOD, params, TeamTaskSetStatusResult),
+  )
   ipcMain.handle('agentra:plan-thread-list', (_event, params: unknown) =>
     callCore(PLAN_THREAD_LIST_METHOD, params, PlanThreadListResult),
   )
@@ -355,6 +409,9 @@ function registerIpc(): void {
   )
   ipcMain.handle('agentra:work-complete', (_event, params: unknown) =>
     callCore(WORK_COMPLETE_METHOD, params, WorkResult),
+  )
+  ipcMain.handle('agentra:work-files-list', (_event, params: unknown) =>
+    callCore(WORK_FILES_LIST_METHOD, params, WorkFilesListResult),
   )
 
   ipcMain.handle('agentra:worktree-list', (_event, params: unknown) =>

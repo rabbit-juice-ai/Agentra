@@ -14,6 +14,7 @@ import { ReworkRequestRepository } from '../db/repositories/rework-request-repos
 import { WorkRepository } from '../db/repositories/work-repository'
 import { WorkflowRepository } from '../db/repositories/workflow-repository'
 import { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
+import type { CheckpointService } from '../services/checkpoint-service'
 import { WorkflowDefinitionService } from '../services/workflow-definition-service'
 import { WorktreeService } from '../services/worktree-service'
 import { WorkflowAssignmentResolver } from './assignment-resolver'
@@ -131,6 +132,7 @@ function setup(
   rework?: TestResultReworkPort,
   taskEvents?: TaskEventSink,
   assignmentOverride?: (runId: string, nodeKey: string) => string | null,
+  checkpoints?: Pick<CheckpointService, 'createForExecution'>,
 ): {
   db: Database
   bridge: WorkflowExecutionBridge
@@ -228,6 +230,7 @@ function setup(
     rework: rework ?? reworkService,
     ...(taskEvents ? { taskEvents } : {}),
     ...(assignmentOverride ? { assignmentOverride } : {}),
+    ...(checkpoints ? { checkpoints } : {}),
     now: () => NOW,
   })
 
@@ -451,6 +454,36 @@ describe('WorkflowExecutionBridge · 任务事件', () => {
       expect(events.map((event) => event.kind)).toEqual(['started', 'succeeded', 'verification'])
       expect(events[0]).toMatchObject({ nodeKey: 'task_1', attempt: 1, agentId: 'agent-1' })
       expect(events[2]).toMatchObject({ passed: true, relatedTasks: [] })
+    } finally {
+      h.close()
+    }
+  })
+
+  it('blocks workflow progression when checkpoint policy reports high risk', async () => {
+    const h = setup(undefined, undefined, undefined, {
+      createForExecution: () => ({
+        outcome: 'created',
+        checkpointId: 'chk-1',
+        blocked: true,
+        riskLevel: 'high',
+        evidenceStatus: 'invalid',
+        sideEffectCompleteness: 'not_tracked',
+        reasons: ['RISK_TOO_HIGH'],
+      }),
+    })
+    try {
+      h.outputs.set('exe-1', {
+        pass: true,
+        failureReason: '',
+        relatedTasks: [],
+        impactScope: 'none',
+        relatedArtifacts: [],
+      })
+      await h.bridge.onNodeStarted(h.context)
+      h.bridge.onExecutionFinished(execution('exe-1', 'succeeded', 0))
+      expect(
+        h.db.prepare('SELECT status FROM workflow_runs WHERE id = ?').get(h.context.run.id),
+      ).toEqual({ status: 'reconciliation_required' })
     } finally {
       h.close()
     }

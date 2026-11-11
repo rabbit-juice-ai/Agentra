@@ -27,6 +27,7 @@ export type UpdateTeamInput = {
   name?: string
   description?: string
   instructions?: string
+  leaderAgentId?: string | null
 }
 
 /** Team 领域服务：CRUD + 成员管理（归档而非物理删除，DATABASE §5）。 */
@@ -49,6 +50,7 @@ export class TeamService {
       name: requireText(input.name, 'name'),
       description: input.description ?? '',
       instructions: input.instructions?.trim() ?? '',
+      leaderAgentId: null,
       settings: {},
       status: 'active',
       createdAt: now,
@@ -76,15 +78,52 @@ export class TeamService {
     if (team.status === 'archived') {
       throw new RpcMethodError('INVALID_PARAMS', `team ${id} is archived and cannot be updated`)
     }
+    let leaderAgentId = team.leaderAgentId
+    if (input.leaderAgentId !== undefined) {
+      if (input.leaderAgentId === null) {
+        leaderAgentId = null
+      } else {
+        const leader = this.agents.get(input.leaderAgentId)
+        if (!leader) {
+          throw new RpcMethodError('AGENT_NOT_FOUND', `agent not found: ${input.leaderAgentId}`)
+        }
+        if (leader.status !== 'active') {
+          throw new RpcMethodError(
+            'INVALID_PARAMS',
+            `agent ${leader.id} is ${leader.status}, cannot be team leader`,
+          )
+        }
+        if (leader.accessMode !== 'analyze') {
+          throw new RpcMethodError(
+            'INVALID_PARAMS',
+            `agent ${leader.id} must use analyze access mode to be a team leader`,
+          )
+        }
+        leaderAgentId = leader.id
+      }
+    }
     const updated: TeamRecord = {
       ...team,
       name: input.name === undefined ? team.name : requireText(input.name, 'name'),
       description: input.description ?? team.description,
       instructions:
         input.instructions === undefined ? team.instructions : input.instructions.trim(),
+      leaderAgentId,
       updatedAt: this.now(),
     }
-    this.teams.update(updated)
+    transaction(this.db, () => {
+      // 队长必须同时是成员：设置队长与加入成员在同一事务内完成。
+      if (updated.leaderAgentId !== null && !this.teams.getMember(id, updated.leaderAgentId)) {
+        this.teams.addMember({
+          id: this.teams.newMemberId(),
+          teamId: id,
+          agentId: updated.leaderAgentId,
+          permissions: {},
+          joinedAt: updated.updatedAt,
+        })
+      }
+      this.teams.update(updated)
+    })
     return updated
   }
 
@@ -131,7 +170,13 @@ export class TeamService {
   }
 
   removeMember(teamId: string, agentId: string): void {
-    this.get(teamId)
+    const team = this.get(teamId)
+    if (team.leaderAgentId === agentId) {
+      throw new RpcMethodError(
+        'INVALID_PARAMS',
+        `agent ${agentId} is the team leader; transfer leadership before removing the member`,
+      )
+    }
     if (!this.teams.removeMember(teamId, agentId)) {
       throw new RpcMethodError('INVALID_PARAMS', `agent ${agentId} is not a member of ${teamId}`)
     }

@@ -77,6 +77,59 @@ export class WorkflowDefinitionService {
     )
   }
 
+  /**
+   * StartRun 专用：在调用方事务内创建 template + draft + published version。
+   * 不自己开事务；任何失败由调用方整体回滚，避免 orphan workflow version。
+   */
+  createPublishedVersionInTransaction(
+    input: {
+      name: string
+      description?: string
+      category?: string
+      definition: WorkflowDefinition
+    },
+    now: string,
+  ): WorkflowVersionRecord {
+    const name = input.name.trim()
+    if (name.length === 0) {
+      throw new WorkflowDefinitionError('INVALID_DEFINITION', 'template name must not be blank')
+    }
+    const definition = this.validate(input.definition)
+    const checksum = computeChecksum(definition)
+    const template = this.workflows.createTemplate(
+      {
+        id: newId('wft'),
+        name,
+        description: input.description?.trim(),
+        category: input.category?.trim(),
+      },
+      now,
+    )
+    const version = this.workflows.insertVersion(
+      {
+        id: newId('wfv'),
+        templateId: template.id,
+        version: this.workflows.nextVersionNumber(template.id),
+        schemaVersion: definition.schemaVersion,
+        definitionJson: JSON.stringify(definition),
+        checksum,
+      },
+      now,
+    )
+    if (!this.workflows.casPublish(version.id, now)) {
+      throw new WorkflowDefinitionError(
+        'CAS_FAILED',
+        `workflow version ${version.id} publish conflict`,
+        [{ violation: 'cas_failed', message: 'concurrent publish detected' }],
+      )
+    }
+    const published = this.workflows.getVersion(version.id)
+    if (!published) {
+      throw new WorkflowDefinitionError('NOT_FOUND', `workflow version ${version.id} not found`)
+    }
+    return published
+  }
+
   getTemplate(id: string): WorkflowTemplateRecord {
     const template = this.workflows.getTemplate(id)
     if (!template) {

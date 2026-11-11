@@ -38,7 +38,7 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 0,
-        to: 26,
+        to: 34,
         applied: [
           'phase1_agent_runtime',
           'phase1_tool_permissions_and_provider_auth',
@@ -66,9 +66,17 @@ describe('migrate', () => {
           'agent_system_agents',
           'team_members_drop_role',
           'team_instructions',
+          'team_leader',
+          'plan_dispatch',
+          'team_collaboration',
+          'team_task_run_steps',
+          'work_acceptance_and_task_memory',
+          'task_checkpoints',
+          'task_recovery_attempts',
+          'workflow_node_recovery',
         ],
       })
-      expect(currentUserVersion(db)).toBe(26)
+      expect(currentUserVersion(db)).toBe(34)
     } finally {
       db.close()
     }
@@ -81,8 +89,16 @@ describe('migrate', () => {
         'audit_logs',
         'execution_logs',
         'executions',
+        'planner_messages',
         'runtime_providers',
         'team_members',
+        'team_task_messages',
+        'team_task_run_steps',
+        'task_memories',
+        'task_checkpoints',
+        'task_recovery_attempts',
+        'team_task_runs',
+        'team_task_subtasks',
         'teams',
         'work_teams',
         'works',
@@ -92,16 +108,62 @@ describe('migrate', () => {
     )
   })
 
+  it('adds team collaboration fields and tables while preserving old works (v29)', () => {
+    const file = tempDb()
+    const db = openDatabase(file)
+    try {
+      migrate(
+        db,
+        MIGRATIONS.filter((migration) => migration.version <= 28),
+      )
+      db.prepare(
+        `INSERT INTO works (
+          id, name, description, objective, status, priority, root_path, repository_path,
+          settings_json, created_at, updated_at, completed_at
+        ) VALUES ('work-old', 'Old', '', '', 'active', 'normal', '/tmp', NULL, '{}', 't0', 't0', NULL)`,
+      ).run()
+      const result = migrate(db)
+      expect(result).toEqual({
+        from: 28,
+        to: 34,
+        applied: [
+          'team_collaboration',
+          'team_task_run_steps',
+          'work_acceptance_and_task_memory',
+          'task_checkpoints',
+          'task_recovery_attempts',
+          'workflow_node_recovery',
+        ],
+      })
+      expect(
+        db
+          .prepare(
+            `SELECT collaboration_mode, owner_team_id, issue_status, assignee_agent_id
+             FROM works WHERE id = 'work-old'`,
+          )
+          .get(),
+      ).toEqual({
+        collaboration_mode: 'workflow',
+        owner_team_id: null,
+        issue_status: 'backlog',
+        assignee_agent_id: null,
+      })
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    } finally {
+      db.close()
+    }
+  })
+
   it('is idempotent when run repeatedly', () => {
     const file = tempDb()
     const db = openDatabase(file)
     try {
       migrate(db)
       const second = migrate(db)
-      expect(second).toEqual({ from: 26, to: 26, applied: [] })
+      expect(second).toEqual({ from: 34, to: 34, applied: [] })
       const third = migrate(db, MIGRATIONS)
       expect(third.applied).toEqual([])
-      expect(currentUserVersion(db)).toBe(26)
+      expect(currentUserVersion(db)).toBe(34)
     } finally {
       db.close()
     }
@@ -115,7 +177,7 @@ describe('migrate', () => {
 
     const second = openDatabase(file)
     try {
-      expect(currentUserVersion(second)).toBe(26)
+      expect(currentUserVersion(second)).toBe(34)
       const journal = second.prepare('PRAGMA journal_mode').get() as { journal_mode: string }
       expect(journal.journal_mode).toBe('wal')
       const fk = second.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }
@@ -183,7 +245,7 @@ describe('migrate', () => {
       const result = migrate(db)
       expect(result).toEqual({
         from: 2,
-        to: 26,
+        to: 34,
         applied: [
           'phase2_team_work_assignment',
           'phase2_worktree_and_workdir_locks',
@@ -209,6 +271,14 @@ describe('migrate', () => {
           'agent_system_agents',
           'team_members_drop_role',
           'team_instructions',
+          'team_leader',
+          'plan_dispatch',
+          'team_collaboration',
+          'team_task_run_steps',
+          'work_acceptance_and_task_memory',
+          'task_checkpoints',
+          'task_recovery_attempts',
+          'workflow_node_recovery',
         ],
       })
 
@@ -537,7 +607,21 @@ describe('migrate', () => {
       ).run()
 
       const result = migrate(db)
-      expect(result).toEqual({ from: 25, to: 26, applied: ['team_instructions'] })
+      expect(result).toEqual({
+        from: 25,
+        to: 34,
+        applied: [
+          'team_instructions',
+          'team_leader',
+          'plan_dispatch',
+          'team_collaboration',
+          'team_task_run_steps',
+          'work_acceptance_and_task_memory',
+          'task_checkpoints',
+          'task_recovery_attempts',
+          'workflow_node_recovery',
+        ],
+      })
       expect(db.prepare('SELECT id, name, description, instructions FROM teams').get()).toEqual({
         id: 'team-1',
         name: 'T',

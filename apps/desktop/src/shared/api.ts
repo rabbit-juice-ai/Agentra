@@ -34,6 +34,8 @@ import type {
   ExecutionStartParams,
   HealthResult,
   PlanApproveParams,
+  PlanAssignTaskParams,
+  PlanAssignTaskResult,
   PlanCommentParams,
   PlanCommentResult,
   PlanConvertToProjectParams,
@@ -41,6 +43,8 @@ import type {
   PlanConvertToTaskParams,
   PlanConvertToTaskResult,
   PlanDecisionResult,
+  PlanDispatchParams,
+  PlanDispatchResult,
   PlanGenerateParams,
   PlanGenerateResult,
   PlanGetParams,
@@ -49,6 +53,13 @@ import type {
   PlanListByWorkResult,
   PlanListRecentParams,
   PlanListRecentResult,
+  PlannerActionParams,
+  PlannerActionRejectParams,
+  PlannerActionResult,
+  PlannerChatGetResult,
+  PlannerChatSendParams,
+  PlannerChatSendResult,
+  PlannerEnsureResult,
   PlanReassignTaskParams,
   PlanReassignTaskResult,
   PlanRejectParams,
@@ -83,8 +94,16 @@ import type {
   TeamMemberRemoveParams,
   TeamMemberResult,
   TeamResult,
+  TeamTaskCommentParams,
+  TeamTaskCommentResult,
+  TeamTaskGetParams,
+  TeamTaskGetResult,
+  TeamTaskSetStatusParams,
+  TeamTaskSetStatusResult,
   TeamUpdateParams,
   WorkCreateParams,
+  WorkFilesListParams,
+  WorkFilesListResult,
   WorkflowRunGetParams,
   WorkflowRunGetResult,
   WorkIdParams,
@@ -115,6 +134,12 @@ export const BACKUP_LIST_DEFAULT_LIMIT = 50
 export const PLAN_GENERATE_TIMEOUT_MS = 120_000
 export const PLAN_START_RUN_TIMEOUT_MS = 60_000
 export const PLAN_REASSIGN_TIMEOUT_MS = 30_000
+/** 队长派工需要等待一次本地 CLI 完成，和 Planner 同一预算。 */
+export const PLAN_DISPATCH_TIMEOUT_MS = 120_000
+/** Planner 聊天需要等待一次本地 CLI 完成。 */
+export const PLANNER_CHAT_TIMEOUT_MS = 120_000
+/** 团队线程评论/注入本身不等待模型，只排队。 */
+export const TEAM_TASK_COMMENT_TIMEOUT_MS = 30_000
 
 /** Provider 模型读取需要启动一次 CLI 子进程，放宽 IPC/Daemon 超时。 */
 export const PROVIDER_MODELS_TIMEOUT_MS = 25_000
@@ -175,6 +200,17 @@ export type AgentraApi = {
   approvePlan(params: PlanApproveParams): Promise<RpcResult<PlanDecisionResult>>
   rejectPlan(params: PlanRejectParams): Promise<RpcResult<PlanDecisionResult>>
   startPlanRun(params: PlanStartRunParams): Promise<RpcResult<PlanStartRunResult>>
+  dispatchPlan(params: PlanDispatchParams): Promise<RpcResult<PlanDispatchResult>>
+  assignPlanTask(params: PlanAssignTaskParams): Promise<RpcResult<PlanAssignTaskResult>>
+
+  getPlannerChat(): Promise<RpcResult<PlannerChatGetResult>>
+  ensurePlannerAgent(): Promise<RpcResult<PlannerEnsureResult>>
+  sendPlannerChat(params: PlannerChatSendParams): Promise<RpcResult<PlannerChatSendResult>>
+  applyPlannerAction(params: PlannerActionParams): Promise<RpcResult<PlannerActionResult>>
+  rejectPlannerAction(params: PlannerActionRejectParams): Promise<RpcResult<PlannerActionResult>>
+  getTeamTask(params: TeamTaskGetParams): Promise<RpcResult<TeamTaskGetResult>>
+  commentTeamTask(params: TeamTaskCommentParams): Promise<RpcResult<TeamTaskCommentResult>>
+  setTeamTaskStatus(params: TeamTaskSetStatusParams): Promise<RpcResult<TeamTaskSetStatusResult>>
   listPlanThreads(params: PlanThreadListParams): Promise<RpcResult<PlanThreadListResult>>
   commentOnPlan(params: PlanCommentParams): Promise<RpcResult<PlanCommentResult>>
   reassignPlanTask(params: PlanReassignTaskParams): Promise<RpcResult<PlanReassignTaskResult>>
@@ -216,6 +252,7 @@ export type AgentraApi = {
   pauseWork(params: WorkIdParams): Promise<RpcResult<WorkResult>>
   resumeWork(params: WorkIdParams): Promise<RpcResult<WorkResult>>
   completeWork(params: WorkIdParams): Promise<RpcResult<WorkResult>>
+  listWorkFiles(params: WorkFilesListParams): Promise<RpcResult<WorkFilesListResult>>
 
   // ---- 阶段 2：Assignment ----
   listWorktrees(params: { workId: string }): Promise<RpcResult<WorktreeListResult>>

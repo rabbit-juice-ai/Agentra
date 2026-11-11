@@ -12,6 +12,7 @@ import {
 } from '@agentra/protocol'
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../services/api'
+import { toAvatarDataUrl, validateAvatarFile } from '../utils/avatar-image'
 import { AgentAvatar } from './AgentAvatar'
 import { Icon } from './Icon'
 import { Modal } from './Modal'
@@ -56,29 +57,6 @@ const ACCESS_MODE_OPTIONS: {
 ]
 
 const CUSTOM_MODEL = '__custom__'
-
-const AVATAR_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
-const AVATAR_MAX_INPUT_BYTES = 5 * 1024 * 1024
-const AVATAR_SIZE = 128
-
-/** 本地图片 → 128×128 方形 data URL（居中裁剪），避免把原图直接写进数据库。 */
-async function toAvatarDataUrl(file: File): Promise<string> {
-  const bitmap = await createImageBitmap(file)
-  try {
-    const canvas = document.createElement('canvas')
-    canvas.width = AVATAR_SIZE
-    canvas.height = AVATAR_SIZE
-    const context = canvas.getContext('2d')
-    if (!context) throw new Error('canvas unavailable')
-    const scale = Math.max(AVATAR_SIZE / bitmap.width, AVATAR_SIZE / bitmap.height)
-    const width = bitmap.width * scale
-    const height = bitmap.height * scale
-    context.drawImage(bitmap, (AVATAR_SIZE - width) / 2, (AVATAR_SIZE - height) / 2, width, height)
-    return canvas.toDataURL('image/webp', 0.85)
-  } finally {
-    bitmap.close()
-  }
-}
 
 /**
  * Agent 创建/编辑弹框：只收集输入。
@@ -184,12 +162,9 @@ export function AgentForm({
 
   const handleAvatarFile = async (file: File | undefined): Promise<void> => {
     if (!file) return
-    if (!AVATAR_IMAGE_TYPES.has(file.type)) {
-      setAvatarError('请选择 PNG、JPG、WebP 或 GIF 图片')
-      return
-    }
-    if (file.size > AVATAR_MAX_INPUT_BYTES) {
-      setAvatarError('图片不能超过 5 MB')
+    const validationError = validateAvatarFile(file)
+    if (validationError) {
+      setAvatarError(validationError)
       return
     }
     try {

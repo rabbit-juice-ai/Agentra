@@ -65,4 +65,16 @@ export class ExecutionLogRepository {
       .all(executionId, afterSequence, limit) as LogRow[]
     return rows.map(toLog)
   }
+
+  /** Checkpoint 风险分级只读取 structured 流，避免扫描整段 stdout/stderr。 */
+  listStructured(executionId: string, limit = 2000): ExecutionLog[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM execution_logs
+         WHERE execution_id = ? AND stream = 'structured'
+         ORDER BY sequence_no ASC LIMIT ?`,
+      )
+      .all(executionId, limit) as LogRow[]
+    return rows.map(toLog)
+  }
 }

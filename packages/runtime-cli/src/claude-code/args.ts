@@ -10,6 +10,7 @@ export function buildClaudeArgs(config: StartExecutionConfig): string[] {
     '--verbose',
     '--output-format',
     'stream-json',
+    '--include-partial-messages',
     '--input-format',
     'stream-json',
     '--permission-prompt-tool',

@@ -124,7 +124,29 @@ function plan(overrides: Record<string, unknown> = {}) {
 function harness(
   output: unknown,
   status: Execution['status'] = 'succeeded',
-  options: { agents?: AgentProfile[]; providers?: RuntimeProviderRecord[] } = {},
+  options: {
+    agents?: AgentProfile[]
+    providers?: RuntimeProviderRecord[]
+    teams?: {
+      get(id: string): {
+        id: string
+        name: string
+        description: string
+        instructions: string
+        leaderAgentId: string | null
+        status: string
+      } | null
+      list(): {
+        id: string
+        name: string
+        description: string
+        instructions: string
+        leaderAgentId: string | null
+        status: string
+      }[]
+      listMembers(teamId: string): { agentId: string }[]
+    }
+  } = {},
 ) {
   const created: AgentProfile[] = []
   const updates: string[] = []
@@ -197,6 +219,7 @@ function harness(
       },
     },
     providers: { list: () => options.providers ?? [provider()] },
+    ...(options.teams ? { teams: options.teams } : {}),
     extractOutput: () => output as Record<string, unknown>,
     pollIntervalMs: 0,
     timeoutMs: 100,
@@ -432,5 +455,74 @@ describe('PlannerService', () => {
     expect(invalid.violations.map((violation) => violation.code)).toEqual(
       expect.arrayContaining(['dependency_cycle', 'unknown_verification_target']),
     )
+  })
+
+  it('validates team ownership without deciding the final team member', () => {
+    const team = {
+      id: 'team-1',
+      name: 'Delivery',
+      description: '',
+      instructions: '',
+      leaderAgentId: 'agt-qa',
+      status: 'active',
+    }
+    const teams = {
+      get: (id: string) => (id === team.id ? team : null),
+      list: () => [team],
+      listMembers: () => [{ agentId: 'agt-frontend' }, { agentId: 'agt-qa' }],
+    }
+    const { service } = harness(undefined, 'succeeded', { teams })
+    const teamPlan = plan({
+      tasks: [
+        {
+          key: 'team-build',
+          title: 'Team build',
+          description: 'build',
+          responsibilityRole: 'frontend',
+          requiredAccessMode: 'edit',
+          teamId: 'team-1',
+        },
+      ],
+    })
+    const valid = service.validate(teamPlan, [FRONTEND, QA])
+    expect(valid.valid).toBe(true)
+    expect(valid.assignments).toEqual([{ taskKey: 'team-build', agentId: null, agentName: null }])
+
+    const outsider = service.validate(
+      plan({
+        tasks: [
+          {
+            key: 'team-build',
+            title: 'Team build',
+            description: 'build',
+            responsibilityRole: 'frontend',
+            requiredAccessMode: 'edit',
+            teamId: 'team-1',
+            suggestedAgentId: 'agt-outsider',
+          },
+        ],
+      }),
+      [FRONTEND, QA, agent({ id: 'agt-outsider', name: 'Outsider' })],
+    )
+    expect(outsider.violations.map((violation) => violation.code)).toContain(
+      'agent_not_team_member',
+    )
+
+    const unknownTeam = service.validate(
+      plan({
+        tasks: [
+          {
+            key: 'team-build',
+            title: 'Team build',
+            description: 'build',
+            responsibilityRole: 'frontend',
+            requiredAccessMode: 'edit',
+            teamId: 'team-missing',
+          },
+        ],
+      }),
+      [FRONTEND, QA],
+    )
+    expect(unknownTeam.violations.map((violation) => violation.code)).toContain('unknown_team')
   })
 })

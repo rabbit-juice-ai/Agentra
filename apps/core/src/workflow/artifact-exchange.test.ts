@@ -66,6 +66,22 @@ describe('Artifact output extraction (normalized CLI logs)', () => {
       ]).extract('e'),
     ).toThrow(/Invalid/)
   })
+  it('uses the final result even when stdout exceeds the transfer budget', () => {
+    expect(
+      extractor([
+        { stream: 'stdout', content: 'x'.repeat(8_000_001) },
+        {
+          stream: 'structured',
+          content: JSON.stringify({ type: 'result', result: '{"reply":"done"}' }),
+        },
+      ]).extract('e'),
+    ).toEqual({ reply: 'done' })
+  })
+  it('rejects oversized stdout when no final result frame exists', () => {
+    expect(() =>
+      extractor([{ stream: 'stdout', content: 'x'.repeat(8_000_001) }]).extract('e'),
+    ).toThrow(/exceeds extraction budget/)
+  })
   it('describes test_result as flat output fields, not a nested contract descriptor', () => {
     const description = describeOutputContract({ profile: 'test_result', fields: [] })
     expect(description).toContain('top-level fields')

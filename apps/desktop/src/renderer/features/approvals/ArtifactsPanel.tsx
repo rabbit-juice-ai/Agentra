@@ -124,9 +124,7 @@ export function ArtifactsPanel({
       <PageHeader
         title="交付物"
         subtitle={
-          loadedWorkId
-            ? `${artifacts.length} 个交付物 · Work ${loadedWorkId}`
-            : '选择 Work 查看其运行产出的交付物'
+          loadedWorkId ? `${artifacts.length} 个交付物` : '选择 Work 查看其运行产出的交付物'
         }
         actions={
           fixedWorkId === undefined ? (
@@ -153,11 +151,7 @@ export function ArtifactsPanel({
                 加载
               </button>
             </>
-          ) : (
-            <span className="faint mono" style={{ fontSize: 11 }}>
-              {fixedWorkId}
-            </span>
-          )
+          ) : null
         }
       />
 

@@ -4,7 +4,11 @@ import type { WorkflowDefinition, WorkflowNode } from '@agentra/workflow-schema'
 import { type Database, transaction } from '../db/database'
 import type { NodeRunRecord, NodeRunRepository } from '../db/repositories/node-run-repository'
 import type { WorkRepository } from '../db/repositories/work-repository'
-import type { WorkflowRunRepository } from '../db/repositories/workflow-run-repository'
+import type {
+  WorkflowRunRecord,
+  WorkflowRunRepository,
+} from '../db/repositories/workflow-run-repository'
+import type { CheckpointService } from '../services/checkpoint-service'
 import type { WorktreeService } from '../services/worktree-service'
 import { WorkflowAssignmentError, type WorkflowAssignmentResolver } from './assignment-resolver'
 import type { DispatchContext } from './dispatch-gates'
@@ -127,6 +131,17 @@ export type ExecutionBridgeDeps = {
   ) => void
   rework?: TestResultReworkPort
   taskEvents?: TaskEventSink
+  /** Phase 1B-2B：恢复执行识别与 NodeRun 终态观察器。 */
+  recoveryExecution?: {
+    isRecoveryExecution(executionId: string): boolean
+    onWorkflowNodeTerminal?(input: {
+      nodeRunId: string
+      status: 'succeeded' | 'failed' | 'cancelled' | 'reconciliation_required'
+      reasonCode?: string
+      executionId?: string
+    }): void
+  }
+  checkpoints?: Pick<CheckpointService, 'createForExecution'>
   logger?: ExecutionBridgeLogger
   now?: () => string
 }
@@ -227,6 +242,8 @@ export class WorkflowExecutionBridge {
     if (!nodeRunId) return
     const nodeRun = this.deps.nodes.get(nodeRunId)
     if (nodeRun === null || nodeRun.status !== 'running') return
+    const isRecoveryExecution =
+      this.deps.recoveryExecution?.isRecoveryExecution(execution.id) === true
 
     const run = this.deps.runs.get(nodeRun.workflowRunId)
     if (!run) return
@@ -238,12 +255,24 @@ export class WorkflowExecutionBridge {
     if (this.deps.workInterrupted?.(execution.id)) {
       // 中断回合不是完整交付；用户恢复 Work 后才允许用新 attempt 续接。
       this.deps.nodes.transition(nodeRun.id, ['running'], 'reconciliation_required', now)
+      this.notifyWorkflowNodeTerminal(
+        nodeRun.id,
+        'reconciliation_required',
+        'WORK_INTERRUPTED',
+        execution.id,
+      )
       return
     }
     if (execution.status === 'cancelled') {
       const cancelled = this.deps.nodes.transition(nodeRun.id, ['running'], 'cancelled', now)
       if (!cancelled) this.warnUnchanged(nodeRun, node.key, 'cancelled', execution.id)
-      else
+      else {
+        this.notifyWorkflowNodeTerminal(
+          nodeRun.id,
+          'cancelled',
+          'execution_cancelled',
+          execution.id,
+        )
         this.emitTaskEvent({
           kind: 'cancelled',
           runId: run.id,
@@ -252,17 +281,35 @@ export class WorkflowExecutionBridge {
           attempt: nodeRun.attempt,
           agentId: execution.agentId,
         })
+      }
+      this.createCheckpointForExecution(execution, run, now)
       return
     }
     if (execution.status !== 'succeeded') {
-      this.retryOrFail(
-        nodeRun,
-        node,
-        definition,
-        `execution ${execution.status}`,
-        { executionId: execution.id, exitCode: execution.exitCode },
-        now,
-      )
+      if (isRecoveryExecution) {
+        const marked = this.deps.nodes.fail(
+          nodeRun.id,
+          ['running'],
+          { category: 'internal', nodeKey: node.key, message: `execution ${execution.status}` },
+          now,
+        )
+        if (marked)
+          this.notifyWorkflowNodeTerminal(
+            nodeRun.id,
+            'failed',
+            `execution_${execution.status}`,
+            execution.id,
+          )
+      } else {
+        this.retryOrFail(
+          nodeRun,
+          node,
+          definition,
+          `execution ${execution.status}`,
+          { executionId: execution.id, exitCode: execution.exitCode },
+          now,
+        )
+      }
       this.emitTaskEvent({
         kind: 'failed',
         runId: run.id,
@@ -276,6 +323,7 @@ export class WorkflowExecutionBridge {
           nodeRun.attempt <
           (node.config.retryPolicy?.maxAttempts ?? definition.settings.defaults.maxAttempts),
       })
+      this.createCheckpointForExecution(execution, run, now)
       return
     }
 
@@ -293,6 +341,12 @@ export class WorkflowExecutionBridge {
           details: { executionId: execution.id },
         },
         now,
+      )
+      this.notifyWorkflowNodeTerminal(
+        nodeRun.id,
+        'failed',
+        'output_contract_violation',
+        execution.id,
       )
       this.emitTaskEvent({
         kind: 'failed',
@@ -321,7 +375,13 @@ export class WorkflowExecutionBridge {
         now,
       )
       if (!marked) this.warnUnchanged(nodeRun, node.key, 'output_contract_violation', execution.id)
-      else
+      else {
+        this.notifyWorkflowNodeTerminal(
+          nodeRun.id,
+          'failed',
+          'output_contract_violation',
+          execution.id,
+        )
         this.emitTaskEvent({
           kind: 'failed',
           runId: run.id,
@@ -333,6 +393,7 @@ export class WorkflowExecutionBridge {
           message: violation,
           willRetry: false,
         })
+      }
       return
     }
 
@@ -360,6 +421,7 @@ export class WorkflowExecutionBridge {
         },
         now,
       )
+      this.notifyWorkflowNodeTerminal(nodeRun.id, 'failed', 'output_commit_failed', execution.id)
       this.emitTaskEvent({
         kind: 'failed',
         runId: run.id,
@@ -381,6 +443,8 @@ export class WorkflowExecutionBridge {
       attempt: nodeRun.attempt,
       agentId: execution.agentId,
     })
+    this.notifyWorkflowNodeTerminal(nodeRun.id, 'succeeded', 'execution_succeeded', execution.id)
+    if (this.createCheckpointForExecution(execution, run, now)) return
     if (output && node.config.outputContract.profile === 'test_result') {
       this.emitTaskEvent({
         kind: 'verification',
@@ -417,6 +481,58 @@ export class WorkflowExecutionBridge {
           error: error instanceof Error ? error.message : String(error),
         })
       }
+    }
+  }
+
+  private notifyWorkflowNodeTerminal(
+    nodeRunId: string,
+    status: 'succeeded' | 'failed' | 'cancelled' | 'reconciliation_required',
+    reasonCode: string,
+    executionId: string,
+  ): void {
+    try {
+      this.deps.recoveryExecution?.onWorkflowNodeTerminal?.({
+        nodeRunId,
+        status,
+        reasonCode,
+        executionId,
+      })
+    } catch (error) {
+      this.deps.logger?.warn('workflow node terminal observer failed', {
+        nodeRunId,
+        status,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  private createCheckpointForExecution(
+    execution: Execution,
+    run: WorkflowRunRecord,
+    now: string,
+  ): boolean {
+    if (!this.deps.checkpoints) return false
+    try {
+      const result = this.deps.checkpoints.createForExecution(execution.id, 'node')
+      if (result.blocked) {
+        this.deps.runs.transition(run.id, ['running'], 'reconciliation_required', now)
+        this.deps.logger?.warn('high-risk checkpoint blocked workflow progression', {
+          executionId: execution.id,
+          runId: run.id,
+          checkpointId: result.checkpointId,
+          reasons: result.reasons,
+        })
+        return true
+      }
+      return false
+    } catch (error) {
+      this.deps.runs.transition(run.id, ['running'], 'reconciliation_required', now)
+      this.deps.logger?.warn('checkpoint creation failed; workflow run blocked', {
+        executionId: execution.id,
+        runId: run.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return true
     }
   }
 

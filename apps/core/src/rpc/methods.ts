@@ -90,11 +90,13 @@ import {
   type MaintenanceStatusResult,
   MaintenanceStatusResultValue,
   PLAN_APPROVE_METHOD,
+  PLAN_ASSIGN_TASK_METHOD,
   PLAN_COMMENT_METHOD,
   PLAN_CONTINUE_REWORK_METHOD,
   PLAN_CONVERT_TO_PROJECT_METHOD,
   PLAN_CONVERT_TO_TASK_METHOD,
   PLAN_CREATE_DRAFT_METHOD,
+  PLAN_DISPATCH_METHOD,
   PLAN_GENERATE_METHOD,
   PLAN_GET_METHOD,
   PLAN_LIST_BY_WORK_METHOD,
@@ -104,7 +106,14 @@ import {
   PLAN_START_RUN_METHOD,
   PLAN_TAKE_OVER_REWORK_METHOD,
   PLAN_THREAD_LIST_METHOD,
+  PLANNER_ACTION_APPLY_METHOD,
+  PLANNER_ACTION_REJECT_METHOD,
+  PLANNER_CHAT_GET_METHOD,
+  PLANNER_CHAT_SEND_METHOD,
+  PLANNER_ENSURE_METHOD,
   PlanApproveParams,
+  PlanAssignTaskParams,
+  PlanAssignTaskResult,
   PlanCommentParams,
   PlanCommentResult,
   PlanConvertToProjectParams,
@@ -113,6 +122,8 @@ import {
   PlanConvertToTaskResult,
   PlanCreateDraftParams,
   PlanDecisionResult,
+  PlanDispatchParams,
+  PlanDispatchResult,
   PlanGenerateParams,
   PlanGenerateResult,
   PlanGetParams,
@@ -121,6 +132,15 @@ import {
   PlanListByWorkResult,
   PlanListRecentParams,
   PlanListRecentResult,
+  PlannerActionParams,
+  PlannerActionRejectParams,
+  PlannerActionResult,
+  PlannerChatGetParams,
+  PlannerChatGetResult,
+  PlannerChatSendParams,
+  PlannerChatSendResult,
+  PlannerEnsureParams,
+  PlannerEnsureResult,
   PlanReassignTaskParams,
   PlanReassignTaskResult,
   PlanRejectParams,
@@ -170,6 +190,9 @@ import {
   TEAM_MEMBER_ADD_METHOD,
   TEAM_MEMBER_LIST_METHOD,
   TEAM_MEMBER_REMOVE_METHOD,
+  TEAM_TASK_COMMENT_METHOD,
+  TEAM_TASK_GET_METHOD,
+  TEAM_TASK_SET_STATUS_METHOD,
   TEAM_UPDATE_METHOD,
   TeamArchiveParams,
   TeamCreateParams,
@@ -183,23 +206,40 @@ import {
   TeamMemberRemoveResult,
   TeamMemberResult,
   TeamResult,
+  TeamTaskCommentParams,
+  TeamTaskCommentResult,
+  TeamTaskGetParams,
+  TeamTaskGetResult,
+  TeamTaskSetStatusParams,
+  TeamTaskSetStatusResult,
   TeamUpdateParams,
   WORK_ACTIVATE_METHOD,
   WORK_ARCHIVE_METHOD,
   WORK_COMPLETE_METHOD,
   WORK_CREATE_METHOD,
+  WORK_FILES_LIST_METHOD,
   WORK_GET_METHOD,
   WORK_LINK_TEAM_METHOD,
   WORK_LIST_METHOD,
   WORK_PAUSE_METHOD,
+  WORK_RECOVERY_PLAN_METHOD,
+  WORK_RECOVERY_START_METHOD,
   WORK_RESUME_METHOD,
   WORK_TERMINATE_METHOD,
+  WORKFLOW_NODE_RECOVERY_PLAN_METHOD,
+  WORKFLOW_NODE_RECOVERY_START_METHOD,
   WORKFLOW_RUN_GET_METHOD,
   WORKTREE_CREATE_METHOD,
   WORKTREE_LIST_METHOD,
   WORKTREE_REMOVE_METHOD,
   WorkCreateParams,
   type Work as WorkDto,
+  WorkFilesListParams,
+  WorkFilesListResult,
+  WorkflowNodeRecoveryPlanParams,
+  WorkflowNodeRecoveryPlanResult,
+  WorkflowNodeRecoveryStartParams,
+  WorkflowNodeRecoveryStartResult,
   WorkflowRunGetParams,
   WorkflowRunGetResult,
   WorkGetParams,
@@ -207,6 +247,10 @@ import {
   WorkLinkTeamParams,
   WorkListParams,
   WorkListResult,
+  WorkRecoveryPlanParams,
+  WorkRecoveryPlanResult,
+  WorkRecoveryStartParams,
+  WorkRecoveryStartResult,
   WorkResult,
   WorktreeCreateParams,
   WorktreeCreateResult,
@@ -227,19 +271,27 @@ import type { BackupRpcService } from '../services/backup-rpc-service'
 import type { CoreEventHub } from '../services/event-hub'
 import type { ExecutionService } from '../services/execution-service'
 import { coreHealthMethods } from '../services/health'
+import { PlanAssignmentError } from '../services/plan-assignment-service'
 import type { PlanService } from '../services/plan-service'
 import { PlanServiceError } from '../services/plan-service'
+import { PlanStartError } from '../services/plan-start-service'
+import type { PlannerChatService } from '../services/planner-chat-service'
 import type { PlannerService } from '../services/planner-service'
 import type { ProjectService } from '../services/project-service'
 import { ProjectServiceError } from '../services/project-service'
 import type { ProviderRegistry } from '../services/provider-registry'
+import type { RecoveryService } from '../services/recovery-service'
 import type { RestoreCoordinator } from '../services/restore-coordinator'
 import { RestoreCoordinatorError } from '../services/restore-coordinator'
 import type { SkillService } from '../services/skill-service'
+import type { TeamCollaborationService } from '../services/team-collaboration-service'
+import { TeamDispatchError } from '../services/team-dispatch-service'
 import type { TeamService } from '../services/team-service'
 import type { WorkService } from '../services/work-service'
+import type { WorkspaceFilesService } from '../services/workspace-files-service'
 import type { WorktreeService } from '../services/worktree-service'
 import type { WorkflowEngine } from '../workflow/engine'
+import type { WorkflowNodeRecoveryService } from '../workflow/node-recovery-service'
 import { WorkflowRunQueryError, type WorkflowRunQueryService } from '../workflow/run-query-service'
 import type { MethodTable, RpcMethodDef } from './dispatcher'
 
@@ -248,6 +300,8 @@ export type CoreMethodServices = {
   skills: SkillService
   agentDesigner?: AgentDesignerService
   planner?: PlannerService
+  plannerChat?: PlannerChatService
+  teamCollaboration?: TeamCollaborationService
   plans?: PlanService
   projects?: ProjectService
   registry: ProviderRegistry
@@ -255,6 +309,9 @@ export type CoreMethodServices = {
   hub: CoreEventHub
   teams: TeamService
   works: WorkService
+  recoveries?: RecoveryService
+  workflowNodeRecovery?: WorkflowNodeRecoveryService
+  workspaceFiles: WorkspaceFilesService
   workEffects?: (id: string, action: string) => Promise<void>
   assignments: AssignmentService
   worktrees: WorktreeService
@@ -345,6 +402,16 @@ export function coreMethods(
     if (!services.plans) throw new RpcMethodError('NOT_READY', 'plans are not configured')
     return services.plans
   }
+  const requirePlannerChat = (): PlannerChatService => {
+    if (!services.plannerChat)
+      throw new RpcMethodError('NOT_READY', 'planner chat is not configured')
+    return services.plannerChat
+  }
+  const requireTeamCollaboration = (): TeamCollaborationService => {
+    if (!services.teamCollaboration)
+      throw new RpcMethodError('NOT_READY', 'team collaboration is not configured')
+    return services.teamCollaboration
+  }
   const requireProjects = (): ProjectService => {
     if (!services.projects) throw new RpcMethodError('NOT_READY', 'projects are not configured')
     return services.projects
@@ -358,6 +425,31 @@ export function coreMethods(
   const planError = (error: unknown): never => {
     if (error instanceof PlanServiceError) {
       throw new RpcMethodError('INVALID_PARAMS', error.message)
+    }
+    if (error instanceof PlanAssignmentError) {
+      throw new RpcMethodError('INVALID_PARAMS', error.message, { code: error.code })
+    }
+    if (error instanceof TeamDispatchError) {
+      const code = error.code === 'START_IN_PROGRESS' ? 'NOT_READY' : 'INVALID_PARAMS'
+      throw new RpcMethodError(code, error.message, { code: error.code })
+    }
+    if (error instanceof PlanStartError) {
+      if (error.code === 'PLAN_NOT_READY' || error.code === 'START_IN_PROGRESS') {
+        throw new RpcMethodError('NOT_READY', error.message, {
+          code: error.code,
+          violations: error.violations,
+        })
+      }
+      if (error.code === 'RUN_CREATE_FAILED') {
+        throw new RpcMethodError('INTERNAL', error.message, {
+          code: error.code,
+          violations: error.violations,
+        })
+      }
+      throw new RpcMethodError('INVALID_PARAMS', error.message, {
+        code: error.code,
+        violations: error.violations,
+      })
     }
     throw error
   }
@@ -485,6 +577,74 @@ export function coreMethods(
         } catch (error) {
           return planError(error)
         }
+      },
+    ),
+    [PLAN_DISPATCH_METHOD]: defineMethod(PlanDispatchParams, PlanDispatchResult, async (params) => {
+      try {
+        return await requirePlans().dispatch(params.planId)
+      } catch (error) {
+        return planError(error)
+      }
+    }),
+    [PLAN_ASSIGN_TASK_METHOD]: defineMethod(
+      PlanAssignTaskParams,
+      PlanAssignTaskResult,
+      (params) => {
+        try {
+          return requirePlans().assignTask(params)
+        } catch (error) {
+          return planError(error)
+        }
+      },
+    ),
+    [PLANNER_ENSURE_METHOD]: defineMethod(PlannerEnsureParams, PlannerEnsureResult, () => {
+      if (!services.planner) throw new RpcMethodError('NOT_READY', 'planner is not configured')
+      return { agent: services.planner.ensureAgent() }
+    }),
+    [PLANNER_CHAT_GET_METHOD]: defineMethod(
+      PlannerChatGetParams,
+      PlannerChatGetResult,
+      () => ({ messages: requirePlannerChat().listMessages() }),
+      'read',
+    ),
+    [PLANNER_CHAT_SEND_METHOD]: defineMethod(
+      PlannerChatSendParams,
+      PlannerChatSendResult,
+      async (params) => requirePlannerChat().send(params.content),
+    ),
+    [PLANNER_ACTION_APPLY_METHOD]: defineMethod(
+      PlannerActionParams,
+      PlannerActionResult,
+      async (params) => requirePlannerChat().applyAction(params.messageId, params.rootPath),
+    ),
+    [PLANNER_ACTION_REJECT_METHOD]: defineMethod(
+      PlannerActionRejectParams,
+      PlannerActionResult,
+      (params) => {
+        const message = requirePlannerChat().rejectAction(params.messageId, params.reason)
+        return { message, workId: null, teamId: null }
+      },
+    ),
+    [TEAM_TASK_GET_METHOD]: defineMethod(
+      TeamTaskGetParams,
+      TeamTaskGetResult,
+      (params) => {
+        const view = requireTeamCollaboration().get(params.workId)
+        return { ...view, work: toWorkDto(services, view.work.id) }
+      },
+      'read',
+    ),
+    [TEAM_TASK_COMMENT_METHOD]: defineMethod(
+      TeamTaskCommentParams,
+      TeamTaskCommentResult,
+      async (params) => requireTeamCollaboration().comment(params),
+    ),
+    [TEAM_TASK_SET_STATUS_METHOD]: defineMethod(
+      TeamTaskSetStatusParams,
+      TeamTaskSetStatusResult,
+      (params) => {
+        requireTeamCollaboration().setStatus(params.workId, params.status)
+        return { work: toWorkDto(services, params.workId) }
       },
     ),
     [PLAN_THREAD_LIST_METHOD]: defineMethod(
@@ -739,9 +899,63 @@ export function coreMethods(
       }),
       'read',
     ),
+    [WORK_FILES_LIST_METHOD]: defineMethod(
+      WorkFilesListParams,
+      WorkFilesListResult,
+      (params) => services.workspaceFiles.list(services.works.get(params.workId).rootPath),
+      'read',
+    ),
     [WORK_CREATE_METHOD]: defineMethod(WorkCreateParams, WorkResult, (params) => ({
       work: { ...services.works.create(params), teamIds: [] },
     })),
+    [WORK_RECOVERY_PLAN_METHOD]: defineMethod(
+      WorkRecoveryPlanParams,
+      WorkRecoveryPlanResult,
+      (params) => {
+        if (!services.recoveries) {
+          throw new RpcMethodError('NOT_READY', 'recovery service is not configured')
+        }
+        return { plan: services.recoveries.plan(params.workId, params.checkpointId) }
+      },
+      'read',
+    ),
+    [WORK_RECOVERY_START_METHOD]: defineMethod(
+      WorkRecoveryStartParams,
+      WorkRecoveryStartResult,
+      async (params) => {
+        if (!services.recoveries) {
+          throw new RpcMethodError('NOT_READY', 'recovery service is not configured')
+        }
+        return services.recoveries.start({
+          ...params,
+          actorType: 'user',
+          actorId: null,
+        })
+      },
+      'write',
+    ),
+    [WORKFLOW_NODE_RECOVERY_PLAN_METHOD]: defineMethod(
+      WorkflowNodeRecoveryPlanParams,
+      WorkflowNodeRecoveryPlanResult,
+      async (params) => {
+        if (!services.workflowNodeRecovery) {
+          throw new RpcMethodError('NOT_READY', 'workflow node recovery service is not configured')
+        }
+        return { plan: await services.workflowNodeRecovery.plan(params) }
+      },
+      'read',
+    ),
+    [WORKFLOW_NODE_RECOVERY_START_METHOD]: defineMethod(
+      WorkflowNodeRecoveryStartParams,
+      WorkflowNodeRecoveryStartResult,
+      async (params) => {
+        if (!services.workflowNodeRecovery) {
+          throw new RpcMethodError('NOT_READY', 'workflow node recovery service is not configured')
+        }
+        return services.workflowNodeRecovery.start(params)
+      },
+      'write',
+    ),
     [WORK_LINK_TEAM_METHOD]: defineMethod(WorkLinkTeamParams, WorkResult, (params) => {
       services.works.linkTeam(params.workId, params.teamId)
       return { work: toWorkDto(services, params.workId) }

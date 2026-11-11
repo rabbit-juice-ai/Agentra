@@ -11,6 +11,7 @@ export type TeamRecord = {
   name: string
   description: string
   instructions: string
+  leaderAgentId: string | null
   settings: Record<string, unknown>
   status: TeamStatus
   createdAt: string
@@ -33,6 +34,7 @@ type TeamRow = {
   name: string
   description: string
   instructions: string
+  leader_agent_id: string | null
   settings_json: string
   status: string
   created_at: string
@@ -57,6 +59,7 @@ function toTeam(row: TeamRow): TeamRecord {
     name: row.name,
     description: row.description,
     instructions: row.instructions,
+    leaderAgentId: row.leader_agent_id,
     settings: parseJsonColumn(JsonObject, row.settings_json, `teams.settings_json(${row.id})`),
     status: row.status,
     createdAt: row.created_at,
@@ -86,14 +89,15 @@ export class TeamRepository {
   insert(team: TeamRecord): void {
     this.db
       .prepare(
-        `INSERT INTO teams (id, name, description, instructions, settings_json, status, created_at, updated_at, archived_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO teams (id, name, description, instructions, leader_agent_id, settings_json, status, created_at, updated_at, archived_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         team.id,
         team.name,
         team.description,
         team.instructions,
+        team.leaderAgentId,
         serializeJsonColumn(JsonObject, team.settings, 'team.settings'),
         team.status,
         team.createdAt,
@@ -105,13 +109,14 @@ export class TeamRepository {
   update(team: TeamRecord): void {
     const result = this.db
       .prepare(
-        `UPDATE teams SET name = ?, description = ?, instructions = ?, settings_json = ?, status = ?,
-          updated_at = ?, archived_at = ? WHERE id = ?`,
+        `UPDATE teams SET name = ?, description = ?, instructions = ?, leader_agent_id = ?,
+          settings_json = ?, status = ?, updated_at = ?, archived_at = ? WHERE id = ?`,
       )
       .run(
         team.name,
         team.description,
         team.instructions,
+        team.leaderAgentId,
         serializeJsonColumn(JsonObject, team.settings, 'team.settings'),
         team.status,
         team.updatedAt,

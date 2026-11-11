@@ -1,12 +1,18 @@
 import type {
   AgentProfile,
   Assignment,
+  PlanDispatch,
   PlanGenerateResult,
+  PlanGetResult,
+  PlanReadiness,
   PlanRecord,
   PlanTask,
+  PlanTaskAssignment,
   PlanThreadView,
   Project,
   RuntimeProviderRecord,
+  Team,
+  TeamMember,
   Work,
 } from '@agentra/protocol'
 import { AGENT_ACCESS_MODE_LABEL } from '@agentra/protocol'
@@ -22,6 +28,9 @@ type Props = {
   projects: Project[]
   agents: AgentProfile[]
   providers: RuntimeProviderRecord[]
+  teams: Team[]
+  membersByTeam: Record<string, TeamMember[]>
+  onRefreshTeamMembers?: (teamId: string) => Promise<void>
   onWorksChanged?: () => void
   onProjectsChanged?: () => void
 }
@@ -45,10 +54,54 @@ const PLAN_STATUS_LABEL: Record<string, string> = {
   cancelled: '已取消',
 }
 
+const READINESS_LABEL: Record<PlanReadiness['state'], string> = {
+  pending_approval: '待审批',
+  rejected: '已拒绝',
+  pending_dispatch: '待派工',
+  dispatching: '派工中',
+  dispatch_failed: '派工失败',
+  ready: '已就绪',
+  starting: '启动中',
+  running: '执行中',
+  completed: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+}
+
+const ASSIGNMENT_SOURCE_LABEL: Record<PlanTaskAssignment['source'], string> = {
+  planner: 'Planner 建议',
+  leader: '队长派工',
+  user: '老板指定',
+  legacy: '旧计划沿用',
+}
+
+const DISPATCH_TONE: Record<PlanDispatch['status'], string> = {
+  pending: 'pending',
+  running: 'warn',
+  succeeded: 'done',
+  failed: 'danger',
+  cancelled: 'pending',
+}
+
+const DISPATCH_LABEL: Record<PlanDispatch['status'], string> = {
+  pending: '待派工',
+  running: '派工中',
+  succeeded: '已派工',
+  failed: '派工失败',
+  cancelled: '已取消',
+}
+
 function statusTone(status: string): string {
-  if (status === 'approved' || status === 'running' || status === 'completed') return 'done'
-  if (status === 'rejected' || status === 'failed') return 'danger'
-  if (status === 'pending_approval') return 'warn'
+  if (status === 'approved' || status === 'running' || status === 'completed' || status === 'ready')
+    return 'done'
+  if (status === 'rejected' || status === 'failed' || status === 'dispatch_failed') return 'danger'
+  if (
+    status === 'pending_approval' ||
+    status === 'pending_dispatch' ||
+    status === 'dispatching' ||
+    status === 'starting'
+  )
+    return 'warn'
   return 'pending'
 }
 
@@ -68,6 +121,9 @@ export function PlanPage({
   projects,
   agents,
   providers,
+  teams,
+  membersByTeam,
+  onRefreshTeamMembers,
   onWorksChanged,
   onProjectsChanged,
 }: Props) {
@@ -83,6 +139,13 @@ export function PlanPage({
   const [rejectOpen, setRejectOpen] = useState(false)
   const [threads, setThreads] = useState<PlanThreadView[]>([])
   const [savedPlans, setSavedPlans] = useState<PlanRecord[]>([])
+  const [planDetail, setPlanDetail] = useState<PlanGetResult | null>(null)
+  const [dispatchBusy, setDispatchBusy] = useState(false)
+  const [assignOpen, setAssignOpen] = useState(false)
+  const [assignTaskKey, setAssignTaskKey] = useState('')
+  const [assignAgentId, setAssignAgentId] = useState('')
+  const [assignReason, setAssignReason] = useState('')
+  const [assignBusy, setAssignBusy] = useState(false)
   const [selectedTaskKey, setSelectedTaskKey] = useState('')
   const [commentDraft, setCommentDraft] = useState('')
   const [runId, setRunId] = useState<string | null>(null)
@@ -116,8 +179,31 @@ export function PlanPage({
     void refreshSavedPlans(workId)
   }, [workId, refreshSavedPlans])
 
+  // 规划页可能先于团队页打开：按需拉取团队任务成员，供老板启动前改派。
+  const planTeamIds = (result?.plan.tasks ?? [])
+    .map((task) => task.teamId)
+    .filter((teamId): teamId is string => teamId !== null)
+    .join(',')
+  useEffect(() => {
+    if (!onRefreshTeamMembers) return
+    for (const teamId of new Set(planTeamIds.split(',').filter(Boolean))) {
+      if (!(teamId in membersByTeam)) void onRefreshTeamMembers(teamId)
+    }
+  }, [planTeamIds, membersByTeam, onRefreshTeamMembers])
+
   const activePlanId = result?.planId ?? null
   const activePlanStatus = result?.status ?? null
+
+  const refreshPlanDetail = useCallback(async (planId: string): Promise<PlanGetResult | null> => {
+    try {
+      const view = await api.getPlan({ planId })
+      setPlanDetail(view)
+      return view
+    } catch (err) {
+      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : String(err))
+      return null
+    }
+  }, [])
 
   // 运行中的计划需要 Work 的 Assignment 列表来计算「同角色可改派 Agent」。
   useEffect(() => {
@@ -154,6 +240,7 @@ export function PlanPage({
         status: view.plan.status,
       })
       setThreads(view.threads)
+      setPlanDetail(view)
       setRunId(view.plan.workflowRunId)
       setActivePlanWorkId(view.plan.workId)
       setWorkId(view.plan.workId ?? '')
@@ -177,6 +264,7 @@ export function PlanPage({
               : current,
           )
           setThreads(view.threads)
+          setPlanDetail(view)
         })
         .catch(() => undefined)
     }, 5000)
@@ -211,6 +299,7 @@ export function PlanPage({
       setResult(generated)
       setActivePlanWorkId(workId === '' ? null : workId)
       await refreshThreads(generated.planId)
+      await refreshPlanDetail(generated.planId)
       await refreshSavedPlans(workId)
     } catch (err) {
       setError(err instanceof ApiError ? `${err.code}: ${err.message}` : String(err))
@@ -266,6 +355,7 @@ export function PlanPage({
         status: view.plan.status,
       })
       setThreads(view.threads)
+      setPlanDetail(view)
       setRunId(view.plan.workflowRunId)
       setActivePlanWorkId(view.plan.workId)
       setWorkId(view.plan.workId ?? '')
@@ -288,6 +378,7 @@ export function PlanPage({
       const decision = await api.approvePlan({ planId: result.planId, decidedBy: 'local-user' })
       setResult({ ...result, status: decision.plan.status })
       await refreshThreads(result.planId)
+      await refreshPlanDetail(result.planId)
       await refreshSavedPlans(workId)
     } catch (err) {
       setError(err instanceof ApiError ? `${err.code}: ${err.message}` : String(err))
@@ -308,6 +399,7 @@ export function PlanPage({
       })
       setResult({ ...result, status: decision.plan.status })
       await refreshThreads(result.planId)
+      await refreshPlanDetail(result.planId)
       await refreshSavedPlans(workId)
       setRejectOpen(false)
     } catch (err) {
@@ -322,15 +414,84 @@ export function PlanPage({
     setActionBusy(true)
     setError(null)
     try {
-      const started = await api.startPlanRun({ planId: result.planId })
+      const started = await api.startPlanRun({
+        planId: result.planId,
+        requestId: crypto.randomUUID(),
+      })
       setResult({ ...result, status: started.plan.status })
       setRunId(started.run.id)
       await refreshThreads(result.planId)
+      await refreshPlanDetail(result.planId)
       await refreshSavedPlans(workId)
+      if (started.schedulingError) {
+        setError(`启动已保存，但${started.schedulingError}`)
+      }
     } catch (err) {
       setError(err instanceof ApiError ? `${err.code}: ${err.message}` : String(err))
     } finally {
       setActionBusy(false)
+    }
+  }
+
+  const dispatchPlan = async (): Promise<void> => {
+    if (!result || dispatchBusy) return
+    setDispatchBusy(true)
+    setError(null)
+    try {
+      await api.dispatchPlan({ planId: result.planId })
+      await refreshThreads(result.planId)
+      await refreshPlanDetail(result.planId)
+      await refreshSavedPlans(workId)
+    } catch (err) {
+      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : String(err))
+    } finally {
+      setDispatchBusy(false)
+    }
+  }
+
+  const openAssign = (taskKey: string): void => {
+    setAssignTaskKey(taskKey)
+    setAssignAgentId('')
+    setAssignReason('')
+    setAssignOpen(true)
+  }
+
+  const assignCandidatesFor = (taskKey: string): AgentProfile[] => {
+    const task = result?.plan.tasks.find((candidate) => candidate.key === taskKey)
+    if (!task) return []
+    const team = task.teamId ? teams.find((candidate) => candidate.id === task.teamId) : null
+    const memberIds = task.teamId
+      ? new Set((membersByTeam[task.teamId] ?? []).map((member) => member.agentId))
+      : null
+    return agents.filter((agent) => {
+      if (agent.status !== 'active') return false
+      if (agent.accessMode !== task.requiredAccessMode) return false
+      if (agent.toolPermissions.allow.length === 0) return false
+      if (memberIds && !memberIds.has(agent.id)) return false
+      if (team?.leaderAgentId === agent.id) return false
+      return true
+    })
+  }
+
+  const submitAssign = async (): Promise<void> => {
+    if (!result || assignTaskKey === '' || assignAgentId === '' || assignBusy) return
+    setAssignBusy(true)
+    setError(null)
+    try {
+      await api.assignPlanTask({
+        planId: result.planId,
+        taskKey: assignTaskKey,
+        agentId: assignAgentId,
+        reason: assignReason.trim(),
+        decidedBy: 'local-user',
+      })
+      setAssignOpen(false)
+      await refreshThreads(result.planId)
+      await refreshPlanDetail(result.planId)
+    } catch (err) {
+      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : String(err))
+    } finally {
+      setAssignBusy(false)
     }
   }
 
@@ -394,8 +555,26 @@ export function PlanPage({
     }
   }
 
-  const assignmentFor = (taskKey: string) =>
-    result?.validation.assignments.find((assignment) => assignment.taskKey === taskKey) ?? null
+  const taskAssignmentFor = (taskKey: string): PlanTaskAssignment | null =>
+    planDetail?.taskAssignments.find(
+      (assignment) => assignment.taskKey === taskKey && assignment.status === 'active',
+    ) ?? null
+
+  const assignmentFor = (taskKey: string) => {
+    const current = taskAssignmentFor(taskKey)
+    if (current) return current
+    return (
+      result?.validation.assignments.find((assignment) => assignment.taskKey === taskKey) ?? null
+    )
+  }
+
+  const teamNameFor = (taskKey: string): string | null => {
+    const task = result?.plan.tasks.find((candidate) => candidate.key === taskKey)
+    if (!task?.teamId) return null
+    return teams.find((team) => team.id === task.teamId)?.name ?? task.teamId
+  }
+
+  const readiness = planDetail?.readiness ?? null
 
   const reassignCandidatesFor = (
     taskKey: string,
@@ -403,19 +582,40 @@ export function PlanPage({
     const currentAgentId = assignmentFor(taskKey)?.agentId
     const current = assignments.find((assignment) => assignment.agentId === currentAgentId)
     if (!current) return []
-    return assignments
-      .filter(
-        (assignment) =>
-          assignment.status === 'active' &&
-          assignment.workRole === current.workRole &&
-          assignment.agentId !== currentAgentId,
+    const task = result?.plan.tasks.find((candidate) => candidate.key === taskKey)
+    const candidates = new Map<string, { agentId: string; agentName: string; workRole: string }>()
+    for (const assignment of assignments) {
+      if (
+        assignment.status !== 'active' ||
+        assignment.workRole !== current.workRole ||
+        assignment.agentId === currentAgentId
       )
-      .map((assignment) => ({
+        continue
+      candidates.set(assignment.agentId, {
         agentId: assignment.agentId,
         workRole: assignment.workRole,
         agentName:
           agents.find((agent) => agent.id === assignment.agentId)?.name ?? assignment.agentId,
-      }))
+      })
+    }
+    if (task?.teamId) {
+      const team = teams.find((candidate) => candidate.id === task.teamId)
+      for (const member of membersByTeam[task.teamId] ?? []) {
+        if (member.agentId === currentAgentId || candidates.has(member.agentId)) continue
+        const agent = agents.find((candidate) => candidate.id === member.agentId)
+        if (!agent) continue
+        if (agent.status !== 'active') continue
+        if (agent.accessMode !== task.requiredAccessMode) continue
+        if (agent.toolPermissions.allow.length === 0) continue
+        if (team?.leaderAgentId === agent.id) continue
+        candidates.set(agent.id, {
+          agentId: agent.id,
+          agentName: agent.name,
+          workRole: current.workRole,
+        })
+      }
+    }
+    return [...candidates.values()]
   }
 
   const agentFor = (taskKey: string): AgentProfile | null => {
@@ -595,6 +795,11 @@ export function PlanPage({
                 <span className={`pill ${statusTone(result.status)}`}>
                   {PLAN_STATUS_LABEL[result.status] ?? result.status}
                 </span>
+                {readiness && (
+                  <span className={`pill ${statusTone(readiness.state)}`}>
+                    {READINESS_LABEL[readiness.state]}
+                  </span>
+                )}
                 <span className={`pill ${result.validation.valid ? 'done' : 'danger'}`}>
                   {result.validation.valid
                     ? '校验通过'
@@ -624,6 +829,18 @@ export function PlanPage({
                   <div className="k">能力缺口</div>
                   <div className="v">{result.plan.capabilityGaps.length}</div>
                 </div>
+                <div className="meta-cell">
+                  <div className="k">已派工</div>
+                  <div className="v">
+                    {readiness ? `${readiness.assignedTasks}/${readiness.totalTasks}` : '—'}
+                  </div>
+                </div>
+                <div className="meta-cell">
+                  <div className="k">团队任务</div>
+                  <div className="v">
+                    {readiness ? `${readiness.assignedTeamTasks}/${readiness.teamTasks}` : '—'}
+                  </div>
+                </div>
               </div>
               {result.plan.risks.length > 0 && (
                 <div className="faint" style={{ fontSize: 11.5 }}>
@@ -650,6 +867,54 @@ export function PlanPage({
                 </div>
               )}
 
+              {readiness && readiness.dispatches.length > 0 && (
+                <div
+                  style={{
+                    display: 'grid',
+                    gap: 6,
+                    padding: '8px 10px',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <strong style={{ fontSize: 11.5 }}>队长派工</strong>
+                    {readiness.reason && (
+                      <span className="faint" style={{ fontSize: 10.5 }}>
+                        {readiness.reason}
+                      </span>
+                    )}
+                  </div>
+                  {readiness.dispatches.map((dispatch) => (
+                    <div
+                      key={dispatch.id}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5 }}
+                    >
+                      <span className={`pill ${DISPATCH_TONE[dispatch.status]}`}>
+                        {DISPATCH_LABEL[dispatch.status]}
+                      </span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        {dispatch.teamName ?? dispatch.teamId}
+                        <span className="faint">
+                          {' '}
+                          · 队长 {dispatch.leaderAgentName ?? dispatch.leaderAgentId ?? '未设置'}
+                          {dispatch.attempt > 1 ? ` · 第 ${dispatch.attempt} 次` : ''}
+                        </span>
+                      </span>
+                      {dispatch.errorMessage && (
+                        <span
+                          className="faint"
+                          style={{ color: 'var(--danger)', maxWidth: 360 }}
+                          title={dispatch.errorMessage}
+                        >
+                          {dispatch.errorCode}：{dispatch.errorMessage}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
                 {result.status === 'pending_approval' && (
                   <>
@@ -671,23 +936,49 @@ export function PlanPage({
                     </button>
                   </>
                 )}
-                {result.status === 'approved' &&
-                  activePlanWorkId !== null &&
-                  (activeWork?.status === 'active' ? (
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      disabled={actionBusy}
-                      onClick={() => void start()}
-                    >
-                      启动执行
-                    </button>
-                  ) : (
-                    <span className="pill warn">
-                      任务{WORK_STATUS_LABEL[activeWork?.status ?? ''] ?? '状态未知'}
-                      ，请先在任务详情激活/恢复后再启动
-                    </span>
-                  ))}
+                {result.status === 'approved' && (
+                  <>
+                    {result.plan.tasks.some((task) => task.teamId !== null) &&
+                      (readiness?.state === 'pending_dispatch' ||
+                        readiness?.state === 'dispatch_failed' ||
+                        readiness?.state === 'dispatching') && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          disabled={
+                            actionBusy || dispatchBusy || readiness?.state === 'dispatching'
+                          }
+                          onClick={() => void dispatchPlan()}
+                        >
+                          {dispatchBusy || readiness?.state === 'dispatching'
+                            ? '队长派工中…'
+                            : readiness?.state === 'dispatch_failed'
+                              ? '重试派工'
+                              : '开始派工'}
+                        </button>
+                      )}
+                    {activePlanWorkId !== null &&
+                      (readiness?.canStart && activeWork?.status === 'active' ? (
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          disabled={actionBusy}
+                          onClick={() => void start()}
+                        >
+                          启动执行
+                        </button>
+                      ) : activeWork?.status !== 'active' ? (
+                        <span className="pill warn">
+                          任务{WORK_STATUS_LABEL[activeWork?.status ?? ''] ?? '状态未知'}
+                          ，请先在任务详情激活/恢复后再启动
+                        </span>
+                      ) : (
+                        <span className="pill warn">
+                          {readiness?.reason ?? '等待全部任务派工完成'}
+                        </span>
+                      ))}
+                  </>
+                )}
                 {activePlanWorkId === null &&
                   (result.status === 'pending_approval' || result.status === 'approved') && (
                     <>
@@ -730,6 +1021,10 @@ export function PlanPage({
                 agent={agentFor(task.key)}
                 provider={providerFor(agentFor(task.key))}
                 assignmentName={assignmentFor(task.key)?.agentName ?? null}
+                teamName={teamNameFor(task.key)}
+                assignmentSource={taskAssignmentFor(task.key)?.source ?? null}
+                canPreAssign={result.status === 'approved'}
+                onOpenAssign={() => openAssign(task.key)}
                 canReassign={result.status === 'running'}
                 reassignCandidates={reassignCandidatesFor(task.key)}
                 reassignValue={reassignSelection[task.key] ?? ''}
@@ -853,6 +1148,64 @@ export function PlanPage({
           )}
         </>
       )}
+
+      <Modal
+        open={assignOpen}
+        title="指定任务成员"
+        onClose={() => setAssignOpen(false)}
+        footer={
+          <>
+            <button type="button" className="btn btn-ghost" onClick={() => setAssignOpen(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={assignBusy || assignAgentId === '' || assignReason.trim().length === 0}
+              onClick={() => void submitAssign()}
+            >
+              {assignBusy ? '保存中…' : '保存指定'}
+            </button>
+          </>
+        }
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div className="field">
+            <label htmlFor="assign-agent">成员</label>
+            <select
+              id="assign-agent"
+              className="select"
+              value={assignAgentId}
+              onChange={(event) => setAssignAgentId(event.target.value)}
+            >
+              <option value="">选择成员…</option>
+              {assignCandidatesFor(assignTaskKey).map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name} · {AGENT_ACCESS_MODE_LABEL[agent.accessMode]}
+                </option>
+              ))}
+            </select>
+            {assignCandidatesFor(assignTaskKey).length === 0 && (
+              <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>
+                没有匹配该任务权限要求的团队成员。请先补充成员或调整任务要求。
+              </div>
+            )}
+          </div>
+          <div className="field">
+            <label htmlFor="assign-reason">原因 *</label>
+            <textarea
+              id="assign-reason"
+              className="textarea"
+              value={assignReason}
+              onChange={(event) => setAssignReason(event.target.value)}
+              placeholder="例如：该成员更熟悉支付模块；队长派工失败后由老板手动指定。"
+            />
+          </div>
+          <div className="faint" style={{ fontSize: 11 }}>
+            指定后旧成员记录保留为历史；启动执行时以最新 active 成员为准。
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         open={rejectOpen}
@@ -984,6 +1337,10 @@ function PlanTaskCard({
   agent,
   provider,
   assignmentName,
+  teamName,
+  assignmentSource,
+  canPreAssign,
+  onOpenAssign,
   canReassign,
   reassignCandidates,
   reassignValue,
@@ -995,6 +1352,10 @@ function PlanTaskCard({
   agent: AgentProfile | null
   provider: RuntimeProviderRecord | null
   assignmentName: string | null
+  teamName: string | null
+  assignmentSource: PlanTaskAssignment['source'] | null
+  canPreAssign: boolean
+  onOpenAssign: () => void
   canReassign: boolean
   reassignCandidates: { agentId: string; agentName: string; workRole: string }[]
   reassignValue: string
@@ -1009,12 +1370,15 @@ function PlanTaskCard({
           {task.title}
           <span className="pill pending plain">{task.key}</span>
           <span className="chip">{task.responsibilityRole}</span>
+          {teamName && <span className="chip">团队 · {teamName}</span>}
         </div>
         <div className="right">
           {agent ? (
             <ProviderBadge provider={provider} />
           ) : (
-            <span className="pill danger">未分配</span>
+            <span className={`pill ${task.teamId ? 'warn' : 'danger'}`}>
+              {task.teamId ? '待队长派工' : '未分配'}
+            </span>
           )}
         </div>
       </div>
@@ -1035,8 +1399,19 @@ function PlanTaskCard({
           {task.approvalRequired && <span className="pill warn">需老板审批</span>}
         </div>
         <div className="faint" style={{ fontSize: 11 }}>
-          负责人：{assignmentName ?? agent?.name ?? '未分配'}
+          负责人：{assignmentName ?? (task.teamId ? '待队长派工' : '未分配')}
+          {assignmentSource ? ` · ${ASSIGNMENT_SOURCE_LABEL[assignmentSource]}` : ''}
           {task.outputs.length > 0 ? ` · 输出：${task.outputs.join('、')}` : ''}
+          {canPreAssign && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ marginLeft: 8 }}
+              onClick={onOpenAssign}
+            >
+              {assignmentName ? '更换成员' : '指定成员'}
+            </button>
+          )}
         </div>
         {canReassign && reassignCandidates.length > 0 && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>

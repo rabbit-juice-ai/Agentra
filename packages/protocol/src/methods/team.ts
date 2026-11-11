@@ -37,6 +37,8 @@ export const TeamUpdateParams = z
     name: z.string().min(1).max(200).optional(),
     description: z.string().max(4000).optional(),
     instructions: z.string().max(20_000).optional(),
+    /** 设置/转让/清空队长；设置时 Core 会校验 active 并自动加入团队。 */
+    leaderAgentId: z.string().min(1).nullable().optional(),
   })
   .strict()
 export type TeamUpdateParams = z.infer<typeof TeamUpdateParams>

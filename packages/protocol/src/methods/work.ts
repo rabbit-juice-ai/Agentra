@@ -11,6 +11,29 @@ export const WORK_RESUME_METHOD = 'work.resume'
 export const WORK_COMPLETE_METHOD = 'work.complete'
 export const WORK_TERMINATE_METHOD = 'work.terminate'
 export const WORK_ARCHIVE_METHOD = 'work.archive'
+export const WORK_FILES_LIST_METHOD = 'work.files.list'
+
+export const WorkFilesListParams = z.object({ workId: z.string().min(1) }).strict()
+export type WorkFilesListParams = z.infer<typeof WorkFilesListParams>
+
+export const WorkFileEntry = z
+  .object({
+    path: z.string(),
+    size: z.number().int().nonnegative(),
+    modifiedAt: z.string(),
+  })
+  .strict()
+export type WorkFileEntry = z.infer<typeof WorkFileEntry>
+
+export const WorkFilesListResult = z
+  .object({
+    rootPath: z.string(),
+    exists: z.boolean(),
+    truncated: z.boolean(),
+    files: z.array(WorkFileEntry),
+  })
+  .strict()
+export type WorkFilesListResult = z.infer<typeof WorkFilesListResult>
 
 export const WorkListParams = z
   .object({
@@ -38,6 +61,10 @@ export const WorkCreateParams = z
     repositoryPath: z.string().min(1).max(4096).nullable().optional(),
     priority: z.string().min(1).max(50).optional(),
     projectId: z.string().min(1).nullable().optional(),
+    collaborationMode: z.enum(['workflow', 'team']).optional(),
+    ownerTeamId: z.string().min(1).nullable().optional(),
+    assigneeAgentId: z.string().min(1).nullable().optional(),
+    acceptanceCriteria: z.array(z.string().min(1).max(500)).max(20).optional(),
   })
   .strict()
 export type WorkCreateParams = z.infer<typeof WorkCreateParams>

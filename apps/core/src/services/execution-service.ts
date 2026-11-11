@@ -18,6 +18,7 @@ import {
   RpcMethodError,
   type RuntimeEvent,
   type RuntimeProviderRecord,
+  type ToolPermissions,
 } from '@agentra/protocol'
 import { executionScratchDir, newId } from '@agentra/shared'
 import { z } from 'zod'
@@ -33,15 +34,18 @@ import {
   isTerminalExecutionState,
 } from '../db/repositories/execution-repository'
 import type { NodeRunRepository } from '../db/repositories/node-run-repository'
+import type { RecoveryAttemptRepository } from '../db/repositories/recovery-attempt-repository'
 import type { SessionRepository } from '../db/repositories/session-repository'
 import type { SkillRepository } from '../db/repositories/skill-repository'
 import type { TeamRepository } from '../db/repositories/team-repository'
 import type { WorkRepository } from '../db/repositories/work-repository'
 import type { DrainCoordinator } from '../lifecycle/drain-coordinator'
 import type { NodeRunStatus } from '../workflow/state-machine'
+import type { CheckpointService } from './checkpoint-service'
 import type { CoreEventHub } from './event-hub'
 import type { ProviderRegistry } from './provider-registry'
 import { redactOutput } from './redact-output'
+import type { TaskMemoryService } from './task-memory-service'
 import type { WorkdirLockService } from './workdir-lock-service'
 import type { WorktreeService } from './worktree-service'
 
@@ -49,6 +53,47 @@ export type ExecutionServiceLogger = {
   info: (message: string, data?: Record<string, unknown>) => void
   warn: (message: string, data?: Record<string, unknown>) => void
   error: (message: string, data?: Record<string, unknown>) => void
+}
+
+/** Core 内部系统执行（队长/助手）用途；不允许从 RPC 传入。 */
+export type SystemExecutionPurpose =
+  | 'team_dispatch'
+  | 'team_leader'
+  | 'planner_chat'
+  | 'assistant_chat'
+  | 'assistant_plan'
+
+export type SystemExecutionOptions = {
+  purpose: SystemExecutionPurpose
+  toolPermissions: ToolPermissions
+  systemPromptOverride?: string
+  /** 团队协作线程允许在 Work 暂停/完成后继续响应消息。 */
+  allowInactiveWork?: boolean
+}
+
+export type ExecutionStartOptions = {
+  allowInactiveWork?: boolean
+  /** 仅 Core 内部恢复入口使用。 */
+  recovery?: {
+    attemptId: string
+    checkpointId: string
+    teamRunId?: string | null
+    /** 在 Session/Execution 创建事务内执行；用于 completed Work 原子重开。 */
+    reopenWork?: () => void
+    /** 在 Session/Execution 创建事务内执行；用于 Team subtask 原子置 running。 */
+    onStarted?: () => void
+  }
+}
+
+/** Phase 1B-2B：T3 事务上下文。只允许使用调用方已开启的同一连接。 */
+export type RecoveryTxContext = {
+  db: Database
+  inTransaction: true
+}
+
+export type PreparedRecoveryNode = {
+  executionId: string
+  sessionId: string
 }
 
 /**
@@ -70,6 +115,7 @@ type SpawnJob = {
   allowedTools: string[]
   disallowedTools: string[]
   allowedRoots: string[] | undefined
+  allowInactiveWork?: boolean
 }
 
 export type ExecutionServiceDeps = {
@@ -84,6 +130,12 @@ export type ExecutionServiceDeps = {
   skills?: SkillRepository
   /** 可选：Work 关联团队且 Agent 是成员时，注入团队指引。 */
   teams?: TeamRepository
+  /** 可选：执行启动前刷新 Work 的 Task Memory 验收标准快照。 */
+  taskMemories?: Pick<TaskMemoryService, 'refreshForWork'>
+  /** 可选：Phase 1B-1 Checkpoint 创建与高风险失败启动阻断。 */
+  checkpoints?: Pick<CheckpointService, 'createForExecution' | 'assertCanStart'>
+  /** 仅恢复执行：在新 Session/Execution 事务内关联 Recovery Attempt。 */
+  recoveries?: Pick<RecoveryAttemptRepository, 'markRunning'>
   assignments: AssignmentRepository
   sessions: SessionRepository
   executions: ExecutionRepository
@@ -310,6 +362,8 @@ export class ExecutionService {
   private readonly seenEventIds = new Set<string>()
   /** executionId → 待启动任务；与 executions 表里的 queued 标记一一对应。 */
   private readonly queued = new Map<string, SpawnJob>()
+  /** Phase 1B-2B：T3 已创建、等待 COMMIT 后 spawn 的恢复任务。 */
+  private readonly preparedRecovery = new Map<string, SpawnJob>()
   /**
    * S55-2B-1B：正在 startInternal 途中（行已建、spawn 未返回）的执行。
    * 只用于运行期对账避免误分类在途启动；进程崩溃后自然消失（下次 boot 按
@@ -324,6 +378,11 @@ export class ExecutionService {
   private readonly agents: AgentRepository
   private readonly skills: SkillRepository | undefined
   private readonly teams: TeamRepository | undefined
+  private readonly taskMemories: Pick<TaskMemoryService, 'refreshForWork'> | undefined
+  private readonly checkpoints:
+    | Pick<CheckpointService, 'createForExecution' | 'assertCanStart'>
+    | undefined
+  private readonly recoveries: Pick<RecoveryAttemptRepository, 'markRunning'> | undefined
   private readonly assignments: AssignmentRepository
   private readonly sessions: SessionRepository
   private readonly executions: ExecutionRepository
@@ -352,6 +411,9 @@ export class ExecutionService {
     this.agents = deps.agents
     this.skills = deps.skills
     this.teams = deps.teams
+    this.taskMemories = deps.taskMemories
+    this.checkpoints = deps.checkpoints
+    this.recoveries = deps.recoveries
     this.assignments = deps.assignments
     this.sessions = deps.sessions
     this.executions = deps.executions
@@ -372,8 +434,97 @@ export class ExecutionService {
     this.now = deps.now ?? (() => new Date().toISOString())
   }
 
-  async start(params: ExecutionStartParams): Promise<Execution> {
-    return this.withStartLease('execution.start', () => this.startInternal(params, null))
+  async start(
+    params: ExecutionStartParams,
+    options: ExecutionStartOptions = {},
+  ): Promise<Execution> {
+    return this.withStartLease('execution.start', () =>
+      this.startInternal(params, null, undefined, options),
+    )
+  }
+
+  /**
+   * Core 内部系统执行入口：只允许 TeamDispatchService / 后续 AssistantService 调用。
+   * 不暴露 RPC；工具策略由调用方显式覆盖，仍受 Provider 能力与执行前门禁约束。
+   */
+  async startSystem(
+    params: ExecutionStartParams,
+    options: SystemExecutionOptions,
+  ): Promise<Execution> {
+    return this.withStartLease('execution.startSystem', () =>
+      this.startInternal(params, null, options, {
+        allowInactiveWork: options.allowInactiveWork,
+      }),
+    )
+  }
+
+  /**
+   * 仅用于恢复启动对账：判断 pending Execution 是否已有 Daemon 启动证据。
+   * 不修改任何状态；无法确认时返回 unconfirmed。
+   */
+  async classifyPendingStart(
+    executionId: string,
+  ): Promise<'spawned' | 'not_started' | 'unconfirmed'> {
+    const execution = this.executions.get(executionId)
+    if (!execution) return 'unconfirmed'
+    if (execution.status !== 'pending') return 'spawned'
+    if (execution.processId !== null || execution.startedAt !== null) return 'spawned'
+    try {
+      const active = await this.runtime.listActive()
+      if (active.includes(executionId)) return 'spawned'
+      try {
+        await this.runtime.status(executionId)
+        return 'spawned'
+      } catch (error) {
+        if (error instanceof RpcMethodError && error.code === 'EXECUTION_NOT_FOUND') {
+          return 'not_started'
+        }
+        return 'unconfirmed'
+      }
+    } catch {
+      return 'unconfirmed'
+    }
+  }
+
+  /**
+   * 仅用于恢复启动对账：确认从未启动的 pending Execution 收敛为 failed。
+   * 有任何 process/startedAt 证据时拒绝，防止误杀已启动执行。
+   */
+  failUnstartedExecution(executionId: string, reason: string): boolean {
+    const execution = this.executions.get(executionId)
+    if (!execution || execution.status !== 'pending') return false
+    if (execution.processId !== null || execution.startedAt !== null) return false
+    this.recordTerminalObservation({
+      executionId,
+      status: 'failed',
+      endedAt: this.now(),
+      source: 'core_initiated',
+      extraState: { reason },
+      logEvent: 'execution.start_interrupted',
+      logData: { reason },
+      auditAction: 'execution.terminal.observed',
+    })
+    return true
+  }
+
+  /**
+   * Core 内部恢复入口：创建新 Session/Execution，并在同一事务内关联 Recovery Attempt。
+   * 不暴露为 RPC；work.recovery.start 只通过 RecoveryService 调用。
+   */
+  async startRecovery(
+    params: ExecutionStartParams,
+    options: {
+      recovery: { attemptId: string; checkpointId: string; teamRunId?: string | null }
+      allowInactiveWork?: boolean
+      system?: SystemExecutionOptions
+    },
+  ): Promise<Execution> {
+    return this.withStartLease('execution.startRecovery', () =>
+      this.startInternal(params, null, options.system, {
+        allowInactiveWork: options.allowInactiveWork,
+        recovery: options.recovery,
+      }),
+    )
   }
 
   /**
@@ -384,6 +535,200 @@ export class ExecutionService {
     return this.withStartLease('execution.startForNode', () =>
       this.startInternal(params, nodeRunId),
     )
+  }
+
+  /**
+   * Phase 1B-2B：在调用方 T3 事务内创建 Session/Execution（不 spawn、不加锁、不做文件系统操作）。
+   * 调用方必须传入同一个已 BEGIN IMMEDIATE 的连接；本方法不会自行开启事务。
+   */
+  prepareRecoveryForNode(
+    tx: RecoveryTxContext,
+    nodeRunId: string,
+    params: ExecutionStartParams & { worktreeId: string },
+    options: { recoveryAttemptId: string; checkpointId: string },
+  ): PreparedRecoveryNode {
+    if (tx.inTransaction !== true || tx.db !== this.db) {
+      throw new RpcMethodError('INVALID_PARAMS', 'recovery node start requires the T3 transaction')
+    }
+    this.assertStartAllowed()
+    const work = params.workId ? this.works.get(params.workId) : null
+    if (!params.workId || !work) {
+      throw new RpcMethodError('INVALID_PARAMS', 'recovery node start requires a work')
+    }
+    if (work.status !== 'active') {
+      throw new RpcMethodError('INVALID_PARAMS', 'Work is not active; refusing recovery start')
+    }
+    const prompt = params.prompt.trim()
+    if (prompt.length === 0) {
+      throw new RpcMethodError('INVALID_PARAMS', 'prompt must not be blank')
+    }
+    const agent = this.agents.get(params.agentId)
+    if (!agent) throw new RpcMethodError('AGENT_NOT_FOUND', `agent not found: ${params.agentId}`)
+    if (agent.status !== 'active') {
+      throw new RpcMethodError('INVALID_PARAMS', `agent ${agent.id} is ${agent.status}, not active`)
+    }
+    if (agent.toolPermissions.allow.length === 0) {
+      throw new RpcMethodError(
+        'AGENT_TOOLS_NOT_CONFIGURED',
+        `Agent「${agent.name}」未配置任何允许工具（allow 为空）。`,
+      )
+    }
+    const provider = this.resolveProvider(agent)
+    this.assertProviderUsable(provider)
+    const assignment = this.resolveActiveAssignment(work.id, agent.id)
+    const activeCount = this.executions.countActiveByAgent(agent.id)
+    if (activeCount >= agent.maxConcurrency) {
+      throw new RpcMethodError(
+        'INVALID_PARAMS',
+        `CAPACITY_EXCEEDED: agent ${agent.id} is at max concurrency`,
+        { code: 'CAPACITY_EXCEEDED' },
+      )
+    }
+
+    const executionId = `exe-${crypto.randomUUID()}`
+    const sessionId = newId('ses')
+    const externalSessionId = crypto.randomUUID()
+    const { workingDirectory, allowedRoots } = this.resolveWorkingDirectory(
+      { ...params, workId: work.id },
+      executionId,
+      false,
+    )
+    const now = this.now()
+    const execution: Execution = {
+      id: executionId,
+      sessionId,
+      providerId: provider.id,
+      agentId: agent.id,
+      externalExecutionId: externalSessionId,
+      processId: null,
+      status: 'pending',
+      workingDirectory,
+      startedAt: null,
+      endedAt: null,
+      exitCode: null,
+      capabilities: provider.capabilities,
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    this.sessions.create({
+      id: sessionId,
+      assignmentId: null,
+      providerId: provider.id,
+      externalSessionId,
+      contextRef: agent.id,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+      lastActiveAt: now,
+    })
+    this.executions.create(execution, nodeRunId)
+    this.executions.mergeRecoveryState(
+      executionId,
+      {
+        recovery: {
+          attemptId: options.recoveryAttemptId,
+          checkpointId: options.checkpointId,
+          worktreeId: params.worktreeId,
+        },
+      },
+      now,
+    )
+    if (assignment) this.sessions.bindAssignment(sessionId, assignment.id, now)
+    this.appendSystemLog(
+      executionId,
+      'execution.created',
+      { agentId: agent.id, providerId: provider.id },
+      now,
+    )
+    this.appendSystemLog(
+      executionId,
+      'execution.tool_policy',
+      { allow: agent.toolPermissions.allow, deny: agent.toolPermissions.deny },
+      now,
+    )
+
+    const job: SpawnJob = {
+      executionId,
+      agentId: agent.id,
+      providerId: provider.id,
+      executablePath: provider.executablePath,
+      capabilities: provider.capabilities,
+      prompt,
+      workingDirectory,
+      sessionId,
+      externalSessionId,
+      systemPrompt: this.composeSystemPrompt(agent, work.id),
+      model: agent.model ?? undefined,
+      allowedTools: agent.toolPermissions.allow,
+      disallowedTools: agent.toolPermissions.deny,
+      allowedRoots: [this.worktrees.worktreeRoot, ...allowedRoots],
+    }
+    this.preparedRecovery.set(executionId, job)
+    return { executionId, sessionId }
+  }
+
+  /** T3 回滚时清理内存中的预启动任务；数据库行已随事务回滚。 */
+  discardPreparedRecovery(executionId: string): void {
+    this.preparedRecovery.delete(executionId)
+  }
+
+  /** Phase 1B-2B：T3 COMMIT 后 spawn；获取 Workdir 锁并把 holder 转移到 CLI PID。 */
+  async spawnPreparedRecovery(executionId: string): Promise<Execution> {
+    const job = this.preparedRecovery.get(executionId)
+    if (!job) {
+      throw new RpcMethodError('NOT_READY', `prepared recovery ${executionId} is missing`)
+    }
+    const owner = this.executions.findOwningWork(executionId)
+    const workId = owner?.workId ?? null
+    try {
+      this.locks.acquire(job.workingDirectory, executionId, workId, { kind: 'core' })
+    } catch (error) {
+      this.preparedRecovery.delete(executionId)
+      this.failUnstartedExecution(executionId, 'WORKDIR_LOCKED')
+      throw error
+    }
+    let execution: Execution
+    try {
+      execution = await this.spawn(job)
+    } catch (error) {
+      const current = this.get(executionId)
+      if (
+        !current ||
+        current.status === 'failed' ||
+        (current.status === 'pending' && current.processId === null)
+      ) {
+        this.locks.releaseByExecution(executionId)
+      }
+      this.preparedRecovery.delete(executionId)
+      throw error
+    }
+    this.preparedRecovery.delete(executionId)
+    if (execution.processId !== null) {
+      const updated = this.locks.updateHolderPid(
+        job.workingDirectory,
+        executionId,
+        execution.processId,
+      )
+      if (!updated) {
+        await this.cancel({ executionId }, true).catch(() => undefined)
+        const current = this.get(executionId)
+        if (
+          current &&
+          (current.status === 'failed' ||
+            current.status === 'cancelled' ||
+            current.status === 'crashed')
+        ) {
+          this.locks.releaseByExecution(executionId)
+          throw new RpcMethodError('INVALID_PARAMS', 'recovery workdir lock holder transfer failed')
+        }
+        throw new RpcMethodError(
+          'NOT_READY',
+          'recovery process may still be running; lock retained',
+        )
+      }
+    }
+    return this.get(executionId) ?? execution
   }
 
   private async withStartLease<T>(operation: string, action: () => Promise<T>): Promise<T> {
@@ -437,11 +782,18 @@ export class ExecutionService {
   private async startInternal(
     params: ExecutionStartParams,
     nodeRunId: string | null,
+    system?: SystemExecutionOptions,
+    options: ExecutionStartOptions = {},
   ): Promise<Execution> {
     this.assertStartAllowed()
-    if (params.workId && this.works.get(params.workId)?.status !== 'active') {
+    if (
+      !options.allowInactiveWork &&
+      params.workId &&
+      this.works.get(params.workId)?.status !== 'active'
+    ) {
       throw new RpcMethodError('INVALID_PARAMS', 'Work is not active; refusing execution start')
     }
+    if (params.workId) this.checkpoints?.assertCanStart(params.workId)
     const prompt = params.prompt.trim()
     if (prompt.length === 0) {
       throw new RpcMethodError('INVALID_PARAMS', 'prompt must not be blank')
@@ -453,8 +805,9 @@ export class ExecutionService {
     }
 
     // U3：allow 为空 = 未配置 = 拒绝执行。强制点在 Core，且必须在创建 Execution 之前拦截。
-    const toolPermissions = agent.toolPermissions
-    if (toolPermissions.allow.length === 0) {
+    // 系统执行（队长/助手）由 Core 内部显式提供策略，允许空 allow；普通入口不豁免。
+    const toolPermissions = system?.toolPermissions ?? agent.toolPermissions
+    if (!system && toolPermissions.allow.length === 0) {
       throw new RpcMethodError(
         'AGENT_TOOLS_NOT_CONFIGURED',
         `Agent「${agent.name}」未配置任何允许工具（allow 为空）。请先在 Agent 配置中填写允许使用的工具再启动执行。`,
@@ -466,8 +819,9 @@ export class ExecutionService {
     this.assertProviderUsable(provider)
 
     // D-1：绑定 Work 时必须先解析该 (workId, agentId) 的 active assignment。
+    // 系统执行不绑定 Work，不创建业务 Assignment。
     // 拦截点必须在「获取目录锁 / 创建 Session / 创建 Execution」三者之前，命中即零副作用。
-    const assignment = this.resolveActiveAssignment(params.workId, agent.id)
+    const assignment = system ? null : this.resolveActiveAssignment(params.workId, agent.id)
 
     const executionId = `exe-${crypto.randomUUID()}`
     const sessionId = newId('ses')
@@ -475,7 +829,13 @@ export class ExecutionService {
     const { workingDirectory, workId, allowedRoots } = this.resolveWorkingDirectory(
       params,
       executionId,
+      options.allowInactiveWork ?? false,
     )
+
+    if (workId) {
+      const work = this.works.get(workId)
+      if (work) this.taskMemories?.refreshForWork(work, 'execution_start')
+    }
 
     // 工作目录锁：键是实际目录的绝对路径。命中时不创建 Execution（与 AGENT_TOOLS_NOT_CONFIGURED 同级）。
     this.locks.acquire(workingDirectory, executionId, workId)
@@ -526,6 +886,40 @@ export class ExecutionService {
           lastActiveAt: now,
         })
         this.executions.create(execution, nodeRunId)
+        if (options.recovery) {
+          if (!this.recoveries) {
+            throw new RpcMethodError('NOT_READY', 'recovery attempt repository is not configured')
+          }
+          this.executions.mergeRecoveryState(
+            executionId,
+            {
+              recovery: {
+                attemptId: options.recovery.attemptId,
+                checkpointId: options.recovery.checkpointId,
+              },
+            },
+            now,
+          )
+          if (
+            !this.recoveries.markRunning(
+              options.recovery.attemptId,
+              {
+                executionId,
+                sessionId,
+                teamRunId: options.recovery.teamRunId ?? null,
+              },
+              now,
+            )
+          ) {
+            throw new RpcMethodError(
+              'INVALID_PARAMS',
+              `RECOVERY_ACTIVE_EXISTS: recovery attempt ${options.recovery.attemptId} is not starting`,
+              { code: 'RECOVERY_ACTIVE_EXISTS' },
+            )
+          }
+          options.recovery.reopenWork?.()
+          options.recovery.onStarted?.()
+        }
         // D-1：同一事务内把 Session 绑到 Assignment（阶段 1 scratch 模式没有 assignment，保持 NULL）。
         if (assignment) this.sessions.bindAssignment(sessionId, assignment.id, now)
         this.appendSystemLog(
@@ -538,7 +932,11 @@ export class ExecutionService {
         this.appendSystemLog(
           executionId,
           'execution.tool_policy',
-          { allow: toolPermissions.allow, deny: toolPermissions.deny },
+          {
+            allow: toolPermissions.allow,
+            deny: toolPermissions.deny,
+            ...(system ? { purpose: system.purpose, system: true } : {}),
+          },
           now,
         )
       })
@@ -563,12 +961,13 @@ export class ExecutionService {
       workingDirectory,
       sessionId,
       externalSessionId,
-      systemPrompt: this.composeSystemPrompt(agent, workId),
+      systemPrompt: system?.systemPromptOverride ?? this.composeSystemPrompt(agent, workId),
       model: agent.model ?? undefined,
       allowedTools: toolPermissions.allow,
       disallowedTools: toolPermissions.deny,
       // 阶段 2：绑定 Work 时把允许的目录根一并声明给 Daemon（Daemon 仍做边界校验）。
       allowedRoots: workId ? [this.scratchRoot, ...allowedRoots] : undefined,
+      allowInactiveWork: options.allowInactiveWork,
     }
 
     // 并发上限：达到 maxConcurrency 时进入排队，**不启动进程**，返回 pending 的执行记录。
@@ -613,7 +1012,7 @@ export class ExecutionService {
       try {
         this.assertStartAllowed()
         const owner = this.executions.findOwningWork(executionId)
-        if (owner && this.works.get(owner.workId)?.status !== 'active')
+        if (!job.allowInactiveWork && owner && this.works.get(owner.workId)?.status !== 'active')
           throw new RpcMethodError('INVALID_PARAMS', 'Work is not active; refusing process start')
         const handle = await this.runtime.start({
           executionId,
@@ -1158,6 +1557,17 @@ export class ExecutionService {
       })
       return 'pending'
     }
+    // 从未启动的恢复 Execution 不产生 Checkpoint；它是启动中断对账结果，不是任务事实。
+    if (state.reason !== 'START_INTERRUPTED') {
+      try {
+        this.checkpoints?.createForExecution(executionId, 'generic')
+      } catch (error) {
+        this.logger?.warn('checkpoint creation failed after terminal compensation', {
+          executionId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
     // S5：completed 标记（json_patch 键级合并，保留 source/evidence 等既有键）。
     const completedAt = this.now()
     try {
@@ -1399,6 +1809,7 @@ export class ExecutionService {
   private resolveWorkingDirectory(
     params: ExecutionStartParams,
     executionId: string,
+    allowInactiveWork = false,
   ): { workingDirectory: string; workId: string | null; allowedRoots: string[] } {
     if (!params.workId) {
       return {
@@ -1409,7 +1820,7 @@ export class ExecutionService {
     }
     const work = this.works.get(params.workId)
     if (!work) throw new RpcMethodError('INVALID_PARAMS', `work not found: ${params.workId}`)
-    if (!WORK_ACCEPTS_EXECUTIONS.has(work.status)) {
+    if (!allowInactiveWork && !WORK_ACCEPTS_EXECUTIONS.has(work.status)) {
       throw new RpcMethodError(
         'INVALID_PARAMS',
         `work ${work.id} is ${work.status}, cannot start executions`,

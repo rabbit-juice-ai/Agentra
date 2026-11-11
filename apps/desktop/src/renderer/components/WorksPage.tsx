@@ -5,18 +5,24 @@ import type {
   Project,
   RuntimeProviderRecord,
   Team,
+  TeamMember,
   Work,
   WorkCreateParams,
   Worktree,
 } from '@agentra/protocol'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArtifactsPanel } from '../features/approvals/ArtifactsPanel'
+import { api } from '../services/api'
+import { AgentAvatar } from './AgentAvatar'
 import { Icon } from './Icon'
 import { Modal } from './Modal'
 import { PageHeader } from './PageHeader'
 import { ProviderBadge } from './ProviderBadge'
 import { StatusBadge } from './StatusBadge'
 import { TaskChatPanel } from './TaskChatPanel'
+import { TeamTaskChatPanel } from './TeamTaskChatPanel'
+import { TeamTaskRunsPanel } from './TeamTaskRunsPanel'
+import { WorkFilesPanel } from './WorkFilesPanel'
 
 /**
  * 构建产物检查用的标记（U2 的补充）：Work 页是产品功能，发布构建必须包含。
@@ -46,12 +52,13 @@ type Props = {
     id: string,
   ) => Promise<void>
   onRefreshAssignments: (workId: string) => Promise<void>
+  onRefreshWorks?: () => Promise<void>
   onRefreshWorktrees: (workId: string) => Promise<void>
   onCreateWorktree: (workId: string, branchName: string) => Promise<boolean>
   onRemoveWorktree: (workId: string, id: string) => Promise<void>
 }
 
-type DetailTab = 'overview' | 'artifacts' | 'team' | 'settings'
+type DetailTab = 'overview' | 'runs' | 'artifacts' | 'team' | 'settings'
 type ViewMode = 'board' | 'list'
 
 const WORK_LABEL: Record<string, string> = {
@@ -61,6 +68,14 @@ const WORK_LABEL: Record<string, string> = {
   completed: '已完成',
   cancelled: '已取消',
   archived: '已归档',
+}
+
+const ISSUE_STATUS_LABEL: Record<string, string> = {
+  triage: '待分诊',
+  backlog: '待处理',
+  in_progress: '处理中',
+  review: '待验收',
+  done: '已完成',
 }
 
 const BOARD_COLUMNS: {
@@ -82,8 +97,9 @@ const BOARD_COLUMNS: {
   },
 ]
 
-function initials(name: string): string {
-  return name.trim().slice(0, 1) || 'W'
+function shortText(value: string, max = 160): string {
+  const text = value.trim().replace(/\s+/g, ' ')
+  return text.length > max ? `${text.slice(0, max)}…` : text
 }
 
 export function WorksPage({
@@ -104,6 +120,7 @@ export function WorksPage({
   onCreateAssignment,
   onAssignmentAction,
   onRefreshAssignments,
+  onRefreshWorks,
   onRefreshWorktrees,
   onCreateWorktree,
   onRemoveWorktree,
@@ -113,6 +130,9 @@ export function WorksPage({
   const [projectId, setProjectId] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState<DetailTab>('overview')
+  const [sidePanelOpen, setSidePanelOpen] = useState(true)
+  const [acceptBusy, setAcceptBusy] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('board')
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -125,11 +145,46 @@ export function WorksPage({
   const [assignmentOpen, setAssignmentOpen] = useState(false)
   const [linkTeamOpen, setLinkTeamOpen] = useState(false)
   const [worktreeOpen, setWorktreeOpen] = useState(false)
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
   const lastCreateSignal = useRef(createSignal)
 
   const selected = works.find((work) => work.id === selectedId) ?? null
   const assignments = selected ? (assignmentsByWork[selected.id] ?? []) : []
+  const ownerTeam = selected?.ownerTeamId
+    ? (teams.find((team) => team.id === selected.ownerTeamId) ?? null)
+    : null
+  const leaderAgent = ownerTeam?.leaderAgentId
+    ? (agents.find((agent) => agent.id === ownerTeam.leaderAgentId) ?? null)
+    : null
+  const leaderHasAssignment = leaderAgent
+    ? assignments.some((assignment) => assignment.agentId === leaderAgent.id)
+    : false
   const worktrees = selected ? (worktreesByWork[selected.id] ?? []) : []
+  const teamMemberAgents = (
+    teamMembers.length > 0
+      ? teamMembers.map((member) => agents.find((agent) => agent.id === member.agentId))
+      : assignments.map((assignment) => agents.find((agent) => agent.id === assignment.agentId))
+  ).filter((agent): agent is AgentProfile => agent !== undefined && agent.id !== leaderAgent?.id)
+
+  useEffect(() => {
+    const teamId = selected?.ownerTeamId
+    if (!teamId) {
+      setTeamMembers([])
+      return
+    }
+    let alive = true
+    void api
+      .listTeamMembers(teamId)
+      .then((members) => {
+        if (alive) setTeamMembers(members)
+      })
+      .catch(() => {
+        if (alive) setTeamMembers([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [selected?.ownerTeamId])
 
   useEffect(() => {
     if (createSignal !== lastCreateSignal.current) {
@@ -226,115 +281,73 @@ export function WorksPage({
     return providers.find((provider) => provider.id === agent?.defaultProviderId) ?? null
   }
 
+  const acceptTeamTask = async (): Promise<void> => {
+    if (!selected || acceptBusy) return
+    setAcceptBusy(true)
+    setDetailError(null)
+    try {
+      await api.setTeamTaskStatus({
+        workId: selected.id,
+        status: 'done',
+        decidedBy: 'local-user',
+      })
+      await api.workAction('complete', selected.id)
+      await onRefreshWorks?.()
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAcceptBusy(false)
+    }
+  }
+
   const openWork = (workId: string): void => {
     setSelectedId(workId)
     setDetailTab('overview')
+    setSidePanelOpen(true)
+    setDetailError(null)
   }
 
-  const renderWorkCard = (work: Work) => (
-    <div className="work-card" key={work.id}>
-      <div className="work-card-top">
-        <div className="work-card-title">{work.name}</div>
-        <StatusBadge status={work.status} label={WORK_LABEL[work.status] ?? work.status} />
+  const renderWorkCard = (work: Work) => {
+    const ownerTeam = work.ownerTeamId
+      ? (teams.find((team) => team.id === work.ownerTeamId) ?? null)
+      : null
+    const firstAssignment = (assignmentsByWork[work.id] ?? [])[0]
+    const firstAgent = firstAssignment
+      ? (agents.find((agent) => agent.id === firstAssignment.agentId) ?? null)
+      : null
+    const description = work.description || work.objective
+    return (
+      // biome-ignore lint/a11y/useSemanticElements: 整个任务卡需要点击打开详情，内部是块级布局，不适合 button。
+      <div
+        className="work-card work-card-button"
+        key={work.id}
+        role="button"
+        tabIndex={0}
+        aria-label={`打开任务 ${work.name}`}
+        onClick={() => openWork(work.id)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            openWork(work.id)
+          }
+        }}
+      >
+        <div className="work-card-top">
+          <div className="work-card-title">{work.name}</div>
+        </div>
+        {description && <div className="work-card-desc">{shortText(description, 120)}</div>}
+        <div className="work-card-meta">
+          <span className="chip">
+            {projects.find((project) => project.id === work.projectId)?.name ?? '未分组'}
+          </span>
+          {ownerTeam ? (
+            <span>{ownerTeam.name}</span>
+          ) : firstAgent ? (
+            <span>{firstAgent.name}</span>
+          ) : null}
+        </div>
       </div>
-      <div className="work-card-desc">{work.description || work.objective || work.rootPath}</div>
-      <div className="work-card-meta">
-        <span className="avatar-stack">
-          <span className="avatar">{initials(work.name)}</span>
-        </span>
-        <span className="chip">
-          {projects.find((project) => project.id === work.projectId)?.name ?? '未分组'}
-        </span>
-        <span>{work.teamIds.length} 个团队</span>
-        <span>·</span>
-        <span>{(assignmentsByWork[work.id] ?? []).length} 个岗位</span>
-      </div>
-      <div className="work-card-foot">
-        <span
-          className="faint"
-          style={{
-            fontSize: 10.5,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {work.rootPath}
-        </span>
-        <span className="right">
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => openWork(work.id)}
-          >
-            打开
-          </button>
-        </span>
-      </div>
-    </div>
-  )
-
-  const workActionButtons = (work: Work) => {
-    if (work.status === 'draft') {
-      return (
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={busy}
-          onClick={() => void onWorkAction('activate', work.id)}
-        >
-          <Icon name="play" size={14} />
-          激活
-        </button>
-      )
-    }
-    if (work.status === 'active') {
-      return (
-        <>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            disabled={busy}
-            onClick={() => void onWorkAction('pause', work.id)}
-          >
-            <Icon name="pause" size={14} />
-            暂停
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            disabled={busy}
-            onClick={() => void onWorkAction('complete', work.id)}
-          >
-            完成
-          </button>
-        </>
-      )
-    }
-    if (work.status === 'paused') {
-      return (
-        <>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={busy}
-            onClick={() => void onWorkAction('resume', work.id)}
-          >
-            <Icon name="play" size={14} />
-            恢复
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            disabled={busy}
-            onClick={() => void onWorkAction('complete', work.id)}
-          >
-            完成
-          </button>
-        </>
-      )
-    }
-    return null
+    )
   }
 
   if (selected) {
@@ -347,345 +360,528 @@ export function WorksPage({
               任务
             </button>
           }
-          title={
-            <>
-              {selected.name}
-              <StatusBadge
-                status={selected.status}
-                label={WORK_LABEL[selected.status] ?? selected.status}
-              />
-            </>
-          }
-          subtitle={`${projects.find((project) => project.id === selected.projectId)?.name ?? '未分组'} · ${selected.description || selected.objective || selected.rootPath}`}
+          title={selected.name}
           actions={
-            <>
-              {workActionButtons(selected)}
-              <button type="button" className="btn btn-ghost" onClick={() => setSelectedId(null)}>
-                返回任务
-              </button>
-            </>
+            <button
+              type="button"
+              className="btn btn-ghost btn-icon"
+              aria-label={sidePanelOpen ? '隐藏侧栏' : '显示侧栏'}
+              title={sidePanelOpen ? '隐藏侧栏' : '显示侧栏'}
+              onClick={() => setSidePanelOpen((open) => !open)}
+            >
+              <Icon name={sidePanelOpen ? 'panel' : 'panel-off'} size={14} />
+            </button>
           }
         />
 
-        <div className="task-detail-layout">
+        <div className={`task-detail-layout ${sidePanelOpen ? '' : 'task-detail-layout-full'}`}>
           <div className="task-chat-main">
-            <TaskChatPanel
-              workId={selected.id}
-              workName={selected.name}
-              workDescription={selected.description || selected.objective}
-              workStatus={selected.status}
-              agents={agents}
-              onActivate={() => void onWorkAction('activate', selected.id)}
-              onResume={() => void onWorkAction('resume', selected.id)}
-              onAssignmentsChanged={() => void onRefreshAssignments(selected.id)}
-            />
+            {selected.collaborationMode === 'team' ? (
+              <TeamTaskChatPanel
+                workId={selected.id}
+                agents={agents}
+                teams={teams}
+                onOpenRuns={() => {
+                  setDetailTab('runs')
+                  setSidePanelOpen(true)
+                }}
+                onRefreshWorks={() => {
+                  void onRefreshAssignments(selected.id)
+                  void onRefreshWorks?.()
+                }}
+              />
+            ) : (
+              <TaskChatPanel
+                workId={selected.id}
+                workName={selected.name}
+                workDescription={selected.description || selected.objective}
+                workStatus={selected.status}
+                agents={agents}
+                onActivate={() => void onWorkAction('activate', selected.id)}
+                onResume={() => void onWorkAction('resume', selected.id)}
+                onAssignmentsChanged={() => void onRefreshAssignments(selected.id)}
+              />
+            )}
           </div>
-          <aside className="task-side">
-            <div className="tabs">
-              <button
-                type="button"
-                className={`tab ${detailTab === 'overview' ? 'active' : ''}`}
-                onClick={() => setDetailTab('overview')}
-              >
-                概览
-              </button>
-              <button
-                type="button"
-                className={`tab ${detailTab === 'artifacts' ? 'active' : ''}`}
-                onClick={() => setDetailTab('artifacts')}
-              >
-                交付物
-              </button>
-              <button
-                type="button"
-                className={`tab ${detailTab === 'team' ? 'active' : ''}`}
-                onClick={() => setDetailTab('team')}
-              >
-                团队
-              </button>
-              <button
-                type="button"
-                className={`tab ${detailTab === 'settings' ? 'active' : ''}`}
-                onClick={() => setDetailTab('settings')}
-              >
-                设置
-              </button>
-            </div>
-
-            {detailTab === 'overview' && (
-              <div className="stack">
-                <div className="card">
-                  <div className="card-head">
-                    <div className="card-title">任务信息</div>
-                  </div>
-                  <div className="card-body">
-                    <dl className="kv">
-                      <dt>状态</dt>
-                      <dd>
-                        <StatusBadge
-                          status={selected.status}
-                          label={WORK_LABEL[selected.status] ?? selected.status}
-                        />
-                      </dd>
-                      <dt>项目</dt>
-                      <dd>
-                        {projects.find((project) => project.id === selected.projectId)?.name ??
-                          '未分组'}
-                      </dd>
-                      <dt>根目录</dt>
-                      <dd className="mono">{selected.rootPath}</dd>
-                      <dt>创建时间</dt>
-                      <dd>{new Date(selected.createdAt).toLocaleString()}</dd>
-                      <dt>更新时间</dt>
-                      <dd>{new Date(selected.updatedAt).toLocaleString()}</dd>
-                      <dt>优先级</dt>
-                      <dd>{selected.priority}</dd>
-                    </dl>
-                  </div>
-                </div>
+          {sidePanelOpen && (
+            <aside className="task-side">
+              <div className="tabs">
+                <button
+                  type="button"
+                  className={`tab ${detailTab === 'overview' ? 'active' : ''}`}
+                  onClick={() => setDetailTab('overview')}
+                >
+                  概览
+                </button>
+                {selected.collaborationMode === 'team' && (
+                  <button
+                    type="button"
+                    className={`tab ${detailTab === 'runs' ? 'active' : ''}`}
+                    onClick={() => setDetailTab('runs')}
+                  >
+                    执行记录
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={`tab ${detailTab === 'artifacts' ? 'active' : ''}`}
+                  onClick={() => setDetailTab('artifacts')}
+                >
+                  交付物
+                </button>
+                <button
+                  type="button"
+                  className={`tab ${detailTab === 'team' ? 'active' : ''}`}
+                  onClick={() => setDetailTab('team')}
+                >
+                  团队
+                </button>
+                <button
+                  type="button"
+                  className={`tab ${detailTab === 'settings' ? 'active' : ''}`}
+                  onClick={() => setDetailTab('settings')}
+                >
+                  设置
+                </button>
               </div>
-            )}
 
-            {detailTab === 'artifacts' && (
-              <div className="stack">
-                <ArtifactsPanel workId={selected.id} />
-              </div>
-            )}
-
-            {detailTab === 'team' && (
-              <div className="detail-layout">
+              {detailTab === 'overview' && (
                 <div className="stack">
+                  {detailError && <div className="banner error">{detailError}</div>}
                   <div className="card">
                     <div className="card-head">
-                      <div className="card-title">Assignment</div>
+                      <div className="card-title">任务信息</div>
                       <div className="right">
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => setAssignmentOpen(true)}
-                        >
-                          <Icon name="plus" size={13} />
-                          分配 Agent
-                        </button>
-                      </div>
-                    </div>
-                    <div className="card-body" style={{ display: 'grid', gap: 12 }}>
-                      {assignments.length === 0 ? (
-                        <div className="empty-state">该任务还没有 Assignment。</div>
-                      ) : (
-                        <table className="table">
-                          <thead>
-                            <tr>
-                              <th>Agent</th>
-                              <th>角色</th>
-                              <th>Provider</th>
-                              <th>状态</th>
-                              <th className="right">操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {assignments.map((assignment) => {
-                              const agent = agents.find((item) => item.id === assignment.agentId)
-                              return (
-                                <tr key={assignment.id}>
-                                  <td>
-                                    <strong>{agent?.name ?? assignment.agentId}</strong>
-                                  </td>
-                                  <td>{assignment.workRole}</td>
-                                  <td>
-                                    <ProviderBadge
-                                      provider={providerForAgent(assignment.agentId)}
-                                    />
-                                  </td>
-                                  <td>
-                                    <StatusBadge status={assignment.status} />
-                                  </td>
-                                  <td className="right">
-                                    <div className="row-actions">
-                                      <button
-                                        type="button"
-                                        className="btn btn-ghost btn-sm"
-                                        disabled={busy}
-                                        onClick={() =>
-                                          void onAssignmentAction(
-                                            'pause',
-                                            selected.id,
-                                            assignment.id,
-                                          )
-                                        }
-                                      >
-                                        暂停
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="btn btn-ghost btn-sm"
-                                        disabled={busy}
-                                        onClick={() =>
-                                          void onAssignmentAction(
-                                            'resume',
-                                            selected.id,
-                                            assignment.id,
-                                          )
-                                        }
-                                      >
-                                        恢复
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="btn btn-ghost btn-sm"
-                                        disabled={busy}
-                                        onClick={() =>
-                                          void onAssignmentAction(
-                                            'complete',
-                                            selected.id,
-                                            assignment.id,
-                                          )
-                                        }
-                                      >
-                                        完成
-                                      </button>
-                                    </div>
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="stack">
-                  <div className="card">
-                    <div className="card-head">
-                      <div className="card-title">关联团队</div>
-                      <div className="right">
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => setLinkTeamOpen(true)}
-                        >
-                          <Icon name="plus" size={13} />
-                          关联团队
-                        </button>
-                      </div>
-                    </div>
-                    <div className="card-body" style={{ display: 'grid', gap: 10 }}>
-                      <div style={{ height: 1, background: 'var(--border)' }} />
-                      {selected.teamIds.length === 0 ? (
-                        <div className="faint" style={{ fontSize: 11.5 }}>
-                          尚未关联团队。
-                        </div>
-                      ) : (
-                        selected.teamIds.map((teamId) => (
-                          <div key={teamId} style={{ fontSize: 12 }}>
-                            {teams.find((team) => team.id === teamId)?.name ?? teamId}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {detailTab === 'settings' && (
-              <div className="detail-layout">
-                <div className="stack">
-                  <div className="card">
-                    <div className="card-head">
-                      <div className="card-title">Git Worktree</div>
-                      <div className="right">
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => setWorktreeOpen(true)}
-                        >
-                          <Icon name="plus" size={13} />
-                          创建 Worktree
-                        </button>
-                      </div>
-                    </div>
-                    <div className="card-body" style={{ display: 'grid', gap: 12 }}>
-                      {worktrees.length === 0 ? (
-                        <div className="empty-state">该任务还没有 Worktree。</div>
-                      ) : (
-                        <div style={{ display: 'grid', gap: 8 }}>
-                          {worktrees.map((worktree) => (
-                            <div
-                              key={worktree.id}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 10,
-                                padding: '8px 10px',
-                                border: '1px solid var(--border)',
-                                borderRadius: 8,
-                                fontSize: 12,
-                              }}
+                        {selected.status === 'active' && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            disabled={busy}
+                            onClick={() => void onWorkAction('pause', selected.id)}
+                          >
+                            暂停任务
+                          </button>
+                        )}
+                        {selected.status === 'paused' && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            disabled={busy}
+                            onClick={() => void onWorkAction('resume', selected.id)}
+                          >
+                            恢复任务
+                          </button>
+                        )}
+                        {selected.status === 'draft' && (
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm"
+                            disabled={busy}
+                            onClick={() => void onWorkAction('activate', selected.id)}
+                          >
+                            激活任务
+                          </button>
+                        )}
+                        {selected.collaborationMode === 'team' &&
+                          selected.issueStatus === 'review' && (
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-sm"
+                              disabled={acceptBusy}
+                              onClick={() => void acceptTeamTask()}
                             >
-                              <div style={{ minWidth: 0, flex: 1 }}>
-                                <code className="mono">{worktree.branchName}</code>
-                                <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>
-                                  {worktree.worktreePath}
-                                </div>
-                              </div>
-                              <button
-                                type="button"
-                                className="btn btn-danger btn-sm"
-                                disabled={busy}
-                                onClick={() => {
-                                  if (pendingRemoveId === worktree.id) {
-                                    setPendingRemoveId(null)
-                                    void onRemoveWorktree(selected.id, worktree.id)
-                                  } else {
-                                    setPendingRemoveId(worktree.id)
-                                  }
-                                }}
-                              >
-                                {pendingRemoveId === worktree.id ? '确认清理' : '清理'}
-                              </button>
-                              {pendingRemoveId === worktree.id && (
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary btn-sm"
-                                  onClick={() => setPendingRemoveId(null)}
-                                >
-                                  取消
-                                </button>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                              {acceptBusy ? '提交中…' : '验收通过'}
+                            </button>
+                          )}
+                      </div>
                     </div>
-                  </div>
-                </div>
-
-                <div className="stack">
-                  <div className="card">
-                    <div className="card-head">
-                      <div className="card-title">任务设置</div>
-                    </div>
-                    <div className="card-body" style={{ display: 'grid', gap: 10 }}>
+                    <div className="card-body">
                       <dl className="kv">
-                        <dt>任务 ID</dt>
-                        <dd className="mono">{selected.id}</dd>
-                        <dt>优先级</dt>
-                        <dd>{selected.priority}</dd>
+                        <dt>状态</dt>
+                        <dd>
+                          <StatusBadge
+                            status={selected.status}
+                            label={WORK_LABEL[selected.status] ?? selected.status}
+                          />
+                        </dd>
+                        <dt>协作方式</dt>
+                        <dd>{selected.collaborationMode === 'team' ? '团队线程' : 'Plan / DAG'}</dd>
+                        <dt>任务状态</dt>
+                        <dd>
+                          {selected.collaborationMode === 'team'
+                            ? (ISSUE_STATUS_LABEL[selected.issueStatus] ?? selected.issueStatus)
+                            : '—'}
+                        </dd>
+                        <dt>项目</dt>
+                        <dd>
+                          {projects.find((project) => project.id === selected.projectId)?.name ??
+                            '未分组'}
+                        </dd>
                         <dt>根目录</dt>
                         <dd className="mono">{selected.rootPath}</dd>
+                        <dt>创建时间</dt>
+                        <dd>{new Date(selected.createdAt).toLocaleString()}</dd>
+                        <dt>更新时间</dt>
+                        <dd>{new Date(selected.updatedAt).toLocaleString()}</dd>
+                        <dt>优先级</dt>
+                        <dd>{selected.priority}</dd>
                       </dl>
-                      <div className="faint" style={{ fontSize: 11 }}>
-                        任务不提供删除或原地修改根目录；状态迁移通过页面头的操作按钮完成。
+                    </div>
+                  </div>
+                  <details className="card work-info-details">
+                    <summary>
+                      <span className="card-title">任务说明</span>
+                      <span className="work-info-preview">
+                        {selected.objective || selected.description || '暂无任务说明'}
+                      </span>
+                    </summary>
+                    <div className="card-body stack">
+                      {selected.objective && (
+                        <div>
+                          <div className="faint">目标</div>
+                          <div className="work-description">{selected.objective}</div>
+                        </div>
+                      )}
+                      {selected.description && selected.description !== selected.objective && (
+                        <div>
+                          <div className="faint">描述</div>
+                          <div className="work-description">{selected.description}</div>
+                        </div>
+                      )}
+                      {!selected.objective && !selected.description && (
+                        <div className="empty-state">暂无任务说明。</div>
+                      )}
+                    </div>
+                  </details>
+                </div>
+              )}
+
+              {detailTab === 'runs' && selected.collaborationMode === 'team' && (
+                <div className="stack">
+                  <TeamTaskRunsPanel workId={selected.id} agents={agents} />
+                </div>
+              )}
+
+              {detailTab === 'artifacts' && (
+                <div className="stack">
+                  {selected.collaborationMode === 'team' ? (
+                    <WorkFilesPanel workId={selected.id} />
+                  ) : (
+                    <ArtifactsPanel workId={selected.id} />
+                  )}
+                </div>
+              )}
+
+              {detailTab === 'team' && (
+                <div className="detail-layout">
+                  <div className="stack">
+                    <div className="card">
+                      <div className="card-head">
+                        <div className="card-title">
+                          {selected.collaborationMode === 'team' ? '团队成员' : 'Assignment'}
+                        </div>
+                        {selected.collaborationMode !== 'team' && (
+                          <div className="right">
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setAssignmentOpen(true)}
+                            >
+                              <Icon name="plus" size={13} />
+                              分配 Agent
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <div className="card-body" style={{ display: 'grid', gap: 12 }}>
+                        {selected.collaborationMode === 'team' ? (
+                          <div className="team-assignment-list">
+                            {leaderAgent ? (
+                              <div className="team-assignment-row">
+                                <div className="team-assignment-identity">
+                                  <AgentAvatar avatar={leaderAgent.avatar} size={24} />
+                                  <strong>{leaderAgent.name}</strong>
+                                  <span className="chip">队长</span>
+                                  <ProviderBadge provider={providerForAgent(leaderAgent.id)} />
+                                  <span className="pill done plain">
+                                    {leaderAgent.status === 'active' ? '启用' : '停用'}
+                                  </span>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="empty-state">该团队还没有设置队长。</div>
+                            )}
+                            {teamMemberAgents.map((agent) => (
+                              <div className="team-assignment-row" key={agent.id}>
+                                <div className="team-assignment-identity">
+                                  <AgentAvatar avatar={agent.avatar} size={24} />
+                                  <strong>{agent.name}</strong>
+                                  <span className="chip">成员</span>
+                                  <ProviderBadge provider={providerForAgent(agent.id)} />
+                                  <span className="pill done plain">
+                                    {agent.status === 'active' ? '启用' : '停用'}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : assignments.length === 0 && !leaderAgent ? (
+                          <div className="empty-state">该任务还没有 Assignment。</div>
+                        ) : (
+                          <table className="table">
+                            <thead>
+                              <tr>
+                                <th>Agent</th>
+                                <th>角色</th>
+                                <th>Provider</th>
+                                <th>状态</th>
+                                <th className="right">操作</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {leaderAgent && !leaderHasAssignment && (
+                                <tr key={`leader-${leaderAgent.id}`}>
+                                  <td>
+                                    <strong>{leaderAgent.name}</strong>
+                                  </td>
+                                  <td>队长</td>
+                                  <td>
+                                    <ProviderBadge provider={providerForAgent(leaderAgent.id)} />
+                                  </td>
+                                  <td>
+                                    <span className="pill done plain">
+                                      {leaderAgent.status === 'active' ? '启用' : '停用'}
+                                    </span>
+                                  </td>
+                                  <td className="right">
+                                    <span className="faint">—</span>
+                                  </td>
+                                </tr>
+                              )}
+                              {assignments.map((assignment) => {
+                                const agent = agents.find((item) => item.id === assignment.agentId)
+                                return (
+                                  <tr key={assignment.id}>
+                                    <td>
+                                      <strong>{agent?.name ?? assignment.agentId}</strong>
+                                    </td>
+                                    <td>
+                                      {assignment.workRole.startsWith('team-')
+                                        ? '成员'
+                                        : assignment.workRole}
+                                    </td>
+                                    <td>
+                                      <ProviderBadge
+                                        provider={providerForAgent(assignment.agentId)}
+                                      />
+                                    </td>
+                                    <td>
+                                      <StatusBadge status={assignment.status} />
+                                    </td>
+                                    <td className="right">
+                                      <div className="row-actions">
+                                        <button
+                                          type="button"
+                                          className="btn btn-ghost btn-sm"
+                                          disabled={busy}
+                                          onClick={() =>
+                                            void onAssignmentAction(
+                                              'pause',
+                                              selected.id,
+                                              assignment.id,
+                                            )
+                                          }
+                                        >
+                                          暂停
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="btn btn-ghost btn-sm"
+                                          disabled={busy}
+                                          onClick={() =>
+                                            void onAssignmentAction(
+                                              'resume',
+                                              selected.id,
+                                              assignment.id,
+                                            )
+                                          }
+                                        >
+                                          恢复
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="btn btn-ghost btn-sm"
+                                          disabled={busy}
+                                          onClick={() =>
+                                            void onAssignmentAction(
+                                              'complete',
+                                              selected.id,
+                                              assignment.id,
+                                            )
+                                          }
+                                        >
+                                          完成
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="stack">
+                    {selected.collaborationMode === 'team' ? (
+                      <div className="card">
+                        <div className="card-head">
+                          <div className="card-title">所属团队</div>
+                        </div>
+                        <div className="card-body">
+                          {ownerTeam ? (
+                            <div style={{ fontSize: 12 }}>{ownerTeam.name}</div>
+                          ) : (
+                            <div className="faint" style={{ fontSize: 11.5 }}>
+                              尚未设置所属团队。
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="card">
+                        <div className="card-head">
+                          <div className="card-title">关联团队</div>
+                          <div className="right">
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setLinkTeamOpen(true)}
+                            >
+                              <Icon name="plus" size={13} />
+                              关联团队
+                            </button>
+                          </div>
+                        </div>
+                        <div className="card-body" style={{ display: 'grid', gap: 10 }}>
+                          <div style={{ height: 1, background: 'var(--border)' }} />
+                          {selected.teamIds.length === 0 ? (
+                            <div className="faint" style={{ fontSize: 11.5 }}>
+                              尚未关联团队。
+                            </div>
+                          ) : (
+                            selected.teamIds.map((teamId) => (
+                              <div key={teamId} style={{ fontSize: 12 }}>
+                                {teams.find((team) => team.id === teamId)?.name ?? teamId}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {detailTab === 'settings' && (
+                <div className="detail-layout">
+                  <div className="stack">
+                    <div className="card">
+                      <div className="card-head">
+                        <div className="card-title">Git Worktree</div>
+                        <div className="right">
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => setWorktreeOpen(true)}
+                          >
+                            <Icon name="plus" size={13} />
+                            创建 Worktree
+                          </button>
+                        </div>
+                      </div>
+                      <div className="card-body" style={{ display: 'grid', gap: 12 }}>
+                        {worktrees.length === 0 ? (
+                          <div className="empty-state">该任务还没有 Worktree。</div>
+                        ) : (
+                          <div style={{ display: 'grid', gap: 8 }}>
+                            {worktrees.map((worktree) => (
+                              <div
+                                key={worktree.id}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 10,
+                                  padding: '8px 10px',
+                                  border: '1px solid var(--border)',
+                                  borderRadius: 8,
+                                  fontSize: 12,
+                                }}
+                              >
+                                <div style={{ minWidth: 0, flex: 1 }}>
+                                  <code className="mono">{worktree.branchName}</code>
+                                  <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>
+                                    {worktree.worktreePath}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="btn btn-danger btn-sm"
+                                  disabled={busy}
+                                  onClick={() => {
+                                    if (pendingRemoveId === worktree.id) {
+                                      setPendingRemoveId(null)
+                                      void onRemoveWorktree(selected.id, worktree.id)
+                                    } else {
+                                      setPendingRemoveId(worktree.id)
+                                    }
+                                  }}
+                                >
+                                  {pendingRemoveId === worktree.id ? '确认清理' : '清理'}
+                                </button>
+                                {pendingRemoveId === worktree.id && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => setPendingRemoveId(null)}
+                                  >
+                                    取消
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="stack">
+                    <div className="card">
+                      <div className="card-head">
+                        <div className="card-title">任务设置</div>
+                      </div>
+                      <div className="card-body" style={{ display: 'grid', gap: 10 }}>
+                        <dl className="kv">
+                          <dt>任务 ID</dt>
+                          <dd className="mono">{selected.id}</dd>
+                          <dt>优先级</dt>
+                          <dd>{selected.priority}</dd>
+                          <dt>根目录</dt>
+                          <dd className="mono">{selected.rootPath}</dd>
+                        </dl>
+                        <div className="faint" style={{ fontSize: 11 }}>
+                          任务不提供删除或原地修改根目录；状态迁移通过页面头的操作按钮完成。
+                        </div>
                       </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
-          </aside>
+              )}
+            </aside>
+          )}
         </div>
 
         <Modal
@@ -1008,41 +1204,40 @@ export function WorksPage({
               <thead>
                 <tr>
                   <th>Work</th>
-                  <th>状态</th>
-                  <th>根目录</th>
-                  <th>Team</th>
-                  <th>岗位</th>
+                  <th>团队 / 岗位</th>
                   <th>更新时间</th>
-                  <th className="right">操作</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredWorks.map((work) => (
-                  <tr key={work.id}>
-                    <td>
-                      <strong>{work.name}</strong>
-                    </td>
-                    <td>
-                      <StatusBadge
-                        status={work.status}
-                        label={WORK_LABEL[work.status] ?? work.status}
-                      />
-                    </td>
-                    <td className="mono">{work.rootPath}</td>
-                    <td>{work.teamIds.length}</td>
-                    <td>{(assignmentsByWork[work.id] ?? []).length}</td>
-                    <td>{new Date(work.updatedAt).toLocaleString()}</td>
-                    <td className="right">
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => openWork(work.id)}
-                      >
-                        打开
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {filteredWorks.map((work) => {
+                  const ownerTeam = work.ownerTeamId
+                    ? (teams.find((team) => team.id === work.ownerTeamId) ?? null)
+                    : null
+                  const firstAssignment = (assignmentsByWork[work.id] ?? [])[0]
+                  const firstAgent = firstAssignment
+                    ? (agents.find((agent) => agent.id === firstAssignment.agentId) ?? null)
+                    : null
+                  return (
+                    <tr
+                      key={work.id}
+                      className="work-row-click"
+                      tabIndex={0}
+                      onClick={() => openWork(work.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          openWork(work.id)
+                        }
+                      }}
+                    >
+                      <td>
+                        <strong>{work.name}</strong>
+                      </td>
+                      <td>{ownerTeam?.name ?? firstAgent?.name ?? '—'}</td>
+                      <td>{new Date(work.updatedAt).toLocaleString()}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           )}
