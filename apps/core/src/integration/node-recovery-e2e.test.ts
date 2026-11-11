@@ -386,6 +386,42 @@ function seedInterruptedRecovery(dataDir: string, repoDir: string, checkpointId:
   }
 }
 
+function seedT2Crash(dataDir: string, checkpointId: string): void {
+  const db = openDatabase(path.join(dataDir, 'agentra.db'))
+  try {
+    db.prepare(
+      `INSERT INTO task_recovery_attempts (
+         id, work_id, checkpoint_id, kind, base_dedupe_key, dedupe_key, idempotency_key,
+         attempt_no, status, risk_level, eligibility_status, original_work_status,
+         reopen_reason, operator_confirmation_json, plan_hash, context_manifest_json,
+         execution_id, session_id, team_run_id, node_run_id, workflow_run_id,
+         branch_run_id, recovered_node_run_id, chain_attempt_no,
+         error_json, created_at, updated_at, started_at, ended_at
+       ) VALUES ('rec-t2-crash', 'work-rec', ?, 'workflow_node', 'workflow_node:nrn-rec',
+         'workflow_node:nrn-rec:1', 'idem-t2-crash', 1, 'starting', 'low', 'eligible', NULL, NULL,
+         '{}', 'hash', ?, NULL, NULL, NULL, NULL, 'run-rec', 'brn-rec', 'nrn-rec', 1, NULL, ?, ?, NULL, NULL)`,
+    ).run(
+      checkpointId,
+      JSON.stringify({
+        worktree: {
+          state: 'creating',
+          worktreeId: 'wt-t2-crash',
+          worktreePath: path.join(dataDir, 'never-created', 'wt-t2-crash'),
+          branchName: 'agentra/run-rec/task-1/t2-crash',
+          newNodeRunId: 'nrn-t2-crash',
+          worktreeOwnerToken: 'owner-t2',
+          workflowRunId: 'run-rec',
+          workId: 'work-rec',
+        },
+      }),
+      NOW,
+      NOW,
+    )
+  } finally {
+    db.close()
+  }
+}
+
 describe('workflow node recovery end-to-end (real Core + Daemon + fake CLI)', () => {
   it('recovers a reconciliation-required node, commits an artifact and succeeds the attempt', async () => {
     const dataDir = tempDir('a-nr-e2e-')
@@ -547,6 +583,45 @@ describe('workflow node recovery end-to-end (real Core + Daemon + fake CLI)', ()
         )
         .get() as { c: number }
       expect(replacements.c).toBe(0)
+    } finally {
+      db.close()
+    }
+  }, 120_000)
+
+  it('reconciles an interrupted T2 worktree intent on restart without claiming or reusing it', async () => {
+    const dataDir = tempDir('a-nr-t2-')
+    const repoDir = tempDir('a-nr-repo-')
+    initRepo(repoDir)
+    const { checkpointId } = seed(dataDir, repoDir)
+    seedT2Crash(dataDir, checkpointId)
+    spawnCore(dataDir)
+    const coreSocket = path.join(dataDir, 'runtime', 'core.sock')
+    await waitFor(async () => (await probeSocket(coreSocket)) === 'live', 60_000)
+
+    const db = openDatabase(path.join(dataDir, 'agentra.db'))
+    try {
+      await waitFor(async () => {
+        const row = db
+          .prepare("SELECT status FROM task_recovery_attempts WHERE id = 'rec-t2-crash'")
+          .get() as { status?: string } | undefined
+        return row?.status === 'failed'
+      }, 60_000)
+      const attempt = db
+        .prepare(
+          "SELECT status, context_manifest_json FROM task_recovery_attempts WHERE id = 'rec-t2-crash'",
+        )
+        .get() as { status: string; context_manifest_json: string }
+      expect(attempt.status).toBe('failed')
+      expect(attempt.context_manifest_json).toContain('abandoned')
+      expect(attempt.context_manifest_json).toContain('WORKTREE_CREATION_INTERRUPTED')
+      const claimed = db
+        .prepare("SELECT COUNT(*) AS c FROM node_runs WHERE id = 'nrn-t2-crash'")
+        .get() as { c: number }
+      expect(claimed.c).toBe(0)
+      const executions = db
+        .prepare("SELECT COUNT(*) AS c FROM executions WHERE node_run_id = 'nrn-t2-crash'")
+        .get() as { c: number }
+      expect(executions.c).toBe(0)
     } finally {
       db.close()
     }
