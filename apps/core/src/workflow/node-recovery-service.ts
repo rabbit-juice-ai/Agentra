@@ -381,11 +381,18 @@ export class WorkflowNodeRecoveryService {
           error: convergeError instanceof Error ? convergeError.message : String(convergeError),
         })
       }
-      this.audit('workflow.node.recovery.start_failed', {
-        workflowRunId: target.run.id,
-        nodeRunId: target.nodeRun.id,
-        error: error instanceof Error ? error.message : String(error),
-      })
+      try {
+        this.audit('workflow.node.recovery.start_failed', {
+          workflowRunId: target.run.id,
+          nodeRunId: target.nodeRun.id,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      } catch (auditError) {
+        // 数据库不可写时审计也会失败；不得用它覆盖原始启动错误。
+        this.deps.logger?.warn('workflow node recovery failure audit failed', {
+          error: auditError instanceof Error ? auditError.message : String(auditError),
+        })
+      }
       throw error
     }
   }

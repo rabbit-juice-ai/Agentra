@@ -514,6 +514,48 @@ describe('WorkflowNodeRecoveryService', () => {
     h.db.close()
   })
 
+  it('leaves the attempt starting when the database is unwritable during T3', async () => {
+    const h = harness()
+    h.executionRunner.prepareRecoveryForNode = () => {
+      h.db.exec('PRAGMA query_only = ON')
+      throw new Error('simulated disk full')
+    }
+    await expect(
+      h.service.start({
+        workflowRunId: 'run-1',
+        nodeRunId: 'nrn-a',
+        confirm: true,
+        idempotencyKey: 'idem-db-readonly',
+      }),
+    ).rejects.toThrow('simulated disk full')
+    h.db.exec('PRAGMA query_only = OFF')
+    const row = h.db
+      .prepare('SELECT id, status FROM task_recovery_attempts WHERE idempotency_key = ?')
+      .get('idem-db-readonly') as { id: string; status: string }
+    expect(row.status).toBe('starting')
+    expect(h.nodes.get('nrn-a')?.status).toBe('reconciliation_required')
+    const counts = h.db
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM agent_sessions) AS sessions,
+                (SELECT COUNT(*) FROM executions) AS executions,
+                (SELECT COUNT(*) FROM node_runs) AS nodes`,
+      )
+      .get() as { sessions: number; executions: number; nodes: number }
+    expect(counts).toEqual({ sessions: 0, executions: 0, nodes: 1 })
+    // 清理：数据库恢复可写后，收敛器应能把遗留 starting 收为 failed，且重复调用幂等。
+    await h.service.convergeAfterT3Failure(row.id, 'TEST_CLEANUP', true)
+    expect(h.attempts.get(row.id)?.status).toBe('failed')
+    await h.service.convergeAfterT3Failure(row.id, 'TEST_CLEANUP', true)
+    expect(h.attempts.get(row.id)?.status).toBe('failed')
+    const audits = h.db
+      .prepare(
+        "SELECT COUNT(*) AS c FROM audit_logs WHERE action = 'workflow.node.recovery.t3_failure_converged'",
+      )
+      .get() as { c: number }
+    expect(audits.c).toBe(1)
+    h.db.close()
+  })
+
   it('reenters a reconciliation-required Run only when no blockers remain and kicks', () => {
     const h = harness()
     h.db
