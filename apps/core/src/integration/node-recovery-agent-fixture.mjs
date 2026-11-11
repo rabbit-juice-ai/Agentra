@@ -17,10 +17,14 @@ const lines = readline.createInterface({ input: process.stdin })
 lines.on('line', (line) => {
   const frame = JSON.parse(line)
   if (frame.type !== 'user') return
+  const prompt = frame.message.content.map((block) => block.text ?? '').join('\n')
+  const artifacts = prompt.includes('WITH_ARTIFACT')
+    ? [{ name: 'spec', content: 'node-recovery-artifact-proof' }]
+    : []
   const result = JSON.stringify({
     agentraOutputVersion: 1,
     output: { recovered: true },
-    artifacts: [{ name: 'spec', content: 'node-recovery-artifact-proof' }],
+    artifacts,
   })
   emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: result }] } })
   emit({ type: 'result', subtype: 'success', is_error: false, result })

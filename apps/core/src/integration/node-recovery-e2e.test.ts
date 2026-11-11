@@ -270,18 +270,33 @@ function seed(dataDir: string, repoDir: string): { checkpointId: string } {
         position: { x: 0, y: 1 },
         config: {
           assignmentSelector: { workRole: 'dev' },
-          taskPrompt: 'TASK_RECOVER',
+          taskPrompt: 'TASK_RECOVER_WITH_ARTIFACT',
           inputArtifactRefs: [],
           artifacts: [{ name: 'spec', type: 'markdown', required: true }],
           workingDirectoryPolicy: 'worktree',
           outputContract: { profile: 'generic', fields: [] },
         },
       },
-      { key: 'end', type: 'end', label: '', position: { x: 0, y: 2 }, config: {} },
+      {
+        key: 'task_2',
+        type: 'agent_task',
+        label: '',
+        position: { x: 0, y: 2 },
+        config: {
+          assignmentSelector: { workRole: 'dev' },
+          taskPrompt: 'TASK_FOLLOWUP',
+          inputArtifactRefs: [],
+          artifacts: [],
+          workingDirectoryPolicy: 'work_root',
+          outputContract: { profile: 'generic', fields: [] },
+        },
+      },
+      { key: 'end', type: 'end', label: '', position: { x: 0, y: 3 }, config: {} },
     ],
     edges: [
       { key: 'e1', source: 'start', target: 'task_1' },
-      { key: 'e2', source: 'task_1', target: 'end' },
+      { key: 'e2', source: 'task_1', target: 'task_2' },
+      { key: 'e3', source: 'task_2', target: 'end' },
     ],
     settings: {
       defaults: { timeoutSeconds: 1800, maxAttempts: 1 },
@@ -319,8 +334,56 @@ function seed(dataDir: string, repoDir: string): { checkpointId: string } {
      VALUES ('nrn-rec', 'run-rec', 'task_1', 'brn-rec', 'reconciliation_required', 1,
        '{}', NULL, ?, ?)`,
   ).run(NOW, NOW)
+  for (const [id, key] of [
+    ['nrn-t2', 'task_2'],
+    ['nrn-end', 'end'],
+  ] as const) {
+    db.prepare(
+      `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, branch_run_id, status, attempt,
+         input_snapshot_json, output_snapshot_json, created_at, updated_at)
+       VALUES (?, 'run-rec', ?, 'brn-rec', 'blocked', 1, '{}', NULL, ?, ?)`,
+    ).run(id, key, NOW, NOW)
+  }
   db.close()
   return { checkpointId: checkpoint.checkpointId }
+}
+
+function seedInterruptedRecovery(dataDir: string, repoDir: string, checkpointId: string): void {
+  const db = openDatabase(path.join(dataDir, 'agentra.db'))
+  try {
+    db.prepare(
+      `INSERT INTO agent_sessions (id, assignment_id, provider_id, external_session_id,
+         context_ref, status, created_at, updated_at, last_active_at)
+       VALUES ('ses-crash', 'asg-rec', 'claude-code', 'ext-crash', 'agt-rec', 'active', ?, ?, ?)`,
+    ).run(NOW, NOW, NOW)
+    db.prepare(
+      `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, branch_run_id, status, attempt,
+         input_snapshot_json, output_snapshot_json, created_at, updated_at)
+       VALUES ('nrn-crash', 'run-rec', 'task_1', 'brn-rec', 'running', 2, '{}', NULL, ?, ?)`,
+    ).run(NOW, NOW)
+    db.prepare(
+      `INSERT INTO executions (id, session_id, node_run_id, provider_id, external_execution_id,
+         process_id, status, working_directory, started_at, ended_at, exit_code,
+         capabilities_snapshot_json, recovery_state_json, created_at, updated_at)
+       VALUES ('exe-crash', 'ses-crash', 'nrn-crash', 'claude-code', 'ext-exe-crash', NULL, 'pending',
+         ?, NULL, NULL, NULL, ?, NULL, ?, ?)`,
+    ).run(repoDir, JSON.stringify(CAPABILITIES), NOW, NOW)
+    db.prepare(
+      `INSERT INTO task_recovery_attempts (
+         id, work_id, checkpoint_id, kind, base_dedupe_key, dedupe_key, idempotency_key,
+         attempt_no, status, risk_level, eligibility_status, original_work_status,
+         reopen_reason, operator_confirmation_json, plan_hash, context_manifest_json,
+         execution_id, session_id, team_run_id, node_run_id, workflow_run_id,
+         branch_run_id, recovered_node_run_id, chain_attempt_no,
+         error_json, created_at, updated_at, started_at, ended_at
+       ) VALUES ('rec-crash', 'work-rec', ?, 'workflow_node', 'workflow_node:nrn-rec',
+         'workflow_node:nrn-rec:1', 'idem-crash', 1, 'running', 'low', 'eligible', NULL, NULL,
+         '{}', 'hash', '{}', 'exe-crash', 'ses-crash', NULL, 'nrn-crash', 'run-rec', 'brn-rec',
+         'nrn-rec', 1, NULL, ?, ?, ?, NULL)`,
+    ).run(checkpointId, NOW, NOW, NOW)
+  } finally {
+    db.close()
+  }
 }
 
 describe('workflow node recovery end-to-end (real Core + Daemon + fake CLI)', () => {
@@ -404,10 +467,86 @@ describe('workflow node recovery end-to-end (real Core + Daemon + fake CLI)', ()
         )
         .get(attempt.execution_id, attempt.node_run_id) as { c: number }
       expect(checkpoint.c).toBeGreaterThan(0)
+
+      await waitFor(async () => {
+        const run = db.prepare("SELECT status FROM workflow_runs WHERE id = 'run-rec'").get() as {
+          status: string
+        }
+        return run.status === 'completed'
+      }, 60_000)
       const run = db.prepare("SELECT status FROM workflow_runs WHERE id = 'run-rec'").get() as {
         status: string
       }
-      expect(run.status).toBe('running')
+      expect(run.status).toBe('completed')
+
+      const task1Attempts = db
+        .prepare(
+          "SELECT attempt, status FROM node_runs WHERE workflow_node_key = 'task_1' ORDER BY attempt",
+        )
+        .all() as { attempt: number; status: string }[]
+      expect(task1Attempts).toEqual([
+        { attempt: 1, status: 'failed' },
+        { attempt: 2, status: 'succeeded' },
+      ])
+      const task2 = db
+        .prepare(
+          "SELECT status, COUNT(*) OVER () AS c FROM node_runs WHERE workflow_node_key = 'task_2'",
+        )
+        .get() as { status: string; c: number }
+      expect(task2).toMatchObject({ status: 'succeeded', c: 1 })
+      const task2Executions = db
+        .prepare("SELECT COUNT(*) AS c FROM executions WHERE node_run_id = 'nrn-t2'")
+        .get() as { c: number }
+      expect(task2Executions.c).toBe(1)
+      const endNode = db
+        .prepare("SELECT status FROM node_runs WHERE workflow_node_key = 'end'")
+        .get() as { status: string }
+      expect(endNode.status).toBe('succeeded')
+    } finally {
+      db.close()
+    }
+  }, 120_000)
+
+  it('converges a T3-committed/not-spawned recovery after restart without duplicate execution', async () => {
+    const dataDir = tempDir('a-nr-crash-')
+    const repoDir = tempDir('a-nr-repo-')
+    initRepo(repoDir)
+    const { checkpointId } = seed(dataDir, repoDir)
+    seedInterruptedRecovery(dataDir, repoDir, checkpointId)
+    spawnCore(dataDir)
+    const coreSocket = path.join(dataDir, 'runtime', 'core.sock')
+    await waitFor(async () => (await probeSocket(coreSocket)) === 'live', 60_000)
+
+    const db = openDatabase(path.join(dataDir, 'agentra.db'))
+    try {
+      await waitFor(async () => {
+        const row = db
+          .prepare("SELECT status FROM task_recovery_attempts WHERE id = 'rec-crash'")
+          .get() as { status?: string } | undefined
+        return row?.status === 'failed'
+      }, 60_000)
+      const attempt = db
+        .prepare("SELECT status, error_json FROM task_recovery_attempts WHERE id = 'rec-crash'")
+        .get() as { status: string; error_json: string | null }
+      expect(attempt.status).toBe('failed')
+      const execution = db
+        .prepare("SELECT status FROM executions WHERE id = 'exe-crash'")
+        .get() as { status: string }
+      expect(execution.status).toBe('failed')
+      const executions = db
+        .prepare("SELECT COUNT(*) AS c FROM executions WHERE node_run_id = 'nrn-crash'")
+        .get() as { c: number }
+      expect(executions.c).toBe(1)
+      const node = db.prepare("SELECT status FROM node_runs WHERE id = 'nrn-crash'").get() as {
+        status: string
+      }
+      expect(node.status).toBe('reconciliation_required')
+      const replacements = db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM node_runs WHERE workflow_node_key = 'task_1' AND attempt > 2",
+        )
+        .get() as { c: number }
+      expect(replacements.c).toBe(0)
     } finally {
       db.close()
     }

@@ -336,6 +336,7 @@ function harness(
     executionRepository,
     teamMessageRepository: new TeamTaskMessageRepository(db),
     checkpointService,
+    checkpointRepository,
     recoveryService,
     started,
     checkpointId: checkpoint.checkpointId as string,
@@ -1024,6 +1025,30 @@ describe('RecoveryService', () => {
     h.recoveryService.onCheckpointResult({
       executionId: 'exe-wf',
       checkpointId,
+      checkpointState: 'valid',
+      outcome: 'created',
+    } as never)
+    const attempt = h.attempts.get(attemptId)
+    expect(attempt?.status).toBe('failed')
+    expect(attempt?.errorJson).toContain('CHECKPOINT_RECOVERY_MISMATCH')
+  })
+
+  it('fails a workflow_node recovery when the checkpoint content hash is tampered', () => {
+    const h = harness()
+    const { attemptId, checkpointId } = seedWorkflowNodeAttempt(h, 'nrn-wf')
+    const record = h.checkpointRepository.get(checkpointId)
+    if (!record) throw new Error('checkpoint not found')
+    h.checkpointRepository.insert({
+      ...record,
+      id: 'chk-tampered',
+      seq: record.seq + 1,
+      baseDedupeKey: 'tampered-base',
+      dedupeKey: 'tampered-dedupe',
+      contentHash: '0'.repeat(64),
+    })
+    h.recoveryService.onCheckpointResult({
+      executionId: 'exe-wf',
+      checkpointId: 'chk-tampered',
       checkpointState: 'valid',
       outcome: 'created',
     } as never)
