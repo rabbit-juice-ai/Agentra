@@ -422,7 +422,16 @@ function seedT2Crash(dataDir: string, checkpointId: string): void {
   }
 }
 
-function seedT2Ready(dataDir: string, checkpointId: string): void {
+function seedT2Worktree(
+  dataDir: string,
+  checkpointId: string,
+  options: {
+    attemptId: string
+    idempotencyKey: string
+    chainAttemptNo: number
+    state: 'ready' | 'creating'
+  },
+): void {
   const paths = agentraPaths(dataDir)
   const db = openDatabase(paths.database)
   try {
@@ -434,7 +443,10 @@ function seedT2Ready(dataDir: string, checkpointId: string): void {
       paths.worktrees,
       () => NOW,
     )
-    const record = worktrees.create({ workId: 'work-rec', branchName: 'agentra/t2-ready' })
+    const record = worktrees.create({
+      workId: 'work-rec',
+      branchName: `agentra/t2-${options.state}`,
+    })
     if (!record.baseCommit) throw new Error('worktree base commit missing')
     const commonRaw = execFileSync(
       'git',
@@ -445,15 +457,15 @@ function seedT2Ready(dataDir: string, checkpointId: string): void {
     ).trim()
     const gitCommonDir = fs.realpathSync(path.resolve(record.worktreePath, commonRaw))
     const facts = {
-      state: 'ready',
+      state: options.state,
       worktreeId: record.id,
       worktreePath: fs.realpathSync(record.worktreePath),
       branchName: record.branchName,
       baseCommit: record.baseCommit,
       gitCommonDir,
       registeredWorktreePath: fs.realpathSync(record.worktreePath),
-      worktreeOwnerToken: 'owner-t2-ready',
-      newNodeRunId: 'nrn-t2-ready',
+      worktreeOwnerToken: `owner-${options.attemptId}`,
+      newNodeRunId: `nrn-${options.attemptId}`,
       workflowRunId: 'run-rec',
       workId: 'work-rec',
     }
@@ -465,10 +477,19 @@ function seedT2Ready(dataDir: string, checkpointId: string): void {
          execution_id, session_id, team_run_id, node_run_id, workflow_run_id,
          branch_run_id, recovered_node_run_id, chain_attempt_no,
          error_json, created_at, updated_at, started_at, ended_at
-       ) VALUES ('rec-t2-ready', 'work-rec', ?, 'workflow_node', 'workflow_node:nrn-rec',
-         'workflow_node:nrn-rec:2', 'idem-t2-ready', 1, 'starting', 'low', 'eligible', NULL, NULL,
-         '{}', 'hash', ?, NULL, NULL, NULL, NULL, 'run-rec', 'brn-rec', 'nrn-rec', 2, NULL, ?, ?, NULL, NULL)`,
-    ).run(checkpointId, JSON.stringify({ worktree: facts }), NOW, NOW)
+       ) VALUES (?, 'work-rec', ?, 'workflow_node', 'workflow_node:nrn-rec',
+         ?, ?, 1, 'starting', 'low', 'eligible', NULL, NULL,
+         '{}', 'hash', ?, NULL, NULL, NULL, NULL, 'run-rec', 'brn-rec', 'nrn-rec', ?, NULL, ?, ?, NULL, NULL)`,
+    ).run(
+      options.attemptId,
+      checkpointId,
+      `workflow_node:nrn-rec:${options.chainAttemptNo}`,
+      options.idempotencyKey,
+      JSON.stringify({ worktree: facts }),
+      options.chainAttemptNo,
+      NOW,
+      NOW,
+    )
   } finally {
     db.close()
   }
@@ -684,7 +705,12 @@ describe('workflow node recovery end-to-end (real Core + Daemon + fake CLI)', ()
     const repoDir = tempDir('a-nr-repo-')
     initRepo(repoDir)
     const { checkpointId } = seed(dataDir, repoDir)
-    seedT2Ready(dataDir, checkpointId)
+    seedT2Worktree(dataDir, checkpointId, {
+      attemptId: 'rec-t2-ready',
+      idempotencyKey: 'idem-t2-ready',
+      chainAttemptNo: 2,
+      state: 'ready',
+    })
     spawnCore(dataDir)
     const coreSocket = path.join(dataDir, 'runtime', 'core.sock')
     await waitFor(async () => (await probeSocket(coreSocket)) === 'live', 60_000)
@@ -713,6 +739,85 @@ describe('workflow node recovery end-to-end (real Core + Daemon + fake CLI)', ()
         .prepare("SELECT status FROM worktrees WHERE branch_name = 'agentra/t2-ready'")
         .get() as { status: string }
       expect(worktree.status).toBe('active')
+    } finally {
+      db.close()
+    }
+  }, 120_000)
+
+  it('reconciles a creating worktree that Git already registered as orphan', async () => {
+    const dataDir = tempDir('a-nr-created-')
+    const repoDir = tempDir('a-nr-repo-')
+    initRepo(repoDir)
+    const { checkpointId } = seed(dataDir, repoDir)
+    seedT2Worktree(dataDir, checkpointId, {
+      attemptId: 'rec-t2-created',
+      idempotencyKey: 'idem-t2-created',
+      chainAttemptNo: 3,
+      state: 'creating',
+    })
+    spawnCore(dataDir)
+    const coreSocket = path.join(dataDir, 'runtime', 'core.sock')
+    await waitFor(async () => (await probeSocket(coreSocket)) === 'live', 60_000)
+
+    const db = openDatabase(path.join(dataDir, 'agentra.db'))
+    try {
+      await waitFor(async () => {
+        const row = db
+          .prepare("SELECT status FROM task_recovery_attempts WHERE id = 'rec-t2-created'")
+          .get() as { status?: string } | undefined
+        return row?.status === 'failed'
+      }, 60_000)
+      const attempt = db
+        .prepare(
+          "SELECT context_manifest_json FROM task_recovery_attempts WHERE id = 'rec-t2-created'",
+        )
+        .get() as { context_manifest_json: string }
+      expect(attempt.context_manifest_json).toContain('orphaned')
+      expect(attempt.context_manifest_json).toContain('WORKTREE_CREATED_UNCONFIRMED')
+      const claimed = db
+        .prepare("SELECT COUNT(*) AS c FROM node_runs WHERE id = 'nrn-rec-t2-created'")
+        .get() as { c: number }
+      expect(claimed.c).toBe(0)
+    } finally {
+      db.close()
+    }
+  }, 120_000)
+
+  it('keeps an unconfirmable worktree in manual review without failing the attempt', async () => {
+    const dataDir = tempDir('a-nr-manual-')
+    const repoDir = tempDir('a-nr-repo-')
+    initRepo(repoDir)
+    const { checkpointId } = seed(dataDir, repoDir)
+    seedT2Worktree(dataDir, checkpointId, {
+      attemptId: 'rec-t2-manual',
+      idempotencyKey: 'idem-t2-manual',
+      chainAttemptNo: 3,
+      state: 'creating',
+    })
+    // 仓库不可读 → Git 注册状态无法确认，必须保留人工处理。
+    fs.rmSync(repoDir, { recursive: true, force: true })
+    spawnCore(dataDir)
+
+    const db = openDatabase(path.join(dataDir, 'agentra.db'))
+    try {
+      await waitFor(async () => {
+        const row = db
+          .prepare(
+            "SELECT context_manifest_json FROM task_recovery_attempts WHERE id = 'rec-t2-manual'",
+          )
+          .get() as { context_manifest_json?: string } | undefined
+        return row?.context_manifest_json?.includes('needs_manual_review') ?? false
+      }, 60_000)
+      const attempt = db
+        .prepare(
+          "SELECT status, context_manifest_json FROM task_recovery_attempts WHERE id = 'rec-t2-manual'",
+        )
+        .get() as { status: string; context_manifest_json: string }
+      expect(attempt.status).toBe('starting')
+      const claimed = db
+        .prepare("SELECT COUNT(*) AS c FROM node_runs WHERE id = 'nrn-rec-t2-manual'")
+        .get() as { c: number }
+      expect(claimed.c).toBe(0)
     } finally {
       db.close()
     }
