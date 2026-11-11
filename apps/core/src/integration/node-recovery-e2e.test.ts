@@ -495,6 +495,44 @@ function seedT2Worktree(
   }
 }
 
+function seedSpawnedRecovery(dataDir: string, repoDir: string, checkpointId: string): void {
+  const db = openDatabase(path.join(dataDir, 'agentra.db'))
+  try {
+    db.prepare(
+      `INSERT INTO agent_sessions (id, assignment_id, provider_id, external_session_id,
+         context_ref, status, created_at, updated_at, last_active_at)
+       VALUES ('ses-spawned', 'asg-rec', 'claude-code', 'ext-spawned', 'agt-rec', 'active', ?, ?, ?)`,
+    ).run(NOW, NOW, NOW)
+    db.prepare(
+      `INSERT INTO node_runs (id, workflow_run_id, workflow_node_key, branch_run_id, status, attempt,
+         input_snapshot_json, output_snapshot_json, created_at, updated_at)
+       VALUES ('nrn-spawned', 'run-rec', 'task_1', 'brn-rec', 'running', 2, '{}', NULL, ?, ?)`,
+    ).run(NOW, NOW)
+    db.prepare(
+      `INSERT INTO executions (id, session_id, node_run_id, provider_id, external_execution_id,
+         process_id, status, working_directory, started_at, ended_at, exit_code,
+         capabilities_snapshot_json, recovery_state_json, created_at, updated_at)
+       VALUES ('exe-spawned', 'ses-spawned', 'nrn-spawned', 'claude-code', 'ext-exe-spawned', 999999,
+         'running', ?, ?, NULL, NULL, ?, NULL, ?, ?)`,
+    ).run(repoDir, NOW, JSON.stringify(CAPABILITIES), NOW, NOW)
+    db.prepare(
+      `INSERT INTO task_recovery_attempts (
+         id, work_id, checkpoint_id, kind, base_dedupe_key, dedupe_key, idempotency_key,
+         attempt_no, status, risk_level, eligibility_status, original_work_status,
+         reopen_reason, operator_confirmation_json, plan_hash, context_manifest_json,
+         execution_id, session_id, team_run_id, node_run_id, workflow_run_id,
+         branch_run_id, recovered_node_run_id, chain_attempt_no,
+         error_json, created_at, updated_at, started_at, ended_at
+       ) VALUES ('rec-spawned', 'work-rec', ?, 'workflow_node', 'workflow_node:nrn-rec',
+         'workflow_node:nrn-rec:1', 'idem-spawned', 1, 'running', 'low', 'eligible', NULL, NULL,
+         '{}', 'hash', '{}', 'exe-spawned', 'ses-spawned', NULL, 'nrn-spawned', 'run-rec',
+         'brn-rec', 'nrn-rec', 1, NULL, ?, ?, ?, NULL)`,
+    ).run(checkpointId, NOW, NOW, NOW)
+  } finally {
+    db.close()
+  }
+}
+
 describe('workflow node recovery end-to-end (real Core + Daemon + fake CLI)', () => {
   it('recovers a reconciliation-required node, commits an artifact and succeeds the attempt', async () => {
     const dataDir = tempDir('a-nr-e2e-')
@@ -818,6 +856,49 @@ describe('workflow node recovery end-to-end (real Core + Daemon + fake CLI)', ()
         .prepare("SELECT COUNT(*) AS c FROM node_runs WHERE id = 'nrn-rec-t2-manual'")
         .get() as { c: number }
       expect(claimed.c).toBe(0)
+    } finally {
+      db.close()
+    }
+  }, 120_000)
+
+  it('keeps an unconfirmed spawned recovery non-terminal without re-executing it', async () => {
+    const dataDir = tempDir('a-nr-spawned-')
+    const repoDir = tempDir('a-nr-repo-')
+    initRepo(repoDir)
+    const { checkpointId } = seed(dataDir, repoDir)
+    seedSpawnedRecovery(dataDir, repoDir, checkpointId)
+    spawnCore(dataDir)
+    const coreSocket = path.join(dataDir, 'runtime', 'core.sock')
+    await waitFor(async () => (await probeSocket(coreSocket)) === 'live', 60_000)
+
+    const db = openDatabase(path.join(dataDir, 'agentra.db'))
+    try {
+      await waitFor(async () => {
+        const row = db
+          .prepare(
+            "SELECT COUNT(*) AS c FROM audit_logs WHERE action = 'reconciliation.execution.unconfirmed' AND target_id = 'exe-spawned'",
+          )
+          .get() as { c: number }
+        return row.c > 0
+      }, 60_000)
+      const execution = db
+        .prepare("SELECT status FROM executions WHERE id = 'exe-spawned'")
+        .get() as { status: string }
+      expect(execution.status).toBe('running')
+      const attempt = db
+        .prepare("SELECT status FROM task_recovery_attempts WHERE id = 'rec-spawned'")
+        .get() as { status: string }
+      expect(attempt.status).toBe('running')
+      const executions = db
+        .prepare("SELECT COUNT(*) AS c FROM executions WHERE node_run_id = 'nrn-spawned'")
+        .get() as { c: number }
+      expect(executions.c).toBe(1)
+      const replacements = db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM node_runs WHERE workflow_node_key = 'task_1' AND attempt > 2",
+        )
+        .get() as { c: number }
+      expect(replacements.c).toBe(0)
     } finally {
       db.close()
     }
