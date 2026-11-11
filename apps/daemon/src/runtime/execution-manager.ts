@@ -401,15 +401,19 @@ export class ExecutionManager {
       }
     } else {
       record.exitCode = event.exitCode
-      record.endedAt = occurredAt
-      record.status =
-        event.reason === 'cancelled'
-          ? 'cancelled'
-          : event.reason === 'crashed'
-            ? 'crashed'
-            : event.exitCode === 0
-              ? 'succeeded'
-              : 'failed'
+      // 进程退出只是事实；Provider 已通过 state 给出的终态优先。
+      // 例如 result.is_error=true 但 exit code 0：exited 不能把 failed 改判为 succeeded。
+      if (!TERMINAL_STATES.has(record.status)) {
+        record.status =
+          event.reason === 'cancelled'
+            ? 'cancelled'
+            : event.reason === 'crashed'
+              ? 'crashed'
+              : event.exitCode === 0
+                ? 'succeeded'
+                : 'failed'
+      }
+      record.endedAt = record.endedAt ?? occurredAt
       envelope = {
         ...base,
         eventType: 'execution.exited',

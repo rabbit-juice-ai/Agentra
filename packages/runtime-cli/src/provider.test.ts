@@ -99,6 +99,25 @@ describe('ClaudeCodeProvider with fake CLI', () => {
     expect(status.processId).toBeGreaterThan(0)
   })
 
+  it('reports a result error with exit code 0 as failed before exited', async () => {
+    const provider = makeProvider()
+    const executionId = newExecutionId()
+    const { events, terminal } = collect(provider, executionId)
+
+    await start(provider, executionId, 'FAIL this turn')
+    await withTimeout(terminal)
+
+    const failedIndex = events.findIndex(
+      (event) => event.type === 'state' && event.status === 'failed',
+    )
+    const exitedIndex = events.findIndex((event) => event.type === 'exited')
+    expect(failedIndex).toBeGreaterThanOrEqual(0)
+    // 状态必须先于 exited，否则消费方会按 exitCode=0 误判成功并丢弃 failed。
+    expect(exitedIndex).toBeGreaterThan(failedIndex)
+    expect(events[exitedIndex]).toMatchObject({ type: 'exited', exitCode: 0 })
+    expect((await provider.getStatus(executionId)).status).toBe('failed')
+  })
+
   it('marks an execution crashed when the process is killed with SIGKILL', async () => {
     const provider = makeProvider()
     const executionId = newExecutionId()

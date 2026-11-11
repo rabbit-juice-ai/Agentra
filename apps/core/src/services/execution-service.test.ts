@@ -642,6 +642,16 @@ describe('ExecutionService event handling', () => {
     expect(h.executions.get(execution.id).status).toBe('succeeded')
   })
 
+  it('keeps a failed terminal state even if exited reports exit code 0 afterwards', async () => {
+    const h = await harness()
+    const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })
+    h.executions.handleRuntimeEvent(stateEvent(execution.id, 'failed', 'running'))
+    h.executions.handleRuntimeEvent(
+      exitedEvent(execution.id, { exitCode: 0, signal: null, reason: 'exited' }),
+    )
+    expect(h.executions.get(execution.id)).toMatchObject({ status: 'failed', exitCode: 0 })
+  })
+
   it('does not let an exited event resurrect a cancelled execution', async () => {
     const h = await harness()
     const execution = await h.executions.start({ agentId: h.agentId, prompt: 'hello' })

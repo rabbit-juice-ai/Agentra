@@ -1766,7 +1766,27 @@ export class ExecutionService {
       return
     }
     // S55-2B-1B：终态事实已落库后到达的重复 exited 事件不重复记账（幂等收紧）。
+    // 但状态事件不含 exit code，仍需用 exited 补全进程事实（不改变终态）。
     if (isTerminalExecutionState(execution.status)) {
+      if (execution.exitCode === null) {
+        this.executions.finish(payload.executionId, {
+          status: execution.status,
+          exitCode: payload.exitCode,
+          endedAt: payload.timestamp,
+        })
+        // 终态已由 state 事件落库；exited 仍要留下进程事实证据（供排障与验收）。
+        this.appendSystemLog(
+          payload.executionId,
+          'execution.exited',
+          {
+            exitCode: payload.exitCode,
+            signal: payload.signal,
+            reason: payload.reason,
+            ...this.workflowContext(payload.executionId),
+          },
+          payload.timestamp,
+        )
+      }
       this.logger?.info('exited event for already-terminal execution ignored', {
         executionId: payload.executionId,
         status: execution.status,

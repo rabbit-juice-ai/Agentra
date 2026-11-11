@@ -403,18 +403,20 @@ export class ClaudeCodeProvider implements RuntimeProvider {
     const reason =
       status === 'cancelled' ? 'cancelled' : status === 'crashed' ? 'crashed' : 'exited'
     managed.status = status
-    this.emit(managed, {
-      type: 'exited',
-      exitCode: code,
-      signal,
-      reason,
-      timestamp: managed.endedAt,
-    })
+    // 状态先于 exited：result.is_error 且退出码为 0 时，只有 state 能表达真实失败。
+    // 若先发 exited，消费方按 exitCode=0 判成功并退订，随后到达的 failed 会被丢弃。
     this.emit(managed, {
       type: 'state',
       status,
       previousStatus: 'running',
       detail: signal ? `terminated by ${signal}` : `exit code ${code}`,
+      timestamp: managed.endedAt,
+    })
+    this.emit(managed, {
+      type: 'exited',
+      exitCode: code,
+      signal,
+      reason,
       timestamp: managed.endedAt,
     })
     // 保留一段时间供状态查询；到期后释放，避免长期占用内存。

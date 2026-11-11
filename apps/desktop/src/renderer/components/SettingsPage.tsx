@@ -10,6 +10,7 @@ import { useUserProfile } from '../utils/user-profile'
 import { AvatarField } from './AvatarField'
 import { Icon } from './Icon'
 import { PageHeader } from './PageHeader'
+import { plannerDraftMatches } from './planner-config'
 import { StatusBadge } from './StatusBadge'
 
 export const SETTINGS_PAGE_MARKER = 'agentra-product-settings'
@@ -434,8 +435,20 @@ export function SettingsPage({
                         disabled={
                           plannerSaving ||
                           plannerProviderId === '' ||
-                          (plannerProviderId === planner.defaultProviderId &&
-                            (plannerModel || null) === planner.model)
+                          plannerDraftMatches(
+                            {
+                              name: plannerName,
+                              avatar: plannerAvatar,
+                              providerId: plannerProviderId,
+                              model: plannerModel,
+                            },
+                            {
+                              name: planner.name,
+                              avatar: planner.avatar,
+                              providerId: planner.defaultProviderId ?? '',
+                              model: planner.model ?? null,
+                            },
+                          )
                         }
                         onClick={() => void savePlanner()}
                       >

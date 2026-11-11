@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   assertInventoryContent,
+  assertPathInside,
   assertUnlinkReplayNeedsLock,
   controlledRemoveTree,
   durableCopyFile,
@@ -11,6 +12,7 @@ import {
   durableRename,
   durableUnlink,
   inventoryDirectory,
+  isInsideOrEqual,
   lstatAnchor,
   type RenameIntent,
   RestoreFilesystemError,
@@ -28,6 +30,28 @@ function tempDir(): string {
 
 afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+describe('path boundary', () => {
+  it('accepts the root itself and descendants', () => {
+    const root = path.join(path.sep, 'data', 'root')
+    expect(isInsideOrEqual(root, root)).toBe(true)
+    expect(isInsideOrEqual(path.join(root, 'a', 'b'), root)).toBe(true)
+  })
+
+  it('rejects the exact parent directory and other escapes', () => {
+    const root = path.join(path.sep, 'data', 'root')
+    expect(isInsideOrEqual(path.join(path.sep, 'data'), root)).toBe(false)
+    expect(isInsideOrEqual(path.join(root, '..', 'other'), root)).toBe(false)
+    expect(isInsideOrEqual(path.join(path.sep, 'elsewhere'), root)).toBe(false)
+  })
+
+  it('assertPathInside rejects the exact parent directory', () => {
+    const root = path.join(path.sep, 'data', 'root')
+    expect(() => assertPathInside(path.join(path.sep, 'data'), root)).toThrow(
+      RestoreFilesystemError,
+    )
+  })
 })
 
 describe('durable copy', () => {

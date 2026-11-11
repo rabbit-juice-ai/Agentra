@@ -147,6 +147,24 @@ describe('ExecutionManager', () => {
     expect((await manager.status(executionId)).status).toBe('crashed')
   })
 
+  it('keeps a provider-reported failure when the process exits 0', async () => {
+    const executionId = newExecutionId()
+    const workingDirectory = path.join(scratchRoot, executionId)
+    await manager.start(startParams({ executionId, workingDirectory, prompt: 'FAIL this turn' }))
+    await waitFor(() => manager.listActive().length === 0)
+
+    expect((await manager.status(executionId)).status).toBe('failed')
+
+    const stateIndex = events.findIndex(
+      (event) =>
+        event.eventType === 'execution.state' &&
+        (event.payload as { status?: string }).status === 'failed',
+    )
+    const exitedIndex = events.findIndex((event) => event.eventType === 'execution.exited')
+    expect(stateIndex).toBeGreaterThanOrEqual(0)
+    expect(exitedIndex).toBeGreaterThan(stateIndex)
+  })
+
   it('rejects interrupt when the capability snapshot declares unsupported and keeps state', async () => {
     const executionId = newExecutionId()
     await manager.start(

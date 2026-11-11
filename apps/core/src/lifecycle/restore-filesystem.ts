@@ -100,7 +100,8 @@ export type UnlinkCompleteEvidence = {
 
 export function isInsideOrEqual(child: string, parent: string): boolean {
   const relative = path.relative(parent, child)
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  // 直接父目录的 relative 恰好是 '..'，必须与 '../x' 一并拒绝。
+  return !(relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
 }
 
 export function assertPathInside(target: string, root: string): string {
